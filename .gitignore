@@ -1,0 +1,44 @@
+# dependencies
+node_modules/
+
+# builds / dist
+dist/
+out/
+release/
+*.dmg
+*.exe
+*.AppImage
+
+# logs
+*.log
+logs/
+electron-log/
+
+# local env / secrets
+.env
+.env.*
+*.local
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# editor junk
+.vscode/
+.idea/
+*.swp
+
+# cache
+.cache/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# local app data (ShutterQueue)
+# NOTE: If you later decide you WANT to sync these, remove from ignore.
+shutterqueue-data/
