@@ -56,6 +56,7 @@ export default function App() {
   const [groupsFilter, setGroupsFilter] = useState("");
   const [albumsFilter, setAlbumsFilter] = useState("");
   const [appVersion, setAppVersion] = useState<string>("");
+  const [isUploadingNow, setIsUploadingNow] = useState(false);
 
     const [showSetup, setShowSetup] = useState(true);
 const [queue, setQueue] = useState<QueueItem[]>([]);
@@ -377,7 +378,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
       </div>
 
       {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}
-      {cfg?.lastError ? <div className="badge bad" style={{ marginBottom: 12 }}>Last error: {cfg.lastError}</div> : null}
+      {cfg?.lastError ? <div className="badge bad" style={{ marginBottom: 12 }}> {cfg.lastError}</div> : null}
 
       {tab === "setup" && (
         <div className="grid">
@@ -803,7 +804,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
             <div className="content">
               <div className="small">Scheduler: {sched?.schedulerOn ? "ON" : "OFF"}</div>
               <div className="small">Interval hours: {sched?.intervalHours ?? "—"}</div>
-              <div className="small">Last error: {sched?.lastError || "—"}</div>
+              <div className="small"> {sched?.lastError || "—"}</div>
             </div>
           </div>
         </div>
