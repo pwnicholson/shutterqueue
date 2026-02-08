@@ -193,6 +193,10 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
+
+ipcMain.handle("app:version", async () => {
+  return app.getVersion();
+});
 ipcMain.handle("cfg:get", async () => ({
   apiKey: store.get("apiKey"),
   hasApiSecret: Boolean(store.get("apiSecret")),

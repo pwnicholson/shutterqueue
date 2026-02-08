@@ -28,4 +28,6 @@ contextBridge.exposeInMainWorld("sq", {
   pickPhotos: () => ipcRenderer.invoke("ui:pickPhotos"),
   logGet: () => ipcRenderer.invoke("log:get"),
   logClear: () => ipcRenderer.invoke("log:clear"),
+  appVersion: () => ipcRenderer.invoke("app:version"),
+
 });

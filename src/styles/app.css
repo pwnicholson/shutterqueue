@@ -164,3 +164,24 @@ body{
 
 .btnrow { display:flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .btncluster { display:flex; gap: 10px; align-items:center; padding: 6px; border:1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,0.02); }
+
+/* Fixed footer (always visible) */
+.footer-fixed{
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-top: 1px solid rgba(148,163,184,0.35);
+  background: rgba(15,23,42,0.85);
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+}
+.footer-left, .footer-right { display:flex; align-items:center; gap:8px; }
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace}
+
+/* Make room so content doesn't sit under footer */
+.app{ padding-bottom: 52px; }

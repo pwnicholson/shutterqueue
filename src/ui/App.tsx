@@ -43,7 +43,7 @@ function TriCheck(props: {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("setup");
+  const [tab, setTab] = useState<Tab>("queue");
   const [cfg, setCfg] = useState<any>(null);
 
   const [apiKey, setApiKey] = useState("");
@@ -55,6 +55,7 @@ export default function App() {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [groupsFilter, setGroupsFilter] = useState("");
   const [albumsFilter, setAlbumsFilter] = useState("");
+  const [appVersion, setAppVersion] = useState<string>("");
 
     const [showSetup, setShowSetup] = useState(true);
 const [queue, setQueue] = useState<QueueItem[]>([]);
@@ -114,6 +115,17 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
 
   };
 
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const v = await window.sq.appVersion();
+        setAppVersion(v || "");
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
   useEffect(() => { refreshAll(); }, []);
 
   useEffect(() => {
@@ -367,7 +379,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
       {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}
       {cfg?.lastError ? <div className="badge bad" style={{ marginBottom: 12 }}>Last error: {cfg.lastError}</div> : null}
 
-      {tab === "setup" && showSetup && (
+      {tab === "setup" && (
         <div className="grid">
           <div className="card">
             <h2>Flickr API + OAuth</h2>
@@ -823,6 +835,15 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   </div>
 )}
 <div className="small footer">By Paul Nicholson. Not an official Flickr app.</div>
+      <div className="footer-fixed">
+        <div className="footer-left">
+          <span>By Paul Nicholson. Not an official Flickr app.</span>
+        </div>
+        <div className="footer-right">
+          <span className="mono">v{appVersion || "0.7.2"}</span>
+        </div>
+      </div>
+
     </div>
   );
 }
