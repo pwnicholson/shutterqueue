@@ -56,7 +56,8 @@ export default function App() {
   const [groupsFilter, setGroupsFilter] = useState("");
   const [albumsFilter, setAlbumsFilter] = useState("");
 
-  const [queue, setQueue] = useState<QueueItem[]>([]);
+    const [showSetup, setShowSetup] = useState(true);
+const [queue, setQueue] = useState<QueueItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [anchorId, setAnchorId] = useState<string | null>(null);
@@ -95,6 +96,13 @@ export default function App() {
     setDaysEnabled(Boolean(c.daysEnabled));
     setAllowedDays(Array.isArray(c.allowedDays) ? c.allowedDays : [1,2,3,4,5]);
     setResumeOnLaunch(Boolean(c.resumeOnLaunch));
+
+    // scheduler defaults (only set once if missing)
+    if (typeof c.timeWindowEnabled !== "boolean") setTimeWindowEnabled(false);
+    if (typeof c.daysEnabled !== "boolean") setDaysEnabled(false);
+
+    // hide setup UI if already authed
+    if (c.authed) setShowSetup(false);
     setSkipOvernight(Boolean(c.skipOvernight));
     setApiKey(c.apiKey || "");
     setApiSecret("");
@@ -359,7 +367,7 @@ export default function App() {
       {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}
       {cfg?.lastError ? <div className="badge bad" style={{ marginBottom: 12 }}>Last error: {cfg.lastError}</div> : null}
 
-      {tab === "setup" && (
+      {tab === "setup" && showSetup && (
         <div className="grid">
           <div className="card">
             <h2>Flickr API + OAuth</h2>
