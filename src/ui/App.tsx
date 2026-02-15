@@ -80,6 +80,37 @@ export default function App() {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [groupsFilter, setGroupsFilter] = useState("");
   const [albumsFilter, setAlbumsFilter] = useState("");
+
+  const groupNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const g of groups) m.set(String(g.id), String(g.name));
+    return m;
+  }, [groups]);
+
+  const albumTitleById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of albums) m.set(String(a.id), String(a.title));
+    return m;
+  }, [albums]);
+
+  const friendlyIdInMessage = (msg?: string) => {
+    if (!msg) return msg;
+    // Replace "group <id>:" and "album <id>:" with friendly names when possible.
+    return msg.replace(/\b(group|album)\s+([^\s:]+)\s*:/gi, (full, kindRaw, idRaw) => {
+      const kind = String(kindRaw).toLowerCase();
+      const id = String(idRaw);
+      if (kind === "group") {
+        const name = groupNameById.get(id);
+        return name ? `group ${name}:` : full;
+      }
+      if (kind === "album") {
+        const title = albumTitleById.get(id);
+        return title ? `album ${title}:` : full;
+      }
+      return full;
+    });
+  };
+
   const [didAutoLoadLists, setDidAutoLoadLists] = useState(false);
 
   const [appVersion, setAppVersion] = useState<string>("");
@@ -492,7 +523,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
       </div>
 
       {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}
-      {cfg?.lastError ? <div className="badge bad" style={{ marginBottom: 12 }}> {cfg.lastError}</div> : null}
+      {cfg?.lastError ? <div className="badge bad" style={{ marginBottom: 12 }}> {friendlyIdInMessage(cfg.lastError)}</div> : null}
 
       {tab === "setup" && (
         <div className="grid">
@@ -645,7 +676,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
                           {(it.albumIds?.length || 0) > 0 ? <span className="badge">{it.albumIds.length} albums</span> : null}
                           {sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Scheduled: {formatLocal(scheduledMap[it.id])}</span> : null}
                           {it.uploadedAt ? <span className="badge">Uploaded: {formatLocal(it.uploadedAt)}</span> : null}
-                          {it.lastError ? <span className="badge bad" title={it.lastError}>Error</span> : null}
+                          {it.lastError ? <span className="badge bad" title={friendlyIdInMessage(it.lastError)}>Error</span> : null}
                         </div>
                       </div>
                       <span
@@ -840,7 +871,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
 
                   <div style={{ height: 14 }} />
                   <button className="btn primary" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
-                  {active.lastError ? <div className="small" style={{ color: "var(--bad)", marginTop: 10 }}>{active.lastError}</div> : null}
+                  {active.lastError ? <div className="small" style={{ color: "var(--bad)", marginTop: 10 }}>{friendlyIdInMessage(active.lastError)}</div> : null}
                 </>
               )}
             </div>
@@ -938,7 +969,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
             <div className="content">
               <div className="small">Scheduler: {sched?.schedulerOn ? "ON" : "OFF"}</div>
               <div className="small">Interval hours: {sched?.intervalHours ?? "—"}</div>
-              <div className="small"> {sched?.lastError || "—"}</div>
+              <div className="small"> {friendlyIdInMessage(sched?.lastError) || "—"}</div>
             </div>
           </div>
         </div>
@@ -975,7 +1006,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.2"}</span>
+          <span className="mono">v{appVersion || "0.7.3b"}</span>
         </div>
       </div>
 
