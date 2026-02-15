@@ -1,8 +1,6 @@
 # ShutterQueue Wishlist / Roadmap
 
 ## Must-have (next)
-- [ ] Multi-select: common/mixed values behavior for Title/Description/Tags
-- [ ] Batch tag editing: add/remove semantics (chips)
 - [ ] Fix “frosted” look on scroll (make panel backgrounds opaque)
 
 ## Soon

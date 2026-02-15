@@ -47,6 +47,16 @@ function formatTagsCsv(tags: string[]): string {
   return tags.join(", ");
 }
 
+function deriveTitleFromPhotoPath(photoPath: string): string {
+  const p = String(photoPath || "");
+  // Support Windows and POSIX paths
+  const base = p.split(/[/\\]/).pop() || "";
+  // Remove final extension (e.g., .jpg, .jpeg). Keep dots in the basename (e.g., "my.photo")
+  const noExt = base.replace(/\.[^\.]+$/, "");
+  return noExt || base || "";
+}
+
+
 
 function TriCheck(props: {
   state: "all" | "none" | "some";
@@ -80,36 +90,35 @@ export default function App() {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [groupsFilter, setGroupsFilter] = useState("");
   const [albumsFilter, setAlbumsFilter] = useState("");
+const groupNameById = useMemo(() => {
+  const m = new Map<string, string>();
+  for (const g of groups) m.set(String(g.id), String(g.name));
+  return m;
+}, [groups]);
 
-  const groupNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const g of groups) m.set(String(g.id), String(g.name));
-    return m;
-  }, [groups]);
+const albumTitleById = useMemo(() => {
+  const m = new Map<string, string>();
+  for (const a of albums) m.set(String(a.id), String(a.title));
+  return m;
+}, [albums]);
 
-  const albumTitleById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const a of albums) m.set(String(a.id), String(a.title));
-    return m;
-  }, [albums]);
-
-  const friendlyIdInMessage = (msg?: string) => {
-    if (!msg) return msg;
-    // Replace "group <id>:" and "album <id>:" with friendly names when possible.
-    return msg.replace(/\b(group|album)\s+([^\s:]+)\s*:/gi, (full, kindRaw, idRaw) => {
-      const kind = String(kindRaw).toLowerCase();
-      const id = String(idRaw);
-      if (kind === "group") {
-        const name = groupNameById.get(id);
-        return name ? `group ${name}:` : full;
-      }
-      if (kind === "album") {
-        const title = albumTitleById.get(id);
-        return title ? `album ${title}:` : full;
-      }
-      return full;
-    });
-  };
+const friendlyIdInMessage = (msg?: string) => {
+  if (!msg) return msg;
+  // Replace "group <id>:" and "album <id>:" with friendly names when possible.
+  return msg.replace(/\b(group|album)\s+([^\s:]+)\s*:/gi, (full, kindRaw, idRaw) => {
+    const kind = String(kindRaw).toLowerCase();
+    const id = String(idRaw);
+    if (kind === "group") {
+      const name = groupNameById.get(id);
+      return name ? `group ${name}:` : full;
+    }
+    if (kind === "album") {
+      const title = albumTitleById.get(id);
+      return title ? `album ${title}:` : full;
+    }
+    return full;
+  });
+};
 
   const [didAutoLoadLists, setDidAutoLoadLists] = useState(false);
 
@@ -214,6 +223,19 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     const q = await window.sq.queueGet();
     setQueue(q);
     if (!activeId && q.length) setActiveId(q[0].id);
+
+    // Ensure default titles (filename without extension) for items missing a title
+    try {
+      const needsTitle = q.filter(it => !String(it.title || "").trim());
+      if (needsTitle.length) {
+        const patched = needsTitle.map(it => ({ ...it, title: deriveTitleFromPhotoPath(it.photoPath) }));
+        const q2 = await window.sq.queueUpdate(patched);
+        setQueue(q2);
+        if (!activeId && q2.length) setActiveId(q2[0].id);
+      }
+    } catch {
+      // ignore
+    }
     setSched(await window.sq.schedulerStatus());
     try { setLogs(await window.sq.logGet()); } catch { /* ignore */ }
 
@@ -297,6 +319,15 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     const q = await window.sq.queueAdd(paths);
     setQueue(q);
     if (!activeId && q.length) setActiveId(q[0].id);
+
+    // Set default titles for newly added photos that don't have a title yet
+    const newlyAdded = q.filter(it => paths.includes(it.photoPath) && !String(it.title || "").trim());
+    if (newlyAdded.length) {
+      const patched = newlyAdded.map(it => ({ ...it, title: deriveTitleFromPhotoPath(it.photoPath) }));
+      const q2 = await window.sq.queueUpdate(patched);
+      setQueue(q2);
+      if (!activeId && q2.length) setActiveId(q2[0].id);
+    }
     showToast(`Added ${paths.length} photo(s).`);
   };
 
@@ -404,6 +435,12 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
 
   const [batchTitle, setBatchTitle] = useState("");
   const [batchTags, setBatchTags] = useState("");
+
+  // Clear the batch tag input whenever the selection changes in multi-select mode.
+  useEffect(() => {
+    if (selectedIds.length >= 2) setBatchTags("");
+  }, [selectedIds.join("|")]);
+
   const [batchDescription, setBatchDescription] = useState("");
   const [batchPrivacy, setBatchPrivacy] = useState<Privacy | "">( "" );
   const [batchCreateAlbums, setBatchCreateAlbums] = useState("");
@@ -450,6 +487,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     if (!changed.length) return;
     setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
     await updateItems(changed);
+    await refreshAll();
     showToast(`Removed tag “${tag}” from ${changed.length} item(s).`);
   };
 
@@ -1006,7 +1044,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.3b"}</span>
+          <span className="mono">v{appVersion || "0.7.3f"}</span>
         </div>
       </div>
 
