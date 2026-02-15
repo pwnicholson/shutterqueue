@@ -185,3 +185,28 @@ body{
 
 /* Make room so content doesn't sit under footer */
 .app{ padding-bottom: 52px; }
+
+
+/* Tag chips (batch selection) */
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background: rgba(255,255,255,0.04);
+  font-size:12px;
+}
+.chipX{
+  appearance:none;
+  border:0;
+  background: transparent;
+  color: var(--muted);
+  cursor:pointer;
+  padding:0;
+  line-height:1;
+  font-size:14px;
+}
+.chipX:hover{color: var(--text)}

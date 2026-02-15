@@ -23,6 +23,31 @@ function uniq<T>(arr: T[]) {
   return Array.from(new Set(arr));
 }
 
+
+function parseTagsCsv(csv: string): string[] {
+  // Tags are stored comma-separated in UI.
+  // Normalize: trim, collapse whitespace, drop empties, de-dupe case-insensitively.
+  const raw = (csv || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => s.replace(/\s+/g, " "));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of raw) {
+    const k = t.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
+
+function formatTagsCsv(tags: string[]): string {
+  return tags.join(", ");
+}
+
+
 function TriCheck(props: {
   state: "all" | "none" | "some";
   onToggle: (next: "all" | "none") => void;
@@ -55,6 +80,8 @@ export default function App() {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [groupsFilter, setGroupsFilter] = useState("");
   const [albumsFilter, setAlbumsFilter] = useState("");
+  const [didAutoLoadLists, setDidAutoLoadLists] = useState(false);
+
   const [appVersion, setAppVersion] = useState<string>("");
   const [isUploadingNow, setIsUploadingNow] = useState(false);
 
@@ -68,6 +95,51 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
 
   const active = useMemo(() => queue.find(q => q.id === activeId) || null, [queue, activeId]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  const selectedItems = useMemo(
+    () => queue.filter(it => selectedSet.has(it.id)),
+    [queue, selectedSet]
+  );
+
+  const commonTags = useMemo(() => {
+    if (selectedItems.length < 2) return [] as string[];
+
+    // Compare case-insensitively, but preserve a stable display value.
+    const displayByLc = new Map<string, string>();
+    let intersection: Set<string> | null = null;
+
+    for (const it of selectedItems) {
+      const tags = parseTagsCsv(it.tags);
+      const lcSet = new Set<string>();
+      for (const t of tags) {
+        const lc = t.toLowerCase();
+        lcSet.add(lc);
+        if (!displayByLc.has(lc)) displayByLc.set(lc, t);
+      }
+
+      if (!intersection) intersection = lcSet;
+      else {
+        for (const lc of Array.from(intersection)) {
+          if (!lcSet.has(lc)) intersection.delete(lc);
+        }
+      }
+    }
+
+    return Array.from(intersection || [])
+      .map(lc => displayByLc.get(lc) || lc)
+      .sort((a, b) => a.localeCompare(b));
+  }, [selectedItems]);
+
+  const hasOtherTags = useMemo(() => {
+    if (selectedItems.length < 2) return false;
+    const union = new Set<string>();
+    for (const it of selectedItems) {
+      for (const t of parseTagsCsv(it.tags)) union.add(t.toLowerCase());
+    }
+    return union.size > commonTags.length;
+  }, [selectedItems, commonTags]);
+
+
 
   const [intervalHours, setIntervalHours] = useState<number>(24);
   const [timeWindowEnabled, setTimeWindowEnabled] = useState<boolean>(false);
@@ -130,6 +202,23 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   useEffect(() => { refreshAll(); }, []);
 
   useEffect(() => {
+    if (!cfg?.authed) return;
+    if (didAutoLoadLists) return;
+    (async () => {
+      try {
+        const [g, a] = await Promise.all([window.sq.fetchGroups(), window.sq.fetchAlbums()]);
+        setGroups(g);
+        setAlbums(a);
+      } catch {
+        // ignore
+      } finally {
+        setDidAutoLoadLists(true);
+      }
+    })();
+  }, [cfg?.authed, didAutoLoadLists]);
+
+
+  useEffect(() => {
     (async () => {
       for (const it of queue.slice(0, 120)) {
         if (thumbs[it.photoPath] !== undefined) continue;
@@ -159,13 +248,13 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     showToast("Authorization complete.");
   };
 
-  const loadGroups = async () => {
+  const refreshGroups = async () => {
     const g = await window.sq.fetchGroups();
     setGroups(g);
     showToast(`Loaded ${g.length} groups.`);
   };
 
-  const loadAlbums = async () => {
+  const refreshAlbums = async () => {
     const a = await window.sq.fetchAlbums();
     setAlbums(a);
     showToast(`Loaded ${a.length} albums.`);
@@ -297,7 +386,12 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
       if (!it) continue;
       const next: QueueItem = { ...it };
       if (batchTitle.trim()) next.title = batchTitle.trim();
-      if (batchTags.trim()) next.tags = batchTags.trim();
+      if (batchTags.trim()) {
+        const existing = parseTagsCsv(next.tags);
+        const add = parseTagsCsv(batchTags);
+        const merged = formatTagsCsv(uniq([...existing, ...add]));
+        next.tags = merged;
+      }
       if (batchDescription.trim()) next.description = batchDescription;
       if (batchCreateAlbums.trim()) next.createAlbums = batchCreateAlbums.split(",").map(s => s.trim()).filter(Boolean);
       if (batchPrivacy) next.privacy = batchPrivacy as Privacy;
@@ -307,7 +401,27 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
     await updateItems(changed);
     showToast(`Applied to ${changed.length} item(s).`);
+
   };
+
+  const removeTagFromSelected = async (tag: string) => {
+    if (!selectedIds.length) return;
+    const byId = new Map(queue.map(it => [it.id, it]));
+    const changed: QueueItem[] = [];
+    for (const id of selectedIds) {
+      const it = byId.get(id);
+      if (!it) continue;
+      const lc = tag.toLowerCase();
+      const tags = parseTagsCsv(it.tags).filter(t => t.toLowerCase() !== lc);
+      const next: QueueItem = { ...it, tags: formatTagsCsv(tags) };
+      changed.push(next);
+    }
+    if (!changed.length) return;
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    await updateItems(changed);
+    showToast(`Removed tag “${tag}” from ${changed.length} item(s).`);
+  };
+
 
   const toggleIds = (ids: string[], id: string, mode: "add" | "remove") => {
     const set = new Set(ids);
@@ -371,10 +485,10 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
       </div>
 
       <div className="row" style={{ marginBottom: 12 }}>
-        <button className={`btn ${tab==="setup"?"primary":""}`} onClick={() => setTab("setup")}>Setup</button>
         <button className={`btn ${tab==="queue"?"primary":""}`} onClick={() => setTab("queue")}>Queue</button>
         <button className={`btn ${tab==="schedule"?"primary":""}`} onClick={() => setTab("schedule")}>Schedule</button>
         <button className={`btn ${tab==="logs"?"primary":""}`} onClick={() => setTab("logs")}>Logs</button>
+        <button className={`btn ${tab==="setup"?"primary":""}`} onClick={() => setTab("setup")}>Setup</button>
       </div>
 
       {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}
@@ -422,8 +536,8 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
               <div className="hr" />
 
               <div className="row">
-                <button className="btn" onClick={loadGroups} disabled={!cfg?.authed}>Load Groups</button>
-                <button className="btn" onClick={loadAlbums} disabled={!cfg?.authed}>Load Albums</button>
+                <button className="btn" onClick={refreshGroups} disabled={!cfg?.authed}>Refresh Groups</button>
+                <button className="btn" onClick={refreshAlbums} disabled={!cfg?.authed}>Refresh Albums</button>
               </div>
 
               <div className="small" style={{ marginTop: 10 }}>
@@ -561,16 +675,36 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
             <div className="content">
               {selectedIds.length > 1 && (
                 <>
-                  <div className="badge" style={{ marginBottom: 10 }}>Batch edit: {selectedIds.length} selected</div>
+                  <div className="badge" style={{ marginBottom: 10, display: "block", width: "100%" }}>Batch edit: {selectedIds.length} selected</div>
 
                   <label className="small">Title (optional)</label>
                   <input className="input" value={batchTitle} onChange={(e) => setBatchTitle(e.target.value)} placeholder="Leave blank to keep existing" />
 
                   <div style={{ height: 10 }} />
-                  <label className="small">Tags (comma-separated) (optional)</label>
+                  <label className="small">Add tags (comma-separated) (optional)</label>
+
+                  {commonTags.length > 0 && (
+                    <div style={{ marginTop: 6, marginBottom: 6 }}>
+                      <div className="small" style={{ marginBottom: 6 }}>Common tags on selected items</div>
+                      <div className="chips">
+                        {commonTags.map(t => (
+                          <span key={t} className="chip">
+                            {t}
+                            <button className="chipX" title="Remove from all selected" onClick={() => removeTagFromSelected(t)}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {hasOtherTags && (
+                    <div className="small" style={{ marginTop: commonTags.length ? 0 : 6, marginBottom: 6 }}>
+                      Other tags present on one or more selected items
+                    </div>
+                  )}
+
                   <input className="input" value={batchTags} onChange={(e) => setBatchTags(e.target.value)} placeholder="e.g., travel, chicago, black and white" />
                   <div className="small" style={{ marginTop: 6 }}>
-                    Multi-word tags are supported (we’ll quote them automatically for Flickr).
+                    New tags will be <b>added</b> to each selected item (existing tags are kept).
                   </div>
 
                   <div style={{ height: 10 }} />
