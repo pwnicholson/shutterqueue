@@ -24,3 +24,31 @@ npm run dev
 - If group/album add fails after a successful upload, item is marked `done (warnings)` and will **not** re-upload.
 - Adds Activity Log tab (last 500 events).
 - Adds “Clear uploaded” button to remove items that are `done` with no errors.
+
+
+## Packaging / Distributable Builds (icons included)
+
+This repo includes production icon files in `assets/`:
+- `assets/icon.ico` (Windows)
+- `assets/icon.icns` (macOS)
+- `assets/icon.png` (Linux/dev)
+
+### One-time install for packaging
+
+```bash
+npm install
+```
+
+### Build a distributable
+
+```bash
+npm run dist
+```
+
+Outputs go to `release/`.
+
+### Build an unpacked directory (for testing)
+
+```bash
+npm run pack
+```

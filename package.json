@@ -1,11 +1,13 @@
 {
   "name": "shutterqueue",
-  "version": "0.7.3q",
+  "version": "0.7.4",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k \"cross-env NODE_ENV=development vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
-    "build": "vite build"
+    "build": "vite build",
+    "dist": "npm run build && electron-builder",
+    "pack": "npm run build && electron-builder --dir"
   },
   "dependencies": {
     "electron-store": "^8.2.0",
@@ -25,6 +27,30 @@
     "electron": "^35.7.5",
     "typescript": "^5.6.3",
     "vite": "^5.4.21",
-    "wait-on": "^8.0.2"
+    "wait-on": "^8.0.2",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.pwnicholson.shutterqueue",
+    "productName": "ShutterQueue",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "asar": true,
+    "win": {
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "icon": "assets/icon.png"
+    }
   }
 }
