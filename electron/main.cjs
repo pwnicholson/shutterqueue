@@ -156,6 +156,178 @@ function scheduleNext(hours) {
   return next;
 }
 
+// -----------------------------
+// Group add retry logic
+// -----------------------------
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function computeNextGroupRetryAt(firstFailedAtIso, retryCount) {
+  // retryCount is the number of retryable failures so far (after increment).
+  // Schedule: 1h, 6h, 12h, then every 24h.
+  const base = Date.now();
+  const hours = retryCount === 1 ? 1 : (retryCount === 2 ? 6 : (retryCount === 3 ? 12 : 24));
+  const next = new Date(base + hours * 3600 * 1000);
+
+  // Stop retries after 7 days from first retryable failure.
+  const first = firstFailedAtIso ? new Date(firstFailedAtIso).getTime() : base;
+  const ageMs = base - first;
+  if (ageMs >= 7 * 24 * 3600 * 1000) return null;
+  return next.toISOString();
+}
+
+function normalizeGroupAddState(it) {
+  if (!it.groupAddStates || typeof it.groupAddStates !== "object") it.groupAddStates = {};
+  return it.groupAddStates;
+}
+
+function setItemLastErrorFromGroupStates(item, baseParts) {
+  const states = item.groupAddStates || {};
+  const parts = Array.isArray(baseParts) ? [...baseParts] : [];
+  for (const [gid, st] of Object.entries(states)) {
+    if (!st) continue;
+    if (st.status === "retry") {
+      const when = st.nextRetryAt ? formatLocal(st.nextRetryAt) : "—";
+      const base = st.message || `Photo will be retried for group ${gid}.`;
+      parts.push(`${base} Will attempt again at ${when}`);
+    } else if (st.status === "gave_up") {
+      parts.push(`Adding to group ${gid} failed for 1 week. No more retries.`);
+    } else if (st.status === "failed") {
+      // st.message is already user-facing.
+      parts.push(st.message || `Group add failed for group ${gid}.`);
+    } else if (st.status === "done" && st.message) {
+      // Informational messages (e.g., already in pool, moderation queue)
+      parts.push(st.message);
+    }
+  }
+  item.lastError = parts.join(" | ");
+  if (parts.length) item.status = "done_warn";
+}
+
+function formatLocal(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const pad2 = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function interpretGroupAddError(code) {
+  // Returns { status, message, retryable }
+  // Based on Flickr groups.pools.add error codes.
+  const c = Number(code);
+  if (c === 3) return { status: "done", retryable: false, message: "Photo already in pool for group {gid}." };
+  if (c === 5) return { status: "retry", retryable: true, message: "User limit reached for group {gid}. Photo will be retried." };
+  if (c === 6) return { status: "done", retryable: false, message: "Photo added to group moderation queue for group {gid}." };
+  if (c === 7) return { status: "done", retryable: false, message: "Photo added to group moderation queue for group {gid}." };
+  if (c === 8) return { status: "failed", retryable: false, message: "Group Add Failed ({gid}): Photo doesn't meet group requirements." };
+  if (c === 10) return { status: "failed", retryable: false, message: "Group Add Failed ({gid}): Group Limit Reached." };
+  if (c === 11) return { status: "failed", retryable: false, message: "Group pool disabled for {gid}." };
+  if (c === 105) return { status: "retry", retryable: true, message: "Flickr API problem, will retry group {gid}." };
+  if (c === 106) return { status: "retry", retryable: true, message: "Flickr API problem, will retry group {gid}." };
+  return { status: "failed", retryable: false, message: "Group add failed for group {gid}." };
+}
+
+async function attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item, groupId }) {
+  const photoId = item.photoId;
+  const states = normalizeGroupAddState(item);
+  const prev = states[groupId] || null;
+  states[groupId] = prev || { status: "pending", retryCount: 0, firstFailedAt: "", nextRetryAt: "", message: "" };
+
+  try {
+    await flickr.addPhotoToGroup({ apiKey, apiSecret, token, tokenSecret, photoId, groupId });
+    states[groupId] = { status: "done", message: "", retryCount: 0, firstFailedAt: "", nextRetryAt: "", lastAttemptAt: nowIso() };
+    logEvent("INFO", "Added to group", { id: item.id, photoId, groupId });
+    return { ok: true };
+  } catch (e) {
+    const code = e && e.code !== undefined ? e.code : undefined;
+    const interp = interpretGroupAddError(code);
+    const msg = interp.message.replaceAll("{gid}", String(groupId));
+
+    if (interp.status === "retry") {
+      const prevRetryCount = Number(prev && prev.retryCount ? prev.retryCount : 0);
+      const retryCount = prevRetryCount + 1;
+      const firstFailedAt = (prev && prev.firstFailedAt) ? prev.firstFailedAt : nowIso();
+      const nextRetryAt = computeNextGroupRetryAt(firstFailedAt, retryCount);
+      if (!nextRetryAt) {
+        states[groupId] = {
+          status: "gave_up",
+          message: `Adding to group ${groupId} failed for 1 week. No more retries.`,
+          retryCount,
+          firstFailedAt,
+          nextRetryAt: "",
+          lastAttemptAt: nowIso(),
+          code
+        };
+      } else {
+        states[groupId] = {
+          status: "retry",
+          message: msg,
+          retryCount,
+          firstFailedAt,
+          nextRetryAt,
+          lastAttemptAt: nowIso(),
+          code
+        };
+      }
+      logEvent("WARN", "Group add retry scheduled", { id: item.id, photoId, groupId, code, nextRetryAt: states[groupId].nextRetryAt });
+      return { ok: false, code, message: msg, retry: true };
+    }
+
+    if (interp.status === "done") {
+      // Terminal but non-error outcomes (already in pool, moderation queue)
+      logEvent("INFO", "Group add completed with info", { id: item.id, photoId, groupId, code, info: msg });
+      return { ok: true, code, message: msg, info: true };
+    } else {
+      states[groupId] = {
+        status: interp.status,
+        message: msg,
+        retryCount: 0,
+        firstFailedAt: "",
+        nextRetryAt: "",
+        lastAttemptAt: nowIso(),
+        code
+      };
+      logEvent("WARN", "Group add failed", { id: item.id, photoId, groupId, code, error: msg });
+    }
+    return { ok: false, code, message: msg, retry: false };
+  }
+}
+
+async function processDueGroupRetries({ apiKey, apiSecret, token, tokenSecret, maxAttempts }) {
+  const q = queue.loadQueue();
+  const now = Date.now();
+  let attempts = 0;
+  let changed = false;
+
+  for (const it of q) {
+    if (!it.photoId) continue;
+    const states = it.groupAddStates;
+    if (!states) continue;
+    for (const [gid, st] of Object.entries(states)) {
+      if (!st || st.status !== "retry") continue;
+      const due = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : 0;
+      if (!due || due > now) continue;
+      if (attempts >= (maxAttempts || 5)) break;
+      attempts++;
+      await attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item: it, groupId: gid });
+      // Preserve any existing non-group warnings (e.g., album warnings) that may be in lastError.
+      const existingNonGroupParts = String(it.lastError || "")
+        .split("|")
+        .map(s => s.trim())
+        .filter(Boolean)
+        .filter(s => !/^user limit reached for group\s/i.test(s) && !/^adding to group\s/i.test(s) && !/^group add failed/i.test(s) && !/^photo already in pool/i.test(s) && !/^photo added to group moderation/i.test(s));
+      setItemLastErrorFromGroupStates(it, existingNonGroupParts);
+      changed = true;
+    }
+    if (attempts >= (maxAttempts || 5)) break;
+  }
+
+  if (changed) queue.saveQueue(q);
+  return { ok: true, attempts };
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1200,
@@ -179,6 +351,12 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
+  // Prevent stale group/album warnings from persisting across launches.
+  // Per-item warnings live on queue items; global lastError should be reserved for fatal/authorization errors.
+  const le = String(store.get("lastError") || "");
+  if (/\b(group|album)\s+[^\s:]+\s*:/i.test(le)) {
+    store.set("lastError", "");
+  }
   if (store.get("resumeOnLaunch") && store.get("schedulerOn")) {
     // Resume scheduler loop
     if (schedTimer) clearInterval(schedTimer);
@@ -373,6 +551,7 @@ async function uploadNowOneInternal() {
     logEvent("INFO", "Uploaded photo", { id: next.id, photoId });
 
     const warnings = [];
+    const albumParts = [];
 
     // Attach to albums (already-existing)
     for (const aid of (next.albumIds || [])) {
@@ -382,27 +561,22 @@ async function uploadNowOneInternal() {
       } catch (e) {
         const msg = e?.message ? String(e.message) : String(e);
         warnings.push(`album ${aid}: ${msg}`);
+        albumParts.push(`album ${aid}: ${msg}`);
         logEvent("WARN", "Album add failed", { id: next.id, photoId, albumId: aid, error: msg });
       }
     }
 
     // Attach to groups
     for (const gid of (next.groupIds || [])) {
-      try {
-        await flickr.addPhotoToGroup({ apiKey, apiSecret, token, tokenSecret, photoId, groupId: gid });
-        logEvent("INFO", "Added to group", { id: next.id, photoId, groupId: gid });
-      } catch (e) {
-        const msg = e?.message ? String(e.message) : String(e);
-        warnings.push(`group ${gid}: ${msg}`);
-        logEvent("WARN", "Group add failed", { id: next.id, photoId, groupId: gid, error: msg });
-      }
+      const res = await attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item: next, groupId: gid });
+      if (!res.ok) warnings.push(`group ${gid}: ${res.message || "Group add failed"}`);
     }
 
     if (warnings.length) {
-      next.status = "done_warn";
-      next.lastError = warnings.join(" | ");
+      // Build per-item warnings from per-group states (retry, failed, etc.)
+      setItemLastErrorFromGroupStates(next, albumParts);
       queue.saveQueue(q);
-      store.set("lastError", next.lastError);
+      // Do NOT persist per-item warnings into global lastError (prevents stale warnings on launch).
       return { ok: true, photoId, warnings };
     }
 
@@ -434,6 +608,24 @@ let uploadLock = false; // prevents overlapping uploads (fixes duplicate uploads
 
 async function tickScheduler() {
   if (!store.get("schedulerOn")) return;
+
+  // Always process due group retries (independent of upload schedule).
+  // This allows 1h/6h/12h/24h backoff to work even when upload interval is longer.
+  try {
+    if (isAuthed()) {
+      await processDueGroupRetries({
+        apiKey: store.get("apiKey"),
+        apiSecret: store.get("apiSecret"),
+        token: store.get("token"),
+        tokenSecret: store.get("tokenSecret"),
+        maxAttempts: 1
+      });
+    }
+  } catch (e) {
+    const msg = e?.message ? String(e.message) : String(e);
+    logEvent("WARN", "Group retry processing failed", { error: msg });
+  }
+
   const nextRunAt = store.get("nextRunAt");
   if (!nextRunAt) return;
 
@@ -452,6 +644,21 @@ async function tickScheduler() {
   // Set nextRunAt immediately so we don’t retrigger during a long upload
   scheduleNext(h);
   if (uploadLock) return;
+  // First, process any due group retries (even if there are no pending uploads)
+  try {
+    if (isAuthed()) {
+      await processDueGroupRetries({
+        apiKey: store.get("apiKey"),
+        apiSecret: store.get("apiSecret"),
+        token: store.get("token"),
+        tokenSecret: store.get("tokenSecret"),
+        maxAttempts: 5
+      });
+    }
+  } catch (e) {
+    const msg = e?.message ? String(e.message) : String(e);
+    logEvent("WARN", "Group retry processing failed", { error: msg });
+  }
   await uploadNowOneInternal();
 }
 

@@ -61,7 +61,12 @@ async function flickrRestCall({ apiKey, apiSecret, token, tokenSecret, methodNam
     throw new Error(`HTTP ${res.status}: ${res.body}`);
   }
   const j = JSON.parse(res.body);
-  if (j.stat && j.stat !== "ok") throw new Error(j.message || "Flickr API error");
+  if (j.stat && j.stat !== "ok") {
+    const err = new Error(j.message || "Flickr API error");
+    // Preserve Flickr numeric error codes when present.
+    if (j.code !== undefined) err.code = j.code;
+    throw err;
+  }
   return j;
 }
 

@@ -1,6 +1,7 @@
 # ShutterQueue Wishlist / Roadmap
 
 ## Must-have (next)
+- [ ] Per-photo Safety Level (Safe / Moderate / Restricted) setting before upload
 - [ ] Fix “frosted” look on scroll (make panel backgrounds opaque)
 
 ## Soon
@@ -12,3 +13,5 @@
 - [ ] Saved “Sets” of groups/albums (user-defined)
 - [ ] Spellcheck for title/description/tags (free/open-source)
 - [ ] Upload N photos per run (already planned)
+- [ ] Add geographic data after upload (country/region/city lookup; optional map pick)
+- [ ] Group lists: sort selected/waiting groups alphabetically at top, then remaining groups alphabetically

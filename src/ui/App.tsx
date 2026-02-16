@@ -104,17 +104,20 @@ const albumTitleById = useMemo(() => {
 
 const friendlyIdInMessage = (msg?: string) => {
   if (!msg) return msg;
-  // Replace "group <id>:" and "album <id>:" with friendly names when possible.
-  return msg.replace(/\b(group|album)\s+([^\s:]+)\s*:/gi, (full, kindRaw, idRaw) => {
+  // Replace "group <id>" / "album <id>" with friendly names when possible.
+  // Handles both "group <id>:" and "... for group <id>." patterns.
+  return msg.replace(/\b(group|album)\s+([^\s:,.]+)(\s*:)?/gi, (full, kindRaw, idRaw, colon) => {
     const kind = String(kindRaw).toLowerCase();
     const id = String(idRaw);
     if (kind === "group") {
       const name = groupNameById.get(id);
-      return name ? `group ${name}:` : full;
+      if (!name) return full;
+      return colon ? `group ${name}:` : `group ${name}`;
     }
     if (kind === "album") {
       const title = albumTitleById.get(id);
-      return title ? `album ${title}:` : full;
+      if (!title) return full;
+      return colon ? `album ${title}:` : `album ${title}`;
     }
     return full;
   });
@@ -337,7 +340,27 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const removeSelected = async () => {
     const ids = selectedIds.length ? selectedIds : (activeId ? [activeId] : []);
     if (!ids.length) return;
-    const q = await window.sq.queueRemove(ids);
+
+    // If any items are waiting on group retry, confirm how to proceed.
+    const waitingIds = ids.filter(id => {
+      const it = queue.find(q => q.id === id);
+      if (!it?.groupAddStates) return false;
+      return Object.values(it.groupAddStates).some(st => st?.status === "retry");
+    });
+
+    let finalIds = ids;
+    if (waitingIds.length) {
+      const removeAll = window.confirm(
+        "One or more items being removed is still waiting to be added to a group.\n\nOK = Remove items from queue.\nCancel = Keep photos that are waiting."
+      );
+      if (!removeAll) {
+        // Keep waiting photos; remove only those not waiting.
+        finalIds = ids.filter(id => !waitingIds.includes(id));
+        if (!finalIds.length) return;
+      }
+    }
+
+    const q = await window.sq.queueRemove(finalIds);
     setQueue(q);
     setSelectedIds([]);
     setActiveId(q[0]?.id || null);
@@ -676,6 +699,20 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
                 {queue.map((it) => {
                   const thumb = thumbs[it.photoPath];
                   const isSelected = selectedSet.has(it.id);
+                  const hasPendingGroupRetries = !!it.groupAddStates && Object.values(it.groupAddStates).some(st => st?.status === "retry");
+                  const pendingGroupsTooltip = hasPendingGroupRetries
+                    ? (
+                        Object.entries(it.groupAddStates || {})
+                          .filter(([, st]) => st?.status === "retry")
+                          .map(([gid, st]) => {
+                            const gname = groupNameById.get(String(gid)) || String(gid);
+                            const next = st?.nextRetryAt ? formatLocal(st.nextRetryAt) : "—";
+                            const msg = st?.message ? friendlyIdInMessage(st.message) : "Will retry";
+                            return `${gname} • next: ${next} • ${msg}`;
+                          })
+                          .join("\n")
+                      )
+                    : "";
                   const dragClass =
                     dragOver?.id === it.id
                       ? (dragOver.pos === "top" ? "drag-over-top" : "drag-over-bottom")
@@ -708,13 +745,21 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
                         <div className="qtitle">{it.title || "(untitled)"}</div>
                         <div className="qpath">{it.photoPath}</div>
                         <div className="qmeta">
-                          {it.status === "done_warn" ? <span className="badge warn">done (warnings)</span> : <span className="badge">{it.status}</span>}
+                          {it.status === "done_warn" ? (
+                            hasPendingGroupRetries ? <span className="badge">done</span> : <span className="badge warn">done (warnings)</span>
+                          ) : (
+                            <span className="badge">{it.status}</span>
+                          )}
                           <span className="badge">{PRIVACY_LABEL[it.privacy || "private"]}</span>
                           {(it.groupIds?.length || 0) > 0 ? <span className="badge">{it.groupIds.length} groups</span> : null}
                           {(it.albumIds?.length || 0) > 0 ? <span className="badge">{it.albumIds.length} albums</span> : null}
                           {sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Scheduled: {formatLocal(scheduledMap[it.id])}</span> : null}
                           {it.uploadedAt ? <span className="badge">Uploaded: {formatLocal(it.uploadedAt)}</span> : null}
-                          {it.lastError ? <span className="badge bad" title={friendlyIdInMessage(it.lastError)}>Error</span> : null}
+                          {hasPendingGroupRetries ? (
+                            <span className="badge warn" title={pendingGroupsTooltip || ""}>Pending Group Additions</span>
+                          ) : (
+                            it.lastError ? <span className="badge bad" title={friendlyIdInMessage(it.lastError)}>Error</span> : null
+                          )}
                         </div>
                       </div>
                       <span
@@ -874,7 +919,10 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
                               checked={(active.groupIds || []).includes(g.id)}
                               onChange={(e) => updateActive({ groupIds: toggleIds(active.groupIds || [], g.id, e.target.checked ? "add" : "remove") })}
                             />
-                            <span className="small">{g.name}</span>
+                            <span className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span>{g.name}</span>
+                              {active.groupAddStates?.[g.id]?.status === "retry" ? <span className="badge warn">Pending Retry</span> : null}
+                            </span>
                           </label>
                         ))}
                         {!groups.length && <div className="small">Load groups in Setup tab.</div>}
@@ -1044,7 +1092,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.3f"}</span>
+          <span className="mono">v{appVersion || "0.7.3k"}</span>
         </div>
       </div>
 
