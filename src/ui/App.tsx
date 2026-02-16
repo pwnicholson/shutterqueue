@@ -112,12 +112,12 @@ const friendlyIdInMessage = (msg?: string) => {
     if (kind === "group") {
       const name = groupNameById.get(id);
       if (!name) return full;
-      return colon ? `group ${name}:` : `group ${name}`;
+      return colon ? `group "${name}":` : `group "${name}"`;
     }
     if (kind === "album") {
       const title = albumTitleById.get(id);
       if (!title) return full;
-      return colon ? `album ${title}:` : `album ${title}`;
+      return colon ? `album "${title}":` : `album "${title}"`;
     }
     return full;
   });
@@ -135,6 +135,85 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const [anchorId, setAnchorId] = useState<string | null>(null);
 
   const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
+
+  const [pendingGroupFocus, setPendingGroupFocus] = useState<string>("");
+
+  const pendingRetryGroups = useMemo(() => {
+    // Build list of groups that currently have at least one pending retry.
+    const counts = new Map<string, number>();
+    for (const item of queue) {
+      const states = item.groupAddStates || {};
+      for (const [gid, st] of Object.entries(states)) {
+        if (st?.status === "retry") counts.set(gid, (counts.get(gid) || 0) + 1);
+      }
+    }
+    const out = Array.from(counts.entries()).map(([groupId, count]) => ({
+      groupId,
+      count,
+      groupName: groupNameById.get(groupId) || groupId,
+    }));
+    out.sort((a, b) => a.groupName.localeCompare(b.groupName));
+    return out;
+  }, [queue, groupNameById]);
+
+  const pendingRetryItemsForFocus = useMemo(() => {
+    if (!pendingGroupFocus) return [];
+    const out: Array<{ itemId: string; title: string; nextRetryAt?: string | null }> = [];
+    for (const item of queue) {
+      const st = item.groupAddStates?.[pendingGroupFocus];
+      if (st?.status === "retry") {
+        out.push({ itemId: item.id, title: item.title || "(untitled)", nextRetryAt: st.nextRetryAt || null });
+      }
+    }
+    out.sort((a, b) => String(a.nextRetryAt || "").localeCompare(String(b.nextRetryAt || "")));
+    return out;
+  }, [queue, pendingGroupFocus]);
+
+  useEffect(() => {
+    if (!pendingRetryGroups.length) return;
+    const exists = pendingRetryGroups.some(g => g.groupId === pendingGroupFocus);
+    if (!pendingGroupFocus || !exists) setPendingGroupFocus(pendingRetryGroups[0].groupId);
+  }, [pendingRetryGroups, pendingGroupFocus]);
+
+  const isGroupAlbumErrorText = (s?: string | null) => {
+    if (!s) return false;
+    return /\bgroup\b|\balbum\b/i.test(String(s));
+  };
+
+  
+  const removeGroupRetryAndSelection = (it: QueueItem, groupId: string): QueueItem => {
+    const gid = String(groupId);
+
+    const nextStates: any = { ...(it.groupAddStates || {}) };
+    if (nextStates[gid]) delete nextStates[gid];
+    const nextGroupIds = (it.groupIds || []).map(String).filter(x => x !== gid);
+
+    const remainingStates = Object.values(nextStates).filter(Boolean) as any[];
+    const hasNonDone = remainingStates.some(st => st && st.status && st.status !== "done");
+
+    // Clear item-level group/album-style lastError only if nothing else is pending.
+    const nextLastError = (!hasNonDone && isGroupAlbumErrorText(it.lastError)) ? undefined : it.lastError;
+
+    const updated: QueueItem = {
+      ...it,
+      groupIds: nextGroupIds,
+      groupAddStates: remainingStates.length ? nextStates : undefined,
+      status: (!hasNonDone && it.status === "done_warn") ? "done" : it.status,
+      lastError: nextLastError,
+    };
+
+    return updated;
+  };
+
+const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
+    const it = queue.find(x => x.id === itemId);
+    if (!it) return;
+    const updated = removeGroupRetryAndSelection(it, groupId);
+    setQueue(prev => prev.map(q => (q.id === updated.id ? updated : q)));
+    await updateItems([updated]);
+  };
+
+
 
   const active = useMemo(() => queue.find(q => q.id === activeId) || null, [queue, activeId]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
@@ -540,7 +619,11 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     for (const sid of selectedIds) {
       const it = queue.find(x => x.id === sid);
       if (!it) continue;
-      if (kind === "group") changed.push({ ...it, groupIds: toggleIds(it.groupIds || [], id, next === "all" ? "add" : "remove") });
+      if (kind === "group") {
+        let updated: QueueItem = { ...it, groupIds: toggleIds(it.groupIds || [], id, next === "all" ? "add" : "remove") };
+        if (next === "none") updated = removeGroupRetryAndSelection(updated, id);
+        changed.push(updated);
+      }
       else changed.push({ ...it, albumIds: toggleIds(it.albumIds || [], id, next === "all" ? "add" : "remove") });
     }
     setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
@@ -674,6 +757,12 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
               </div>
             </div>
           </div>
+
+
+          
+
+
+
         </div>
       )}
 
@@ -917,7 +1006,16 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
                             <input
                               type="checkbox"
                               checked={(active.groupIds || []).includes(g.id)}
-                              onChange={(e) => updateActive({ groupIds: toggleIds(active.groupIds || [], g.id, e.target.checked ? "add" : "remove") })}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                if (checked) {
+                                  updateActive({ groupIds: toggleIds(active.groupIds || [], g.id, "add") });
+                                } else {
+                                  const updated = removeGroupRetryAndSelection(active, g.id);
+                                  setQueue(prev => prev.map(it => it.id === updated.id ? updated : it));
+                                  updateItems([updated]);
+                                }
+                              }}
                             />
                             <span className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                               <span>{g.name}</span>
@@ -962,6 +1060,12 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
               )}
             </div>
           </div>
+
+
+          
+
+
+
         </div>
       )}
 
@@ -1058,6 +1162,74 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
               <div className="small"> {friendlyIdInMessage(sched?.lastError) || "—"}</div>
             </div>
           </div>
+
+
+          <div className="card" style={{ gridColumn: "1 / -1" }}>
+            <h2>Groups With Pending Retries</h2>
+            <div className="content">
+              {!pendingRetryGroups.length ? (
+                <div className="small">No groups currently have pending retries.</div>
+              ) : (
+                <div className="split">
+                  <div>
+                    {pendingRetryGroups.map((g) => (
+                      <div
+                        key={g.groupId}
+                        className="listrow"
+                        style={{
+                          cursor: "pointer",
+                          background: pendingGroupFocus === g.groupId ? "rgba(255,255,255,0.06)" : undefined,
+                        }}
+                        onClick={() => setPendingGroupFocus(g.groupId)}
+                      >
+                        <div style={{ flex: 1 }}>
+                          <div>{g.groupName}</div>
+                          <div className="small" style={{ fontFamily: "ui-monospace" }}>{g.groupId}</div>
+                        </div>
+                        <div
+                          className="small"
+                          style={{
+                            padding: "2px 8px",
+                            borderRadius: 999,
+                            background: "rgba(255,255,255,0.06)",
+                            fontFamily: "ui-monospace",
+                          }}
+                          title="Items pending for this group"
+                        >
+                          {g.count}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div>
+                    <div className="small" style={{ marginBottom: 8 }}>
+                      Pending photos for: <span style={{ fontFamily: "ui-monospace" }}>{pendingGroupFocus}</span>
+                    </div>
+                    {!pendingRetryItemsForFocus.length ? (
+                      <div className="small">No pending photos for this group.</div>
+                    ) : (
+                      pendingRetryItemsForFocus.map((it) => (
+                        <div key={it.itemId} className="listrow">
+                          <div style={{ flex: 1 }}>{it.title}</div>
+                          <div className="small" style={{ fontFamily: "ui-monospace" }}>{formatLocal(it.nextRetryAt)}</div>
+                          <button
+                            className="btn danger"
+                            style={{ padding: "6px 10px", borderRadius: 10 }}
+                            title="Remove this photo from this group retry"
+                            onClick={() => removePendingRetryForGroup(pendingGroupFocus, it.itemId)}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
         </div>
       )}
 
@@ -1092,7 +1264,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.3k"}</span>
+          <span className="mono">v{appVersion || "0.7.3q"}</span>
         </div>
       </div>
 
