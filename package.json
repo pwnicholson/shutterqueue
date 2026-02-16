@@ -1,13 +1,14 @@
 {
   "name": "shutterqueue",
-  "version": "0.7.4a",
+  "version": "0.7.5",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k \"cross-env NODE_ENV=development vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "build": "vite build",
-    "dist": "npm run build && electron-builder",
-    "pack": "npm run build && electron-builder --dir"
+    "dist": "npm run generate-licenses && npm run build && electron-builder",
+    "pack": "npm run generate-licenses && npm run build && electron-builder --dir",
+    "generate-licenses": "node scripts/generate-licenses.cjs"
   },
   "dependencies": {
     "electron-store": "^8.2.0",

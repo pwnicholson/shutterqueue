@@ -31,3 +31,5 @@ contextBridge.exposeInMainWorld("sq", {
   appVersion: () => ipcRenderer.invoke("app:version"),
 
 });
+
+contextBridge.exposeInMainWorld("api",{ openThirdPartyLicenses: () => ipcRenderer.invoke("open-third-party-licenses") });

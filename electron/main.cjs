@@ -350,6 +350,20 @@ function createWindow() {
   }
 }
 
+
+ipcMain.handle("open-third-party-licenses", async () => {
+  try {
+    const inAppPath = path.join(app.getAppPath(), "THIRD_PARTY_LICENSES.txt");
+    const outPath = path.join(app.getPath("userData"), "THIRD_PARTY_LICENSES.txt");
+    const content = fs.readFileSync(inAppPath, "utf8");
+    fs.writeFileSync(outPath, content, "utf8");
+    await shell.openPath(outPath);
+    return { ok: true, path: outPath };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 app.whenReady().then(() => {
   createWindow();
   // Prevent stale group/album warnings from persisting across launches.

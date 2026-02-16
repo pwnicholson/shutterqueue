@@ -52,3 +52,11 @@ Outputs go to `release/`.
 ```bash
 npm run pack
 ```
+
+
+## Licenses
+
+Third-party licenses are generated automatically during `npm run dist` / `npm run pack` via `npm run generate-licenses`.
+The generated file is `THIRD_PARTY_LICENSES.txt` and is bundled into release artifacts.
+
+The app includes a **View Third-Party Licenses** button in the Setup tab.

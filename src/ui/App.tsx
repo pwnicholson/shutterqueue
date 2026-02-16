@@ -730,6 +730,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               <div className="row">
                 <button className="btn" onClick={refreshGroups} disabled={!cfg?.authed}>Refresh Groups</button>
                 <button className="btn" onClick={refreshAlbums} disabled={!cfg?.authed}>Refresh Albums</button>
+            <button className="btn" onClick={async () => { await (window as any).api.openThirdPartyLicenses?.(); }}>View Third-Party Licenses</button>
+
               </div>
 
               <div className="small" style={{ marginTop: 10 }}>
@@ -1313,7 +1315,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.4a"}</span>
+          <span className="mono">v{appVersion || "0.7.5"}</span>
         </div>
       </div>
 
