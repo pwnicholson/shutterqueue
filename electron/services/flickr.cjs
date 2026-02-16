@@ -144,6 +144,8 @@ async function uploadPhoto({ apiKey, apiSecret, token, tokenSecret, item }) {
   form.append("is_public", flags.is_public);
   form.append("is_friend", flags.is_friend);
   form.append("is_family", flags.is_family);
+  const safety = Number(item.safetyLevel || 1);
+  form.append("safety_level", String(safety));
 
   const contentType = mime.lookup(item.photoPath) || "application/octet-stream";
   form.append("photo", fs.createReadStream(item.photoPath), { contentType, filename: require("path").basename(item.photoPath) });
@@ -157,6 +159,7 @@ async function uploadPhoto({ apiKey, apiSecret, token, tokenSecret, item }) {
     is_public: flags.is_public,
     is_friend: flags.is_friend,
     is_family: flags.is_family,
+    safety_level: String(Number(item.safetyLevel || 1)),
   };
   const auth = oauth.toHeader(oauth.authorize({ url, method: "POST", data: signatureData }, { key: token, secret: tokenSecret }));
   const headers = { ...auth, ...form.getHeaders() };

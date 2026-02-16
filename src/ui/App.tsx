@@ -11,6 +11,12 @@ const PRIVACY_LABEL: Record<Privacy, string> = {
   private: "Private",
 };
 
+const SAFETY_LABEL: Record<1 | 2 | 3, string> = {
+  1: "Safe",
+  2: "Moderate",
+  3: "Restricted",
+};
+
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
@@ -410,6 +416,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       setQueue(q2);
       if (!activeId && q2.length) setActiveId(q2[0].id);
     }
+
+    // Set default safety level (Safe) for newly added photos missing safetyLevel
+    const newlyAddedNeedsSafety = q.filter(it => paths.includes(it.photoPath) && (it as any).safetyLevel == null);
+    if (newlyAddedNeedsSafety.length) {
+      const patched = newlyAddedNeedsSafety.map(it => ({ ...it, safetyLevel: 1 as any }));
+      const q2 = await window.sq.queueUpdate(patched);
+      setQueue(q2);
+      if (!activeId && q2.length) setActiveId(q2[0].id);
+    }
     showToast(`Added ${paths.length} photo(s).`);
   };
 
@@ -545,6 +560,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const [batchDescription, setBatchDescription] = useState("");
   const [batchPrivacy, setBatchPrivacy] = useState<Privacy | "">( "" );
+  const [batchSafety, setBatchSafety] = useState<"" | 1 | 2 | 3>("");
   const [batchCreateAlbums, setBatchCreateAlbums] = useState("");
 
   const applyBatch = async () => {
@@ -565,6 +581,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       if (batchDescription.trim()) next.description = batchDescription;
       if (batchCreateAlbums.trim()) next.createAlbums = batchCreateAlbums.split(",").map(s => s.trim()).filter(Boolean);
       if (batchPrivacy) next.privacy = batchPrivacy as Privacy;
+      if (batchSafety) next.safetyLevel = batchSafety as 1 | 2 | 3;
       changed.push(next);
     }
     if (!changed.length) return;
@@ -915,15 +932,31 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <textarea className="textarea" value={batchDescription} onChange={(e) => setBatchDescription(e.target.value)} placeholder="Leave blank to keep existing" />
 
                   <div style={{ height: 10 }} />
-                  <label className="small">Privacy (optional)</label>
-                  <select className="input" value={batchPrivacy} onChange={(e) => setBatchPrivacy(e.target.value as any)}>
-                    <option value="">(leave unchanged)</option>
-                    <option value="public">Public</option>
-                    <option value="friends">Friends only</option>
-                    <option value="family">Family only</option>
-                    <option value="friends_family">Friends & Family</option>
-                    <option value="private">Private</option>
-                  </select>
+                  <div className="split">
+                    <div>
+                      <label className="small">Privacy (optional)</label>
+                      <select className="input" value={batchPrivacy} onChange={(e) => setBatchPrivacy(e.target.value as any)}>
+                        <option value="">(leave unchanged)</option>
+                        <option value="public">Public</option>
+                        <option value="friends">Friends only</option>
+                        <option value="family">Family only</option>
+                        <option value="friends_family">Friends & Family</option>
+                        <option value="private">Private</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="small">Safety level (optional)</label>
+                      <select className="input" value={batchSafety} onChange={(e) => {
+                        const v = e.target.value;
+                        setBatchSafety((v === "" ? "" : (Number(v) as any)));
+                      }}>
+                        <option value="">(leave unchanged)</option>
+                        <option value="1">Safe</option>
+                        <option value="2">Moderate</option>
+                        <option value="3">Restricted</option>
+                      </select>
+                    </div>
+                  </div>
 
                   <div style={{ height: 10 }} />
                   <label className="small">Create new albums (comma-separated titles) (optional)</label>
@@ -986,14 +1019,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <textarea className="textarea" value={active.description} onChange={(e) => updateActive({ description: e.target.value })} />
 
                   <div style={{ height: 10 }} />
-                  <label className="small">Privacy</label>
-                  <select className="input" value={active.privacy || "private"} onChange={(e) => updateActive({ privacy: e.target.value as any })}>
-                    <option value="public">Public</option>
-                    <option value="friends">Friends only</option>
-                    <option value="family">Family only</option>
-                    <option value="friends_family">Friends & Family</option>
-                    <option value="private">Private</option>
-                  </select>
+                  <div className="split">
+                    <div>
+                      <label className="small">Privacy</label>
+                      <select className="input" value={active.privacy || "private"} onChange={(e) => updateActive({ privacy: e.target.value as any })}>
+                        <option value="public">Public</option>
+                        <option value="friends">Friends only</option>
+                        <option value="family">Family only</option>
+                        <option value="friends_family">Friends & Family</option>
+                        <option value="private">Private</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="small">Safety level</label>
+                      <select
+                        className="input"
+                        value={String((active as any).safetyLevel || 1)}
+                        onChange={(e) => updateActive({ safetyLevel: Number(e.target.value) as any })}
+                      >
+                        <option value="1">Safe</option>
+                        <option value="2">Moderate</option>
+                        <option value="3">Restricted</option>
+                      </select>
+                    </div>
+                  </div>
 
                   <div className="hr" />
 
@@ -1264,7 +1313,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.4"}</span>
+          <span className="mono">v{appVersion || "0.7.4a"}</span>
         </div>
       </div>
 

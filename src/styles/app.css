@@ -210,3 +210,8 @@ body{
   font-size:14px;
 }
 .chipX:hover{color: var(--text)}
+
+
+/* Dropdown readability (high contrast across themes) */
+select.input{ color-scheme: dark; }
+select.input option{ background: #0b1020; color: #ffffff; }

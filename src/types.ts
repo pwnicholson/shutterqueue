@@ -25,6 +25,7 @@ export type QueueItem = {
   albumIds: string[];
   createAlbums: string[];
   privacy: Privacy;
+  safetyLevel: 1 | 2 | 3; // Flickr safety_level: 1=safe,2=moderate,3=restricted
   status: QueueStatus;
   lastError?: string;
   photoId?: string;

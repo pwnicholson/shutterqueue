@@ -43,6 +43,7 @@ function addPaths(paths) {
       albumIds: [],
       createAlbums: [],
       privacy: "private",
+      safetyLevel: 1,
       status: "pending",
       lastError: "",
       uploadedAt: "",
