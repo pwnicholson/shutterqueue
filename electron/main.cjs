@@ -828,10 +828,18 @@ async function tickScheduler() {
     logEvent("WARN", "Group retry processing failed", { error: msg });
   }
   const bs = Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1))));
-  for (let i = 0; i < bs; i++) {
-    const res = await uploadNowOneInternal();
-    // Stop if nothing left to upload.
-    if (res && res.message && String(res.message).includes("No pending items")) break;
+  // Mark an upload batch as active so the UI can display "current batch" instead of the nextRunAt time.
+  store.set("batchRunActive", true);
+  store.set("batchRunStartedAt", new Date(Date.now()).toISOString());
+  store.set("batchRunSize", bs);
+  try {
+    for (let i = 0; i < bs; i++) {
+      const res = await uploadNowOneInternal();
+      // Stop if nothing left to upload.
+      if (res && res.message && String(res.message).includes("No pending items")) break;
+    }
+  } finally {
+    store.set("batchRunActive", false);
   }
 }
 
@@ -873,5 +881,8 @@ ipcMain.handle("sched:status", async () => ({
   daysEnabled: Boolean(store.get("daysEnabled")),
   allowedDays: store.get("allowedDays") || [1,2,3,4,5],
   resumeOnLaunch: Boolean(store.get("resumeOnLaunch")),
+  batchRunActive: Boolean(store.get("batchRunActive")),
+  batchRunStartedAt: store.get("batchRunStartedAt") || null,
+  batchRunSize: store.get("batchRunSize") || null,
   uploadBatchSize: Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1))))
 }));

@@ -14,6 +14,10 @@ export type ScheduleSettings = {
   allowedDays: number[]; // 0=Sun..6=Sat
   resumeOnLaunch: boolean;
   uploadBatchSize?: number;
+  // UI display helpers (set by main process during an active upload batch run)
+  batchRunActive?: boolean;
+  batchRunStartedAt?: string | null;
+  batchRunSize?: number | null;
 };
 
 export type QueueItem = {

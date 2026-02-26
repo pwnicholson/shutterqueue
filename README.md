@@ -1,4 +1,4 @@
-# ShutterQueue — A paced uploader for Flickr (Electron MVP v0.7.6d)
+# ShutterQueue — A paced uploader for Flickr (Electron MVP v0.7.6e)
 
 ## Setup Process
 

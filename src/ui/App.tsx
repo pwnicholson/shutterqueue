@@ -678,10 +678,41 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     if (!sched?.schedulerOn) return out;
 
     const h = Number(sched?.intervalHours || intervalHours || 24);
-    let t = sched?.nextRunAt ? new Date(sched.nextRunAt).getTime() : Date.now();
+    const batch = Math.max(1, Math.min(999, Math.round(Number((sched as any)?.uploadBatchSize || uploadBatchSize || 1))));
+
+    // When a batch run is active, nextRunAt has already been advanced to the next interval.
+    // For items that are about to upload in the *current* batch, display "current batch" instead of a future timestamp.
+    const isBatchActive = Boolean((sched as any)?.batchRunActive);
+    const batchStartedAt = (sched as any)?.batchRunStartedAt ? String((sched as any).batchRunStartedAt) : null;
+    const batchRunSize = Number((sched as any)?.batchRunSize || batch);
 
     const pending = queue.filter(it => it.status === "pending");
-    const batch = Math.max(1, Math.min(999, Math.round(Number((sched as any)?.uploadBatchSize || uploadBatchSize || 1))));
+    if (!pending.length) return out;
+
+    if (isBatchActive && batchStartedAt) {
+      const startMs = Date.parse(batchStartedAt);
+      const uploadedThisRun = queue.filter(it => it.uploadedAt && Date.parse(it.uploadedAt) >= startMs).length;
+      const uploadingNow = queue.filter(it => it.status === "uploading").length;
+      const remainingInCurrentBatch = Math.max(0, batchRunSize - uploadedThisRun - uploadingNow);
+
+      // Mark the next N pending items as part of the current batch.
+      for (let i = 0; i < pending.length; i++) {
+        if (i < remainingInCurrentBatch) out[pending[i].id] = "__current_batch__";
+      }
+
+      // Schedule the rest starting at nextRunAt (already bumped forward at the start of the run).
+      let t = sched?.nextRunAt ? new Date(sched.nextRunAt).getTime() : Date.now();
+      let j = 0;
+      for (let i = remainingInCurrentBatch; i < pending.length; i++) {
+        out[pending[i].id] = new Date(t).toISOString();
+        j += 1;
+        if (j % batch === 0) t += h * 3600 * 1000;
+      }
+      return out;
+    }
+
+    // Normal case: upcoming schedule starts at nextRunAt.
+    let t = sched?.nextRunAt ? new Date(sched.nextRunAt).getTime() : Date.now();
     let i = 0;
     for (const it of pending) {
       out[it.id] = new Date(t).toISOString();
@@ -689,7 +720,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       if (i % batch === 0) t += h * 3600 * 1000;
     }
     return out;
-  }, [queue, sched, intervalHours]);
+  }, [queue, sched, intervalHours, uploadBatchSize]);
 
   return (
     <div className="container">
@@ -890,7 +921,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           <span className="badge">{PRIVACY_LABEL[it.privacy || "private"]}</span>
                           {(it.groupIds?.length || 0) > 0 ? <span className="badge">{it.groupIds.length} groups</span> : null}
                           {(it.albumIds?.length || 0) > 0 ? <span className="badge">{it.albumIds.length} albums</span> : null}
-                          {sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Scheduled: {formatLocal(scheduledMap[it.id])}</span> : null}
+                          {sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Scheduled: {scheduledMap[it.id] === "__current_batch__" ? "current batch" : formatLocal(scheduledMap[it.id])}</span> : null}
                           {it.status === "done_warn" && !hasPendingGroupRetries && it.lastError ? (
                             <span className="badge warn" title={friendlyIdInMessage(it.lastError)}>warnings: see details</span>
                           ) : null}
