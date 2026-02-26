@@ -1,4 +1,10 @@
-# ShutterQueue — A paced uploader for Flickr (Electron MVP v0.7.7c)
+# ShutterQueue — A paced uploader for Flickr (v0.7.7c)
+
+Releases can be downloaded on our Release page
+https://github.com/pwnicholson/shutterqueue/releases
+
+Note that this is purely vibe-coded using a combination of different AI tools. I am very open to suggestions, feedback, and help optimizing the tool or adding features.
+
 
 ## Setup Process
 
