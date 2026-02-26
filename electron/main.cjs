@@ -625,6 +625,28 @@ ipcMain.handle("flickr:albums", async () => {
     userNsid: store.get("userNsid"),
   });
 });
+ipcMain.handle("flickr:photoUrls", async (_e, { photoId }) => {
+  if (!isAuthed()) throw new Error("Not authorized");
+  if (!photoId) return { thumbUrl: "", previewUrl: "" };
+
+  const cache = store.get("photoUrlCache") || {};
+  const cached = cache[photoId];
+  if (cached && cached.thumbUrl && cached.previewUrl) return cached;
+
+  const urls = await flickr.getPhotoUrls({
+    apiKey: store.get("apiKey"),
+    apiSecret: store.get("apiSecret"),
+    token: store.get("token"),
+    tokenSecret: store.get("tokenSecret"),
+    photoId
+  });
+
+  const compact = { thumbUrl: urls.thumbUrl || "", previewUrl: urls.previewUrl || "" };
+  cache[photoId] = compact;
+  store.set("photoUrlCache", cache);
+  return compact;
+});
+
 
 ipcMain.handle("thumb:getDataUrl", async (_e, { photoPath }) => {
   try {

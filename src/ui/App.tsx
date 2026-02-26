@@ -29,6 +29,25 @@ function uniq<T>(arr: T[]) {
   return Array.from(new Set(arr));
 }
 
+function fileNameFromPath(p?: string) {
+  try {
+    if (!p) return "";
+    const parts = p.split(/[/\\]/);
+    return parts[parts.length - 1] || "";
+  } catch {
+    return "";
+  }
+}
+
+function resolveThumbSrc(item: any, thumbs: Record<string, string | null | undefined>, flickrUrls: Record<string, {thumbUrl:string; previewUrl:string} | undefined>) {
+  const local = item?.photoPath ? thumbs[item.photoPath] : null;
+  if (local) return { thumbSrc: local, previewSrc: local };
+  const pid = item?.photoId;
+  const remote = pid ? flickrUrls[pid] : undefined;
+  if (remote?.thumbUrl) return { thumbSrc: remote.thumbUrl, previewSrc: remote.previewUrl || remote.thumbUrl };
+  return { thumbSrc: "", previewSrc: "" };
+}
+
 
 function parseTagsCsv(csv: string): string[] {
   // Tags are stored comma-separated in UI.
@@ -142,6 +161,12 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
 
   const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
 
+  // Remote (Flickr) URLs used when the local file is missing.
+  const [flickrUrls, setFlickrUrls] = useState<Record<string, { thumbUrl: string; previewUrl: string }>>({});
+
+  // Full-window image preview overlay.
+  const [preview, setPreview] = useState<{ src: string; title?: string } | null>(null);
+
   const [pendingGroupFocus, setPendingGroupFocus] = useState<string>("");
 
   const pendingRetryGroups = useMemo(() => {
@@ -164,11 +189,11 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
 
   const pendingRetryItemsForFocus = useMemo(() => {
     if (!pendingGroupFocus) return [];
-    const out: Array<{ itemId: string; title: string; nextRetryAt?: string | null }> = [];
+    const out: Array<{ itemId: string; title: string; photoPath: string; photoId: string; nextRetryAt?: string | null }> = [];
     for (const item of queue) {
       const st = item.groupAddStates?.[pendingGroupFocus];
       if (st?.status === "retry") {
-        out.push({ itemId: item.id, title: item.title || "(untitled)", nextRetryAt: st.nextRetryAt || null });
+        out.push({ itemId: item.id, title: item.title || "(untitled)", photoPath: item.photoPath, photoId: item.photoId || "", nextRetryAt: st.nextRetryAt || null });
       }
     }
     out.sort((a, b) => String(a.nextRetryAt || "").localeCompare(String(b.nextRetryAt || "")));
@@ -380,6 +405,14 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         if (thumbs[it.photoPath] !== undefined) continue;
         const dataUrl = await window.sq.getThumbDataUrl(it.photoPath);
         setThumbs(t => ({ ...t, [it.photoPath]: dataUrl }));
+        if (!dataUrl && it.photoId && flickrUrls[it.photoId] === undefined) {
+          try {
+            const u = await window.sq.getFlickrPhotoUrls(it.photoId);
+            setFlickrUrls(m => ({ ...m, [it.photoId]: u }));
+          } catch {
+            // ignore
+          }
+        }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -864,8 +897,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               </div>
 
               <div className="queue">
-                {queue.map((it) => {
-                  const thumb = thumbs[it.photoPath];
+	                {queue.map((it) => {
+	                  const srcs = resolveThumbSrc(it, thumbs, flickrUrls);
+	                  const thumb = srcs.thumbSrc;
                   const isSelected = selectedSet.has(it.id);
                   const hasPendingGroupRetries = !!it.groupAddStates && Object.values(it.groupAddStates).some(st => st?.status === "retry");
                   const pendingGroupsTooltip = hasPendingGroupRetries
@@ -908,7 +942,21 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         onDropReorder(fromId, it.id, pos);
                       }}
                     >
-                      <img className={`thumb ${thumb ? "" : "empty"}`} src={thumb || ""} alt="" />
+	                      <img
+	                        className={`thumb ${thumb ? "" : "empty"}`}
+	                        src={thumb || ""}
+	                        alt=""
+	                        onClick={(e) => {
+	                          // Prevent row-click selection toggle when opening preview.
+	                          e.stopPropagation();
+	                          if (!srcs.previewSrc) return;
+	                          setPreview({
+	                            src: srcs.previewSrc,
+	                            title: it.title || fileNameFromPath(it.photoPath),
+	                          });
+	                        }}
+	                        style={{ cursor: srcs.previewSrc ? "pointer" : "default" }}
+	                      />
                       <div className="qmid">
                         <div className="qtitle">{it.title || "(untitled)"}</div>
                         <div className="qpath">{it.photoPath}</div>
@@ -1389,7 +1437,27 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     ) : (
                       pendingRetryItemsForFocus.map((it) => (
                         <div key={it.itemId} className="listrow">
-                          <div style={{ flex: 1 }}>{it.title}</div>
+                          <div style={{ flex: 1, display: "flex", gap: 10, alignItems: "center" }}>
+                            {(() => {
+                              const fullItem = queue.find(q => q.id === it.itemId);
+                              const srcs = resolveThumbSrc(fullItem, thumbs, flickrUrls);
+                              const fname = fileNameFromPath(it.photoPath);
+                              return (
+                                <>
+                                  <img
+                                    className={`thumb ${srcs.thumbSrc ? "" : "empty"}`}
+                                    src={srcs.thumbSrc || ""}
+                                    alt=""
+                                    style={{ width: 34, height: 34, cursor: srcs.previewSrc ? "pointer" : "default" }}
+                                    onClick={() => { if (srcs.previewSrc) setPreview({ src: srcs.previewSrc, title: it.title }); }}
+                                  />
+                                  <div>
+                                    <div>{it.title} <span className="small">({fname})</span></div>
+                                  </div>
+                                </>
+                              );
+                            })()}
+                          </div>
                           <div className="small" style={{ fontFamily: "ui-monospace" }}>{sched?.schedulerOn ? formatLocal(it.nextRetryAt) : "waiting for scheduler restart"}</div>
                           <button
                             className="btn danger"
@@ -1442,9 +1510,20 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.5h"}</span>
+          <span className="mono">v{appVersion || "0.7.7c"}</span>
         </div>
       </div>
+
+      {preview && (
+              <div className="preview-overlay" onClick={() => setPreview(null)}>
+                <div className="preview-top">
+                  <button className="preview-close" onClick={(e) => { e.stopPropagation(); setPreview(null); }}>×</button>
+                </div>
+                <div className="preview-body" onClick={(e) => e.stopPropagation()}>
+                  <img src={preview.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                </div>
+              </div>
+      )}
 
     </div>
   );

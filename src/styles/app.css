@@ -1,5 +1,5 @@
 :root{
-  --bg:#0b1020;
+  --bg:#0C0F1C;
   --panel:#101a33;
   --panel2:#0f1730;
   --text:#e8eefc;
@@ -15,9 +15,7 @@
 html,body{height:100%}
 body{
   margin:0;
-  background: radial-gradient(1000px 600px at 10% 0%, rgba(139,211,255,0.12), transparent 60%),
-              radial-gradient(1000px 600px at 90% 20%, rgba(255,107,138,0.10), transparent 60%),
-              var(--bg);
+  background: var(--bg);
   color:var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
 }
@@ -215,3 +213,36 @@ body{
 /* Dropdown readability (high contrast across themes) */
 select.input{ color-scheme: dark; }
 select.input option{ background: #0b1020; color: #ffffff; }
+
+/* Full-window image preview */
+.preview-overlay{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.78);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+}
+.preview-top{
+  display:flex;
+  justify-content:flex-end;
+  padding:10px 12px;
+}
+.preview-close{
+  width:40px;
+  height:40px;
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+}
+.preview-body{
+  flex:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding: 8px 12px 18px 12px;
+}

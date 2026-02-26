@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("sq", {
 
   fetchGroups: () => ipcRenderer.invoke("flickr:groups"),
   fetchAlbums: () => ipcRenderer.invoke("flickr:albums"),
+  getFlickrPhotoUrls: (photoId) => ipcRenderer.invoke("flickr:photoUrls", { photoId }),
 
   getThumbDataUrl: (photoPath) => ipcRenderer.invoke("thumb:getDataUrl", { photoPath }),
 

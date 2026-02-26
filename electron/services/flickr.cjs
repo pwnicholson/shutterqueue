@@ -219,6 +219,56 @@ async function listAlbums({ apiKey, apiSecret, token, tokenSecret, userNsid }) {
   return list.map(a => ({ id: a.id, title: a.title?._content || a.title || "" }));
 }
 
+
+async function getPhotoUrls({ apiKey, apiSecret, token, tokenSecret, photoId }) {
+  const j = await flickrRestCall({
+    apiKey,
+    apiSecret,
+    token,
+    tokenSecret,
+    methodName: "flickr.photos.getSizes",
+    params: { photo_id: photoId }
+  });
+  const sizes = (j && j.sizes && Array.isArray(j.sizes.size)) ? j.sizes.size : [];
+  // Normalize numbers
+  const parsed = sizes.map(s => ({
+    label: String(s.label || ""),
+    width: Number(s.width || 0),
+    height: Number(s.height || 0),
+    source: String(s.source || ""),
+    url: String(s.url || "")
+  })).filter(s => s.source);
+
+  const byLabel = new Map(parsed.map(s => [s.label, s]));
+
+  const pickThumb = () => {
+    const prefs = ["Small 320", "Small", "Thumbnail", "Square 150", "Square"];
+    for (const lab of prefs) if (byLabel.has(lab)) return byLabel.get(lab);
+    // fallback: smallest >= 120, else smallest overall
+    const ge = parsed.filter(s => s.width >= 120).sort((a,b)=>a.width-b.width);
+    if (ge.length) return ge[0];
+    return parsed.sort((a,b)=>a.width-b.width)[0];
+  };
+
+  const pickPreview = () => {
+    const prefs = ["Large 1600", "Large 2048", "Large", "Medium 800", "Medium 640", "Medium"];
+    for (const lab of prefs) if (byLabel.has(lab)) return byLabel.get(lab);
+    // fallback: largest <= 2048 else largest overall
+    const le = parsed.filter(s => s.width && s.width <= 2048).sort((a,b)=>b.width-a.width);
+    if (le.length) return le[0];
+    return parsed.sort((a,b)=>b.width-a.width)[0];
+  };
+
+  const t = pickThumb();
+  const p = pickPreview();
+  return {
+    thumbUrl: t ? t.source : "",
+    previewUrl: p ? p.source : (t ? t.source : ""),
+    sizes: parsed
+  };
+}
+
+
 module.exports = {
   getRequestToken,
   getAuthorizeUrl,
@@ -227,5 +277,6 @@ module.exports = {
   addPhotoToAlbum,
   addPhotoToGroup,
   listGroups,
-  listAlbums
+  listAlbums,
+  getPhotoUrls
 };
