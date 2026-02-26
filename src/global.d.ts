@@ -7,6 +7,8 @@ declare global {
     sq: {
       getConfig: () => Promise<any>;
       setApiKeySecret: (apiKey: string, apiSecret: string) => Promise<any>;
+      setUploadBatchSize: (uploadBatchSize: number) => Promise<any>;
+      setSchedulerSettings: (payload: any) => Promise<any>;
       startOAuth: () => Promise<any>;
       finishOAuth: (verifier: string) => Promise<any>;
       logout: () => Promise<any>;

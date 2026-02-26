@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("sq", {
   getConfig: () => ipcRenderer.invoke("cfg:get"),
   setApiKeySecret: (apiKey, apiSecret) => ipcRenderer.invoke("cfg:setKeys", { apiKey, apiSecret }),
+  setUploadBatchSize: (uploadBatchSize) => ipcRenderer.invoke("cfg:setUploadBatchSize", { uploadBatchSize }),
+  setSchedulerSettings: (payload) => ipcRenderer.invoke("cfg:setSchedulerSettings", payload),
   startOAuth: () => ipcRenderer.invoke("oauth:start"),
   finishOAuth: (verifier) => ipcRenderer.invoke("oauth:finish", { verifier }),
   logout: () => ipcRenderer.invoke("oauth:logout"),

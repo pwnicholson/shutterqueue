@@ -276,6 +276,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [daysEnabled, setDaysEnabled] = useState<boolean>(false);
   const [allowedDays, setAllowedDays] = useState<number[]>([1,2,3,4,5]);
   const [resumeOnLaunch, setResumeOnLaunch] = useState<boolean>(false);
+  const [uploadBatchSize, setUploadBatchSize] = useState<number>(1);
   const [skipOvernight, setSkipOvernight] = useState<boolean>(false);
   const [sched, setSched] = useState<any>(null);
 
@@ -298,6 +299,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setDaysEnabled(Boolean(c.daysEnabled));
     setAllowedDays(Array.isArray(c.allowedDays) ? c.allowedDays : [1,2,3,4,5]);
     setResumeOnLaunch(Boolean(c.resumeOnLaunch));
+    setUploadBatchSize(Math.max(1, Math.min(999, Math.round(Number((c as any).uploadBatchSize || 1)))));
 
     // scheduler defaults (only set once if missing)
     if (typeof c.timeWindowEnabled !== "boolean") setTimeWindowEnabled(false);
@@ -341,6 +343,19 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     })();
   }, []);
   useEffect(() => { refreshAll(); }, []);
+
+  // Background work can update app state without user interaction (especially in packaged builds).
+  // Poll lightly to keep UI consistent.
+  const refreshAllRef = useRef(refreshAll);
+  useEffect(() => {
+    refreshAllRef.current = refreshAll;
+  });
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      void refreshAllRef.current?.();
+    }, 1500);
+    return () => window.clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (!cfg?.authed) return;
@@ -527,6 +542,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     showToast(res.ok ? "Uploaded next item." : `Upload failed: ${res.error || "unknown error"}`);
   };
 
+
+  const persistScheduler = (partial: any) => {
+    try {
+      // Persist scheduler settings immediately so the periodic refresh does not overwrite user changes.
+      void window.sq.setSchedulerSettings(partial);
+    } catch {
+      // ignore
+    }
+  };
+
   const startSched = async () => {
     const h = Math.max(1, Math.min(168, Math.round(Number(intervalHours || 24))));
     const uploadImmediately = window.confirm(
@@ -539,6 +564,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       daysEnabled,
       allowedDays,
       resumeOnLaunch,
+      uploadBatchSize,
     });
     await refreshAll();
     showToast("Scheduler started.");
@@ -655,9 +681,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     let t = sched?.nextRunAt ? new Date(sched.nextRunAt).getTime() : Date.now();
 
     const pending = queue.filter(it => it.status === "pending");
+    const batch = Math.max(1, Math.min(999, Math.round(Number((sched as any)?.uploadBatchSize || uploadBatchSize || 1))));
+    let i = 0;
     for (const it of pending) {
       out[it.id] = new Date(t).toISOString();
-      t += h * 3600 * 1000;
+      i += 1;
+      if (i % batch === 0) t += h * 3600 * 1000;
     }
     return out;
   }, [queue, sched, intervalHours]);
@@ -814,7 +843,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           .filter(([, st]) => st?.status === "retry")
                           .map(([gid, st]) => {
                             const gname = groupNameById.get(String(gid)) || String(gid);
-                            const next = st?.nextRetryAt ? formatLocal(st.nextRetryAt) : "—";
+                            const next = (!sched?.schedulerOn) ? "waiting for scheduler restart" : (st?.nextRetryAt ? formatLocal(st.nextRetryAt) : "—");
                             const msg = st?.message ? friendlyIdInMessage(st.message) : "Will retry";
                             return `${gname} • next: ${next} • ${msg}`;
                           })
@@ -862,6 +891,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           {(it.groupIds?.length || 0) > 0 ? <span className="badge">{it.groupIds.length} groups</span> : null}
                           {(it.albumIds?.length || 0) > 0 ? <span className="badge">{it.albumIds.length} albums</span> : null}
                           {sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Scheduled: {formatLocal(scheduledMap[it.id])}</span> : null}
+                          {it.status === "done_warn" && !hasPendingGroupRetries && it.lastError ? (
+                            <span className="badge warn" title={friendlyIdInMessage(it.lastError)}>warnings: see details</span>
+                          ) : null}
                           {it.uploadedAt ? <span className="badge">Uploaded: {formatLocal(it.uploadedAt)}</span> : null}
                           {hasPendingGroupRetries ? (
                             <span className="badge warn" title={pendingGroupsTooltip || ""}>Pending Group Additions</span>
@@ -1106,7 +1138,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div style={{ height: 14 }} />
                   <button className="btn primary" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
-                  {active.lastError ? <div className="small" style={{ color: "var(--bad)", marginTop: 10 }}>{friendlyIdInMessage(active.lastError)}</div> : null}
+                  {active.lastError ? (() => {
+                    const msg = friendlyIdInMessage(active.lastError) || "";
+                    const parts = msg.split("|").map((s) => s.trim()).filter(Boolean);
+                    if (parts.length <= 1) {
+                      return <div className="small" style={{ color: "var(--bad)", marginTop: 10 }}>{msg}</div>;
+                    }
+                    return (
+                      <ul className="small" style={{ color: "var(--bad)", marginTop: 10, marginBottom: 0, paddingLeft: 18 }}>
+                        {parts.map((p, i) => <li key={i}>{p}</li>)}
+                      </ul>
+                    );
+                  })() : null}
                 </>
               )}
             </div>
@@ -1136,24 +1179,63 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 min={1}
                 max={168}
                 value={intervalHours}
-                onChange={(e) => setIntervalHours(parseInt(e.target.value || "1", 10))}
+                onChange={(e) => {
+                    const raw = String((e.target as any).value ?? "");
+                    const parsed = raw.trim() === "" ? 1 : Number.parseInt(raw, 10);
+                    const v = Math.max(1, Math.min(168, Math.round(Number.isFinite(parsed) ? parsed : 1)));
+                    setIntervalHours(v);
+                    persistScheduler({ intervalHours: v });
+                  }}
+                style={{ maxWidth: 160 }}
+              />
+
+              <div style={{ height: 10 }} />
+              <label className="small">Upload batch size per run (1–999)</label>
+              <input
+                className="input"
+                type="number"
+                step={1}
+                min={1}
+                max={999}
+                value={uploadBatchSize}
+                onChange={(e) => {
+                    const raw = String((e.target as any).value ?? "");
+                    const parsed = raw.trim() === "" ? 1 : Number.parseInt(raw, 10);
+                    const v = Math.max(1, Math.min(999, Math.round(Number.isFinite(parsed) ? parsed : 1)));
+                    setUploadBatchSize(v);
+                    // Persist immediately so the polling refresh does not overwrite the UI value.
+                    persistScheduler({ uploadBatchSize: v });
+                  }}
                 style={{ maxWidth: 160 }}
               />
 
               <div style={{ height: 10 }} />
               <label className="listrow" style={{ padding: 0 }}>
-                <input type="checkbox" checked={timeWindowEnabled} onChange={(e) => { setTimeWindowEnabled(e.target.checked); if (e.target.checked) setDaysEnabled(false); }} />
+                <input type="checkbox" checked={timeWindowEnabled} onChange={(e) => {
+                  const checked = e.target.checked;
+                  setTimeWindowEnabled(checked);
+                  if (checked) setDaysEnabled(false);
+                  persistScheduler({ timeWindowEnabled: checked, daysEnabled: checked ? false : daysEnabled });
+                }} />
                 <span className="small">Only upload during these times</span>
               </label>
               <div style={{ height: 8 }} />
               <div className="row">
                 <div style={{ minWidth: 180 }}>
                   <div className="small">Start</div>
-                  <input className="input" type="time" value={windowStart} disabled={!timeWindowEnabled} onChange={(e) => setWindowStart(e.target.value)} style={{ opacity: timeWindowEnabled ? 1 : 0.5 }} />
+                  <input className="input" type="time" value={windowStart} disabled={!timeWindowEnabled} onChange={(e) => {
+                      const v = e.target.value;
+                      setWindowStart(v);
+                      persistScheduler({ windowStart: v });
+                    }} style={{ opacity: timeWindowEnabled ? 1 : 0.5 }} />
                 </div>
                 <div style={{ minWidth: 180 }}>
                   <div className="small">End</div>
-                  <input className="input" type="time" value={windowEnd} disabled={!timeWindowEnabled} onChange={(e) => setWindowEnd(e.target.value)} style={{ opacity: timeWindowEnabled ? 1 : 0.5 }} />
+                  <input className="input" type="time" value={windowEnd} disabled={!timeWindowEnabled} onChange={(e) => {
+                      const v = e.target.value;
+                      setWindowEnd(v);
+                      persistScheduler({ windowEnd: v });
+                    }} style={{ opacity: timeWindowEnabled ? 1 : 0.5 }} />
                 </div>
               </div>
               <div className="small" style={{ marginTop: 6 }}>
@@ -1163,7 +1245,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               <div className="hr" />
 
               <label className="listrow" style={{ padding: 0, opacity: timeWindowEnabled ? 0.5 : 1 }}>
-                <input type="checkbox" checked={daysEnabled} disabled={timeWindowEnabled} onChange={(e) => setDaysEnabled(e.target.checked)} />
+                <input type="checkbox" checked={daysEnabled} disabled={timeWindowEnabled} onChange={(e) => {
+                  const checked = e.target.checked;
+                  setDaysEnabled(checked);
+                  if (checked) setTimeWindowEnabled(false);
+                  persistScheduler({ daysEnabled: checked, timeWindowEnabled: checked ? false : timeWindowEnabled });
+                }} />
                 <span className="small">Only upload on selected days</span>
               </label>
               <div style={{ height: 8 }} />
@@ -1175,8 +1262,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       disabled={!daysEnabled || timeWindowEnabled}
                       checked={allowedDays.includes(idx)}
                       onChange={(e) => {
-                        if (e.target.checked) setAllowedDays(prev => Array.from(new Set([...prev, idx])).sort());
-                        else setAllowedDays(prev => prev.filter(x => x !== idx));
+                        setAllowedDays(prev => {
+                          const next = e.target.checked
+                            ? Array.from(new Set([...prev, idx])).sort()
+                            : prev.filter(x => x !== idx);
+                          persistScheduler({ allowedDays: next });
+                          return next;
+                        });
                       }}
                     />
                     <span className="small">{d}</span>
@@ -1187,7 +1279,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               <div className="hr" />
 
               <label className="listrow" style={{ padding: 0 }}>
-                <input type="checkbox" checked={resumeOnLaunch} onChange={(e) => setResumeOnLaunch(e.target.checked)} />
+                <input type="checkbox" checked={resumeOnLaunch} onChange={(e) => {
+                  const checked = e.target.checked;
+                  setResumeOnLaunch(checked);
+                  persistScheduler({ resumeOnLaunch: checked });
+                }} />
                 <span className="small">Automatically resume scheduler when app restarts</span>
               </label>
 
@@ -1263,7 +1359,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       pendingRetryItemsForFocus.map((it) => (
                         <div key={it.itemId} className="listrow">
                           <div style={{ flex: 1 }}>{it.title}</div>
-                          <div className="small" style={{ fontFamily: "ui-monospace" }}>{formatLocal(it.nextRetryAt)}</div>
+                          <div className="small" style={{ fontFamily: "ui-monospace" }}>{sched?.schedulerOn ? formatLocal(it.nextRetryAt) : "waiting for scheduler restart"}</div>
                           <button
                             className="btn danger"
                             style={{ padding: "6px 10px", borderRadius: 10 }}
@@ -1315,7 +1411,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.5a"}</span>
+          <span className="mono">v{appVersion || "0.7.5h"}</span>
         </div>
       </div>
 

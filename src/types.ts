@@ -13,6 +13,7 @@ export type ScheduleSettings = {
   daysEnabled: boolean;
   allowedDays: number[]; // 0=Sun..6=Sat
   resumeOnLaunch: boolean;
+  uploadBatchSize?: number;
 };
 
 export type QueueItem = {

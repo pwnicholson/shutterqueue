@@ -31,6 +31,41 @@ const flickr = require("./services/flickr.cjs");
 
 let win = null;
 
+function getIconPath(active) {
+  // Use a monochrome icon when scheduler is off OR there is no pending work.
+  const name = active ? "icon.png" : "icon-mono.png";
+  return path.join(__dirname, "..", "assets", name);
+}
+
+function hasPendingWork() {
+  try {
+    const q = queue.loadQueue?.() || [];
+    for (const it of q) {
+      if (!it) continue;
+      if (it.status && it.status !== "done") return true;
+      if (it.groupAddStates && typeof it.groupAddStates === "object") {
+        const states = it.groupAddStates;
+        if (Object.values(states).some((gs) => gs && (gs.status === "retry" || gs.status === "pending"))) return true;
+      }
+    }
+  } catch (_) {
+    // ignore
+  }
+  return false;
+}
+
+function updateWindowIcon() {
+  if (!win || win.isDestroyed()) return;
+  const active = !!store.get("schedulerOn") && hasPendingWork();
+  const iconPath = getIconPath(active);
+  try {
+    // setIcon is supported on Windows/Linux. On macOS it is ignored.
+    win.setIcon(iconPath);
+  } catch (_) {
+    // ignore
+  }
+}
+
 const store = new Store({
   name: "shutterqueue",
   defaults: {
@@ -277,6 +312,15 @@ async function attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item, 
 
     if (interp.status === "done") {
       // Terminal but non-error outcomes (already in pool, moderation queue)
+      states[groupId] = {
+        status: "done",
+        message: msg,
+        retryCount: 0,
+        firstFailedAt: "",
+        nextRetryAt: "",
+        lastAttemptAt: nowIso(),
+        code
+      };
       logEvent("INFO", "Group add completed with info", { id: item.id, photoId, groupId, code, info: msg });
       return { ok: true, code, message: msg, info: true };
     } else {
@@ -324,7 +368,17 @@ async function processDueGroupRetries({ apiKey, apiSecret, token, tokenSecret, m
     if (attempts >= (maxAttempts || 5)) break;
   }
 
-  if (changed) queue.saveQueue(q);
+  if (changed) {
+    // Merge into latest queue to avoid resurrecting items removed by the UI while retries are processing.
+    const latest = queue.loadQueue();
+    const byId = new Map(latest.map((x) => [x.id, x]));
+    for (const it of q) {
+      const cur = byId.get(it.id);
+      if (!cur) continue; // item was removed
+      byId.set(it.id, it);
+    }
+    queue.saveQueue(Array.from(byId.values()));
+  }
   return { ok: true, attempts };
 }
 
@@ -333,7 +387,7 @@ function createWindow() {
     width: 1200,
     height: 820,
     backgroundColor: "#0b1020",
-    icon: path.join(__dirname, "..", "assets", "icon.png"),
+    icon: getIconPath(!!store.get("schedulerOn") && hasPendingWork()),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -348,6 +402,9 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   }
+
+  // Keep icon in sync (Windows/Linux). Safe no-op on macOS.
+  updateWindowIcon();
 }
 
 
@@ -366,11 +423,17 @@ ipcMain.handle("open-third-party-licenses", async () => {
 
 app.whenReady().then(() => {
   createWindow();
+  // Keep icon in sync with scheduler/work state.
+  setInterval(() => updateWindowIcon(), 2000);
   // Prevent stale group/album warnings from persisting across launches.
   // Per-item warnings live on queue items; global lastError should be reserved for fatal/authorization errors.
   const le = String(store.get("lastError") || "");
   if (/\b(group|album)\s+[^\s:]+\s*:/i.test(le)) {
     store.set("lastError", "");
+  }
+  if (!store.get("resumeOnLaunch")) {
+    // Do not keep scheduler running across restarts unless explicitly enabled.
+    store.set("schedulerOn", false);
   }
   if (store.get("resumeOnLaunch") && store.get("schedulerOn")) {
     // Resume scheduler loop
@@ -406,7 +469,8 @@ ipcMain.handle("cfg:get", async () => ({
   windowEnd: store.get("windowEnd") || "22:00",
   daysEnabled: Boolean(store.get("daysEnabled")),
   allowedDays: store.get("allowedDays") || [1,2,3,4,5],
-  resumeOnLaunch: Boolean(store.get("resumeOnLaunch"))
+  resumeOnLaunch: Boolean(store.get("resumeOnLaunch")),
+  uploadBatchSize: Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1))))
 }));
 
 ipcMain.handle("cfg:setKeys", async (_e, { apiKey, apiSecret }) => {
@@ -415,6 +479,92 @@ ipcMain.handle("cfg:setKeys", async (_e, { apiKey, apiSecret }) => {
   if (typeof apiSecret === "string" && apiSecret.trim().length) store.set("apiSecret", apiSecret.trim());
   return { ok: true };
 });
+
+ipcMain.handle("cfg:setUploadBatchSize", async (_e, { uploadBatchSize }) => {
+  const v = Math.max(1, Math.min(999, Math.round(Number(uploadBatchSize || 1))));
+  store.set("uploadBatchSize", v);
+  return { ok: true, uploadBatchSize: v };
+});
+
+ipcMain.handle("cfg:setSchedulerSettings", async (_e, payload) => {
+  const out = {};
+  // intervalHours: 1–168
+  if (payload && Object.prototype.hasOwnProperty.call(payload, "intervalHours")) {
+    const h = Math.max(1, Math.min(168, Math.round(Number(payload.intervalHours || 24))));
+    store.set("intervalHours", h);
+    out.intervalHours = h;
+  }
+
+  // uploadBatchSize: 1–999
+  if (payload && Object.prototype.hasOwnProperty.call(payload, "uploadBatchSize")) {
+    const v = Math.max(1, Math.min(999, Math.round(Number(payload.uploadBatchSize || 1))));
+    store.set("uploadBatchSize", v);
+    out.uploadBatchSize = v;
+  }
+
+  // resumeOnLaunch
+  if (payload && Object.prototype.hasOwnProperty.call(payload, "resumeOnLaunch")) {
+    const v = Boolean(payload.resumeOnLaunch);
+    store.set("resumeOnLaunch", v);
+    out.resumeOnLaunch = v;
+    if (!v) {
+      // If user disables resume-on-launch, scheduler must not remain "on" across restarts.
+      store.set("schedulerOn", false);
+      out.schedulerOn = false;
+    }
+  }
+
+  // time window settings
+  if (payload && Object.prototype.hasOwnProperty.call(payload, "timeWindowEnabled")) {
+    const v = Boolean(payload.timeWindowEnabled);
+    store.set("timeWindowEnabled", v);
+    out.timeWindowEnabled = v;
+    // mutual exclusion is handled in UI, but keep store sane if both get set
+    if (v) {
+      store.set("daysEnabled", false);
+      out.daysEnabled = false;
+    }
+  }
+  if (payload && Object.prototype.hasOwnProperty.call(payload, "windowStart")) {
+    const v = String(payload.windowStart || "07:00");
+    store.set("windowStart", v);
+    out.windowStart = v;
+  }
+  if (payload && Object.prototype.hasOwnProperty.call(payload, "windowEnd")) {
+    const v = String(payload.windowEnd || "22:00");
+    store.set("windowEnd", v);
+    out.windowEnd = v;
+  }
+
+  // day-of-week settings
+  if (payload && Object.prototype.hasOwnProperty.call(payload, "daysEnabled")) {
+    const v = Boolean(payload.daysEnabled);
+    store.set("daysEnabled", v);
+    out.daysEnabled = v;
+    if (v) {
+      store.set("timeWindowEnabled", false);
+      out.timeWindowEnabled = false;
+    }
+  }
+  if (payload && Object.prototype.hasOwnProperty.call(payload, "allowedDays")) {
+    const a = Array.isArray(payload.allowedDays) ? payload.allowedDays : [1,2,3,4,5];
+    // sanitize: integers 0–6, unique
+    const uniq = [];
+    for (const x of a) {
+      const n = Number(x);
+      if (!Number.isFinite(n)) continue;
+      const i = Math.max(0, Math.min(6, Math.trunc(n)));
+      if (!uniq.includes(i)) uniq.push(i);
+    }
+    const v = uniq.length ? uniq : [1,2,3,4,5];
+    store.set("allowedDays", v);
+    out.allowedDays = v;
+  }
+
+  return { ok: true, updated: out };
+});
+
+
 
 ipcMain.handle("oauth:start", async () => {
   const apiKey = store.get("apiKey");
@@ -535,6 +685,9 @@ async function uploadNowOneInternal() {
   const apiSecret = store.get("apiSecret");
   const token = store.get("token");
   const tokenSecret = store.get("tokenSecret");
+
+  // Prevent overlapping uploads
+  uploadLock = true;
 
   try {
     if (!isAuthed()) throw new Error("Not authorized");
@@ -674,7 +827,12 @@ async function tickScheduler() {
     const msg = e?.message ? String(e.message) : String(e);
     logEvent("WARN", "Group retry processing failed", { error: msg });
   }
-  await uploadNowOneInternal();
+  const bs = Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1))));
+  for (let i = 0; i < bs; i++) {
+    const res = await uploadNowOneInternal();
+    // Stop if nothing left to upload.
+    if (res && res.message && String(res.message).includes("No pending items")) break;
+  }
 }
 
 ipcMain.handle("sched:start", async (_e, { intervalHours, uploadImmediately, settings }) => {
@@ -687,6 +845,8 @@ ipcMain.handle("sched:start", async (_e, { intervalHours, uploadImmediately, set
     store.set("daysEnabled", Boolean(settings.daysEnabled));
     store.set("allowedDays", Array.isArray(settings.allowedDays) ? settings.allowedDays : [1,2,3,4,5]);
     store.set("resumeOnLaunch", Boolean(settings.resumeOnLaunch));
+    const bs = Math.max(1, Math.min(999, Math.round(Number(settings.uploadBatchSize || store.get("uploadBatchSize") || 1))));
+    store.set("uploadBatchSize", bs);
   }
   store.set("schedulerOn", true);
   scheduleNext(uploadImmediately ? 0 : h);
@@ -712,5 +872,6 @@ ipcMain.handle("sched:status", async () => ({
   windowEnd: store.get("windowEnd") || "22:00",
   daysEnabled: Boolean(store.get("daysEnabled")),
   allowedDays: store.get("allowedDays") || [1,2,3,4,5],
-  resumeOnLaunch: Boolean(store.get("resumeOnLaunch"))
+  resumeOnLaunch: Boolean(store.get("resumeOnLaunch")),
+  uploadBatchSize: Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1))))
 }));
