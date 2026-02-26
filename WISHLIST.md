@@ -2,6 +2,7 @@
 
 ## Next
 
+* \[ ] Fix preview full-screen display sizing (fit to window)
 * \[ ] Fix scheduler starter dialog to offer "now, wait, or cancel" options.
 
 ## Soon
