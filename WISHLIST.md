@@ -7,7 +7,9 @@
 ## Soon
 
 * \[ ] Click and drag to move item priority for the group add list
+* \[ ] Group lists: filterable (type text to filter to groups that have a string in their name)
 * \[ ] Group lists: sort selected/waiting groups alphabetically at top, then remaining groups alphabetically
+* \[ ] Minimize to System Tray on Windows and the status Menu/Bar on Mac
 
 ## Nice-to-have
 
