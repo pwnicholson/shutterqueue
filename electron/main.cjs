@@ -420,7 +420,7 @@ function createWindow() {
     backgroundColor: "#0b1020",
     icon: getIconPath(!!store.get("schedulerOn") && hasPendingWork()),
     webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
+      preload: path.join(app.getAppPath(), "electron", "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
     },
