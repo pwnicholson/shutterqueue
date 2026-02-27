@@ -1518,7 +1518,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.7c"}</span>
+          <span className="mono">v{appVersion || "0.7.7b"}</span>
         </div>
       </div>
 
@@ -1528,7 +1528,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <button className="preview-close" onClick={(e) => { e.stopPropagation(); setPreview(null); }}>×</button>
                 </div>
                 <div className="preview-body" onClick={(e) => e.stopPropagation()}>
-                  <img src={preview.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                  {/* ensure the image fits the viewport by its longest edge and keeps aspect ratio */}
+                  <img
+                    src={preview.src}
+                    alt=""
+                    style={{
+                      maxWidth: "100vw",
+                      maxHeight: "100vh",
+                      objectFit: "contain",
+                    }}
+                  />
                 </div>
               </div>
       )}

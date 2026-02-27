@@ -1,4 +1,4 @@
-# ShutterQueue — A paced uploader for Flickr (v0.7.7c)
+# ShutterQueue — A paced uploader for Flickr (v0.7.7b)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases

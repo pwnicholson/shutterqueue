@@ -2,7 +2,7 @@
 
 ## Next
 
-* \[ ] Fix preview full-screen display sizing (fit to window)
+* [x] Fix preview full-screen display sizing (fit to window)
 * [x] Fix scheduler starter dialog to offer "now, wait, or cancel" options.
 * \[ ] Store API keys in a more secure fashion
 
