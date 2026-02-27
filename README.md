@@ -1,4 +1,4 @@
-# ShutterQueue — A paced uploader for Flickr (v0.7.7d)
+# ShutterQueue — A paced uploader for Flickr (v0.7.8)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
@@ -31,7 +31,17 @@ First, install the app!
 
    * This should return you to the ShutterQueue app and you should now be logged in!
 
+## Security
 
+As of v0.7.8, ShutterQueue stores your sensitive credentials (API Secret, OAuth tokens) in an encrypted format using Electron's **`safeStorage` API**. This API leverages your operating system's native credential storage:
+
+- **Windows**: Credentials are encrypted using the Windows Data Protection API (DPAPI)  
+- **macOS**: Credentials are stored in the system Keychain
+- **Linux**: Credentials are encrypted and stored in the user's credential store
+
+This means your credentials are protected at the OS level and cannot be easily extracted from ShutterQueue's configuration files. Your API Key is stored in plain text (since it's public), but your API Secret and OAuth tokens are always encrypted at rest.
+
+Note: If someone gains access to your computer's user account, they can still decrypt these credentials. This is a fundamental limitation of any local application.
 
 ## Licenses
 

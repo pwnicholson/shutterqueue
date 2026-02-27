@@ -1,10 +1,31 @@
-const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const Store = require("electron-store");
 
 
 const os = require("os");
+
+// Encryption helpers for sensitive credentials
+function encryptCredential(plaintext) {
+  try {
+    if (!plaintext) return "";
+    return safeStorage.encryptString(String(plaintext)).toString("base64");
+  } catch (e) {
+    logEvent("WARN", "Failed to encrypt credential", { error: String(e) });
+    return "";
+  }
+}
+
+function decryptCredential(encrypted) {
+  try {
+    if (!encrypted) return "";
+    return safeStorage.decryptString(Buffer.from(String(encrypted), "base64")).toString("utf-8");
+  } catch (e) {
+    logEvent("WARN", "Failed to decrypt credential", { error: String(e) });
+    return "";
+  }
+}
 
 const ROOT_DIR = path.join(os.homedir(), ".shutterqueue");
 const LOG_PATH = path.join(ROOT_DIR, "activity.log");
@@ -92,7 +113,17 @@ const store = new Store({
 });
 
 function isAuthed() {
-  return Boolean(store.get("apiKey")) && Boolean(store.get("apiSecret")) && Boolean(store.get("token")) && Boolean(store.get("tokenSecret"));
+  return Boolean(store.get("apiKey")) && Boolean(store.get("hasApiSecret")) && Boolean(store.get("hasToken"));
+}
+
+// Helper to retrieve decrypted Flickr credentials for API calls
+function getFlickrAuth() {
+  return {
+    apiKey: store.get("apiKey") || "",
+    apiSecret: decryptCredential(store.get("apiSecretEnc") || ""),
+    token: decryptCredential(store.get("tokenEnc") || ""),
+    tokenSecret: decryptCredential(store.get("tokenSecretEnc") || "")
+  };
 }
 
 function parseHHMM(s) {
@@ -455,7 +486,8 @@ ipcMain.handle("app:version", async () => {
 });
 ipcMain.handle("cfg:get", async () => ({
   apiKey: store.get("apiKey"),
-  hasApiSecret: Boolean(store.get("apiSecret")),
+  hasApiSecret: Boolean(store.get("hasApiSecret")),
+  hasToken: Boolean(store.get("hasToken")),
   authed: isAuthed(),
   username: store.get("username") || "",
   fullname: store.get("fullname") || "",
@@ -475,8 +507,12 @@ ipcMain.handle("cfg:get", async () => ({
 
 ipcMain.handle("cfg:setKeys", async (_e, { apiKey, apiSecret }) => {
   if (typeof apiKey === "string" && apiKey.length) store.set("apiKey", apiKey);
-  // IMPORTANT: if apiSecret is blank, keep the existing secret (so Start Authorization remains enabled)
-  if (typeof apiSecret === "string" && apiSecret.trim().length) store.set("apiSecret", apiSecret.trim());
+  // Encrypt apiSecret and store flag indicating presence
+  if (typeof apiSecret === "string" && apiSecret.trim().length) {
+    const encrypted = encryptCredential(apiSecret.trim());
+    store.set("apiSecretEnc", encrypted);
+    store.set("hasApiSecret", true);
+  }
   return { ok: true };
 });
 
@@ -568,7 +604,7 @@ ipcMain.handle("cfg:setSchedulerSettings", async (_e, payload) => {
 
 ipcMain.handle("oauth:start", async () => {
   const apiKey = store.get("apiKey");
-  const apiSecret = store.get("apiSecret");
+  const apiSecret = decryptCredential(store.get("apiSecretEnc") || "");
   if (!apiKey || !apiSecret) throw new Error("Missing API key/secret");
 
   const tmp = await flickr.getRequestToken(apiKey, apiSecret);
@@ -580,12 +616,13 @@ ipcMain.handle("oauth:start", async () => {
 
 ipcMain.handle("oauth:finish", async (_e, { verifier }) => {
   const apiKey = store.get("apiKey");
-  const apiSecret = store.get("apiSecret");
+  const apiSecret = decryptCredential(store.get("apiSecretEnc") || "");
   const tmp = store.get("oauthTmp");
   if (!tmp) throw new Error("No OAuth session. Click Start Authorization first.");
   const tok = await flickr.getAccessToken(apiKey, apiSecret, tmp.oauthToken, tmp.oauthTokenSecret, verifier);
-  store.set("token", tok.token);
-  store.set("tokenSecret", tok.tokenSecret);
+  store.set("tokenEnc", encryptCredential(tok.token));
+  store.set("tokenSecretEnc", encryptCredential(tok.tokenSecret));
+  store.set("hasToken", true);
   store.set("userNsid", tok.userNsid);
   store.set("username", tok.username);
   store.set("fullname", tok.fullname);
@@ -595,8 +632,9 @@ ipcMain.handle("oauth:finish", async (_e, { verifier }) => {
 });
 
 ipcMain.handle("oauth:logout", async () => {
-  store.set("token", "");
-  store.set("tokenSecret", "");
+  store.set("tokenEnc", "");
+  store.set("tokenSecretEnc", "");
+  store.set("hasToken", false);
   store.set("userNsid", "");
   store.set("username", "");
   store.set("fullname", "");
@@ -607,21 +645,23 @@ ipcMain.handle("oauth:logout", async () => {
 
 ipcMain.handle("flickr:groups", async () => {
   if (!isAuthed()) throw new Error("Not authorized");
+  const auth = getFlickrAuth();
   return await flickr.listGroups({
-    apiKey: store.get("apiKey"),
-    apiSecret: store.get("apiSecret"),
-    token: store.get("token"),
-    tokenSecret: store.get("tokenSecret"),
+    apiKey: auth.apiKey,
+    apiSecret: auth.apiSecret,
+    token: auth.token,
+    tokenSecret: auth.tokenSecret,
   });
 });
 
 ipcMain.handle("flickr:albums", async () => {
   if (!isAuthed()) throw new Error("Not authorized");
+  const auth = getFlickrAuth();
   return await flickr.listAlbums({
-    apiKey: store.get("apiKey"),
-    apiSecret: store.get("apiSecret"),
-    token: store.get("token"),
-    tokenSecret: store.get("tokenSecret"),
+    apiKey: auth.apiKey,
+    apiSecret: auth.apiSecret,
+    token: auth.token,
+    tokenSecret: auth.tokenSecret,
     userNsid: store.get("userNsid"),
   });
 });
@@ -633,11 +673,12 @@ ipcMain.handle("flickr:photoUrls", async (_e, { photoId }) => {
   const cached = cache[photoId];
   if (cached && cached.thumbUrl && cached.previewUrl) return cached;
 
+  const auth = getFlickrAuth();
   const urls = await flickr.getPhotoUrls({
-    apiKey: store.get("apiKey"),
-    apiSecret: store.get("apiSecret"),
-    token: store.get("token"),
-    tokenSecret: store.get("tokenSecret"),
+    apiKey: auth.apiKey,
+    apiSecret: auth.apiSecret,
+    token: auth.token,
+    tokenSecret: auth.tokenSecret,
     photoId
   });
 
@@ -727,10 +768,7 @@ async function ensureAlbumByTitle(title) {
 }
 
 async function uploadNowOneInternal() {
-  const apiKey = store.get("apiKey");
-  const apiSecret = store.get("apiSecret");
-  const token = store.get("token");
-  const tokenSecret = store.get("tokenSecret");
+  const auth = getFlickrAuth();
 
   // Prevent overlapping uploads
   uploadLock = true;
@@ -749,10 +787,10 @@ async function uploadNowOneInternal() {
     logEvent("INFO", "Uploading photo", { id: next.id, path: next.photoPath });
 
     const photoId = await flickr.uploadPhoto({
-      apiKey,
-      apiSecret,
-      token,
-      tokenSecret,
+      apiKey: auth.apiKey,
+      apiSecret: auth.apiSecret,
+      token: auth.token,
+      tokenSecret: auth.tokenSecret,
       item: next
     });
 
@@ -770,7 +808,7 @@ async function uploadNowOneInternal() {
     // Attach to albums (already-existing)
     for (const aid of (next.albumIds || [])) {
       try {
-        await flickr.addPhotoToAlbum({ apiKey, apiSecret, token, tokenSecret, photoId, albumId: aid });
+        await flickr.addPhotoToAlbum({ apiKey: auth.apiKey, apiSecret: auth.apiSecret, token: auth.token, tokenSecret: auth.tokenSecret, photoId, albumId: aid });
         logEvent("INFO", "Added to album", { id: next.id, photoId, albumId: aid });
       } catch (e) {
         const msg = e?.message ? String(e.message) : String(e);
@@ -782,7 +820,7 @@ async function uploadNowOneInternal() {
 
     // Attach to groups
     for (const gid of (next.groupIds || [])) {
-      const res = await attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item: next, groupId: gid });
+      const res = await attemptAddToGroup({ apiKey: auth.apiKey, apiSecret: auth.apiSecret, token: auth.token, tokenSecret: auth.tokenSecret, item: next, groupId: gid });
       if (!res.ok) warnings.push(`group ${gid}: ${res.message || "Group add failed"}`);
     }
 
@@ -827,11 +865,12 @@ async function tickScheduler() {
   // This allows 1h/6h/12h/24h backoff to work even when upload interval is longer.
   try {
     if (isAuthed()) {
+      const auth = getFlickrAuth();
       await processDueGroupRetries({
-        apiKey: store.get("apiKey"),
-        apiSecret: store.get("apiSecret"),
-        token: store.get("token"),
-        tokenSecret: store.get("tokenSecret"),
+        apiKey: auth.apiKey,
+        apiSecret: auth.apiSecret,
+        token: auth.token,
+        tokenSecret: auth.tokenSecret,
         maxAttempts: 1
       });
     }
@@ -861,11 +900,12 @@ async function tickScheduler() {
   // First, process any due group retries (even if there are no pending uploads)
   try {
     if (isAuthed()) {
+      const auth = getFlickrAuth();
       await processDueGroupRetries({
-        apiKey: store.get("apiKey"),
-        apiSecret: store.get("apiSecret"),
-        token: store.get("token"),
-        tokenSecret: store.get("tokenSecret"),
+        apiKey: auth.apiKey,
+        apiSecret: auth.apiSecret,
+        token: auth.token,
+        tokenSecret: auth.tokenSecret,
         maxAttempts: 5
       });
     }

@@ -334,7 +334,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     if (c.authed) setShowSetup(false);
     setSkipOvernight(Boolean(c.skipOvernight));
     setApiKey(c.apiKey || "");
-    setApiSecret("");
+    // Do NOT clear apiSecret here—the user may be typing it in.
+    // The backend only returns a presence flag (hasApiSecret), not the actual secret.
+    // The user's locally-entered secret should persist until they logout or refresh the page.
     const q = await window.sq.queueGet();
     setQueue(q);
     if (!activeId && q.length) setActiveId(q[0].id);
@@ -402,9 +404,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   useEffect(() => {
     (async () => {
       for (const it of queue.slice(0, 120)) {
-        if (thumbs[it.photoPath] !== undefined) continue;
-        const dataUrl = await window.sq.getThumbDataUrl(it.photoPath);
-        setThumbs(t => ({ ...t, [it.photoPath]: dataUrl }));
+        // Try to load local thumbnail if we haven't cached it yet
+        let dataUrl = thumbs[it.photoPath];
+        if (dataUrl === undefined) {
+          dataUrl = await window.sq.getThumbDataUrl(it.photoPath);
+          setThumbs(t => ({ ...t, [it.photoPath]: dataUrl }));
+        }
+        // If local thumbnail is missing and item has a photoId, try fetching from Flickr
         if (!dataUrl && it.photoId && flickrUrls[it.photoId] === undefined) {
           try {
             const u = await window.sq.getFlickrPhotoUrls(it.photoId);
@@ -1518,7 +1524,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.7d"}</span>
+          <span className="mono">v{appVersion || "0.7.8"}</span>
         </div>
       </div>
 
