@@ -30,6 +30,8 @@ declare global {
       logClear: () => Promise<any>;
       schedulerStart: (intervalHours: number, uploadImmediately: boolean, settings: any) => Promise<any>;
       showStartSchedulerDialog: () => Promise<"now" | "delay" | "cancel">;
+      appVersion: () => Promise<string>;
+      getFlickrPhotoUrls: (photoId: string) => Promise<{thumbUrl: string; previewUrl: string;}>
       schedulerStop: () => Promise<any>;
       schedulerStatus: () => Promise<any>;
 
