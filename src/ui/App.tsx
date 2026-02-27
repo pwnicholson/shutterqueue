@@ -310,7 +310,63 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
 
+  // refresh only the configuration settings that back the form fields
+  const refreshConfig = async () => {
+    const c = await window.sq.getConfig();
+    setCfg(c);
+    const le = String(c.lastError || "");
+    const authish = /oauth_problem|\b(95|96|97|98|99|100)\b/i.test(le);
+    if (authish) setShowSetupAdvanced(true);
+    else if (c.authed) setShowSetupAdvanced(false);
+
+    setIntervalHours(Number(c.intervalHours || 24));
+    setTimeWindowEnabled(Boolean(c.timeWindowEnabled));
+    setWindowStart(String(c.windowStart || "07:00"));
+    setWindowEnd(String(c.windowEnd || "22:00"));
+    setDaysEnabled(Boolean(c.daysEnabled));
+    setAllowedDays(Array.isArray(c.allowedDays) ? c.allowedDays : [1,2,3,4,5]);
+    setResumeOnLaunch(Boolean(c.resumeOnLaunch));
+    setUploadBatchSize(Math.max(1, Math.min(999, Math.round(Number((c as any).uploadBatchSize || 1)))));
+
+    // scheduler defaults (only set once if missing)
+    if (typeof c.timeWindowEnabled !== "boolean") setTimeWindowEnabled(false);
+    if (typeof c.daysEnabled !== "boolean") setDaysEnabled(false);
+
+    // hide setup UI if already authed
+    if (c.authed) setShowSetup(false);
+    setSkipOvernight(Boolean(c.skipOvernight));
+    // only set API key when field is empty so we don't clobber user input
+    if (!apiKey) setApiKey(c.apiKey || "");
+    // note: apiSecret is intentionally left untouched here
+  };
+
+  // refresh data that may change without user interaction
+  const refreshDynamic = async () => {
+    const q = await window.sq.queueGet();
+    setQueue(q);
+    if (!activeId && q.length) setActiveId(q[0].id);
+
+    // Ensure default titles (filename without extension) for items missing a title
+    try {
+      const needsTitle = q.filter(it => !String(it.title || "").trim());
+      if (needsTitle.length) {
+        const patched = needsTitle.map(it => ({ ...it, title: deriveTitleFromPhotoPath(it.photoPath) }));
+        const q2 = await window.sq.queueUpdate(patched);
+        setQueue(q2);
+        if (!activeId && q2.length) setActiveId(q2[0].id);
+      }
+    } catch {
+      // ignore
+    }
+    setSched(await window.sq.schedulerStatus());
+    try { setLogs(await window.sq.logGet()); } catch { /* ignore */ }
+  };
+
   const refreshAll = async () => {
+    // new behaviour: always update config/dynamic via helpers and exit early
+    await refreshConfig();
+    await refreshDynamic();
+    return;
     const c = await window.sq.getConfig();
     setCfg(c);
     const le = String(c.lastError || "");
@@ -362,6 +418,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   useEffect(() => {
     (async () => {
       try {
+        // @ts-ignore - declared in global.d.ts but TS sometimes forgets it
         const v = await window.sq.appVersion();
         setAppVersion(v || "");
       } catch {
@@ -372,14 +429,14 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   useEffect(() => { refreshAll(); }, []);
 
   // Background work can update app state without user interaction (especially in packaged builds).
-  // Poll lightly to keep UI consistent.
-  const refreshAllRef = useRef(refreshAll);
+  // Poll lightly to keep UI consistent; only refresh the dynamic data, not the form config.
+  const refreshDynamicRef = useRef(refreshDynamic);
   useEffect(() => {
-    refreshAllRef.current = refreshAll;
+    refreshDynamicRef.current = refreshDynamic;
   });
   useEffect(() => {
     const t = window.setInterval(() => {
-      void refreshAllRef.current?.();
+      void refreshDynamicRef.current?.();
     }, 1500);
     return () => window.clearInterval(t);
   }, []);
@@ -413,8 +470,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         // If local thumbnail is missing and item has a photoId, try fetching from Flickr
         if (!dataUrl && it.photoId && flickrUrls[it.photoId] === undefined) {
           try {
+            // @ts-ignore - dynamic typing for sq API
             const u = await window.sq.getFlickrPhotoUrls(it.photoId);
-            setFlickrUrls(m => ({ ...m, [it.photoId]: u }));
+            setFlickrUrls(m => ({ ...m, [it.photoId as any]: u }));
           } catch {
             // ignore
           }
