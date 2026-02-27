@@ -696,6 +696,30 @@ ipcMain.handle("ui:pickPhotos", async () => {
   return res.canceled ? [] : (res.filePaths || []);
 });
 
+// show a three-button dialog when starting the scheduler:
+// options: "Start Immediately", "Start with Delay", "Cancel"
+ipcMain.handle("ui:show-start-scheduler-dialog", async () => {
+  const res = await dialog.showMessageBox(win, {
+    type: "question",
+    buttons: ["Start Immediately", "Start on Delay", "Cancel"],
+    defaultId: 0,
+    cancelId: 2,
+    title: "Start scheduler",
+    message: "How would you like to start the scheduler?",
+    detail: "Starting immediately will upload the next item now. \nStarting on delay will wait the full interval before the first upload.\nCancel will not start the scheduler.",
+    noLink: true,
+  });
+  // return a simple string so renderer can branch
+  switch (res.response) {
+    case 0:
+      return "now";
+    case 1:
+      return "delay";
+    default:
+      return "cancel";
+  }
+});
+
 async function ensureAlbumByTitle(title) {
   // MVP: album creation not implemented.
   // Future: call flickr.photosets.create with primary photo ID once uploaded.

@@ -587,9 +587,17 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const startSched = async () => {
     const h = Math.max(1, Math.min(168, Math.round(Number(intervalHours || 24))));
-    const uploadImmediately = window.confirm(
-      "Start scheduler now?\n\nOK = upload the next item immediately\nCancel = wait the full interval before the first upload"
-    );
+
+    // ask user how they want to start the scheduler
+    const choice = await window.sq.showStartSchedulerDialog();
+    if (choice === "cancel") {
+      // user explicitly cancelled; do nothing
+      showToast("Scheduler start canceled.");
+      return;
+    }
+
+    const uploadImmediately = choice === "now";
+
     await window.sq.schedulerStart(h, uploadImmediately, {
       timeWindowEnabled,
       windowStart,

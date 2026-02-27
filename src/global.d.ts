@@ -29,6 +29,7 @@ declare global {
       logGet: () => Promise<string[]>;
       logClear: () => Promise<any>;
       schedulerStart: (intervalHours: number, uploadImmediately: boolean, settings: any) => Promise<any>;
+      showStartSchedulerDialog: () => Promise<"now" | "delay" | "cancel">;
       schedulerStop: () => Promise<any>;
       schedulerStatus: () => Promise<any>;
 

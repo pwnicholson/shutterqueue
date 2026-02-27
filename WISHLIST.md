@@ -3,7 +3,7 @@
 ## Next
 
 * \[ ] Fix preview full-screen display sizing (fit to window)
-* \[ ] Fix scheduler starter dialog to offer "now, wait, or cancel" options.
+* [x] Fix scheduler starter dialog to offer "now, wait, or cancel" options.
 * \[ ] Store API keys in a more secure fashion
 
 ## Soon
@@ -11,6 +11,8 @@
 * \[ ] Click and drag to move item priority for the group add list
 * \[ ] Group lists: filterable (type text to filter to groups that have a string in their name)
 * \[ ] Group lists: sort selected/waiting groups alphabetically at top, then remaining groups alphabetically
+* \[ ] Minimize to System Tray on Windows and the status Menu/Bar on Mac
+* \[ ] Capture random error codes from Flickr API and display them in the log (probably display all API responses, even non-error ones)
 * \[ ] Minimize to System Tray on Windows and the status Menu/Bar on Mac
 * \[ ] Capture random error codes from Flickr API and display them in the log (probably display all API responses, even non-error ones)
 

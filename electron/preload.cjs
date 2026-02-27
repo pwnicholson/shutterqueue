@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld("sq", {
   schedulerStatus: () => ipcRenderer.invoke("sched:status"),
 
   pickPhotos: () => ipcRenderer.invoke("ui:pickPhotos"),
+  showStartSchedulerDialog: () => ipcRenderer.invoke("ui:show-start-scheduler-dialog"),
   logGet: () => ipcRenderer.invoke("log:get"),
   logClear: () => ipcRenderer.invoke("log:clear"),
   appVersion: () => ipcRenderer.invoke("app:version"),

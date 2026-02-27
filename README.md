@@ -8,6 +8,12 @@ Note that this is purely vibe-coded using a combination of different AI tools. I
 
 ## Setup Process
 
+
+
+First, install the app!
+
+
+
 1. ✅ Go to Flickr's Developer Page (usually https://www.flickr.com/services/ ) and click "Get an API key"
 
    * Choose "Non-commercial" for your key type
