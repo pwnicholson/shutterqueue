@@ -211,6 +211,13 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     return /\bgroup\b|\balbum\b/i.test(String(s));
   };
 
+  const hasActualErrorText = (s?: string | null) => {
+    if (!s) return false;
+    const parts = String(s).split("|").map(p => p.trim()).filter(Boolean);
+    if (!parts.length) return false;
+    return parts.some(p => /\b(fail|failed|error|gave up|gave_up|will be retried|retry|limit reached|user limit)\b/i.test(p));
+  };
+
   
   const removeGroupRetryAndSelection = (it: QueueItem, groupId: string): QueueItem => {
     const gid = String(groupId);
@@ -1049,7 +1056,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           {hasPendingGroupRetries ? (
                             <span className="badge warn" title={pendingGroupsTooltip || ""}>Pending Group Additions</span>
                           ) : (
-                            it.lastError ? <span className="badge bad" title={friendlyIdInMessage(it.lastError)}>Error</span> : null
+                            hasActualErrorText(it.lastError) ? <span className="badge bad" title={friendlyIdInMessage(it.lastError)}>Error</span> : null
                           )}
                         </div>
                       </div>
