@@ -691,6 +691,23 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [batchTitle, setBatchTitle] = useState("");
   const [batchTags, setBatchTags] = useState("");
 
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+
+  useEffect(() => {
+    const cb = (e: any) => {
+      const { loaded, total } = e.detail || {};
+      if (typeof loaded === 'number' && typeof total === 'number' && total > 0) {
+        setUploadProgress(Math.min(1, loaded / total));
+        if (loaded >= total) {
+          // clear after a short delay so bar reaches 100%
+          setTimeout(() => setUploadProgress(null), 500);
+        }
+      }
+    };
+    window.addEventListener('sq-upload-progress', cb as any);
+    return () => window.removeEventListener('sq-upload-progress', cb as any);
+  }, []);
+
   // Clear the batch tag input whenever the selection changes in multi-select mode.
   useEffect(() => {
     if (selectedIds.length >= 2) setBatchTags("");
@@ -845,6 +862,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           {cfg?.authed ? <span className="badge good">Authorized</span> : <span className="badge warn">Not authorized</span>}
           <span className="badge">{queue.length} in queue</span>
           {sched?.schedulerOn ? <span className="badge good">Scheduler ON</span> : <span className="badge">Scheduler OFF</span>}
+
+          {/* progress bar container, keeps height even when idle */}
+          <div style={{position:'relative', width:200, height:6, marginLeft:12, background:'rgba(255,255,255,0.05)', borderRadius:3, overflow:'hidden'}}>
+            {uploadProgress != null && (
+              <div style={{position:'absolute', left:0, top:0, bottom:0, width:`${Math.round(uploadProgress*100)}%`, background:'var(--accent)'}} />
+            )}
+          </div>
         </div>
       </div>
 

@@ -36,4 +36,9 @@ contextBridge.exposeInMainWorld("sq", {
 
 });
 
+// re-dispatch upload progress events to the window so renderer can listen
+ipcRenderer.on("upload:progress", (_e, data) => {
+  window.dispatchEvent(new CustomEvent("sq-upload-progress", { detail: data }));
+});
+
 contextBridge.exposeInMainWorld("api",{ openThirdPartyLicenses: () => ipcRenderer.invoke("open-third-party-licenses") });

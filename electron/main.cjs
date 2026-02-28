@@ -815,7 +815,15 @@ async function uploadNowOneInternal() {
       apiSecret: auth.apiSecret,
       token: auth.token,
       tokenSecret: auth.tokenSecret,
-      item: next
+      item: next,
+      onProgress: (loaded, total) => {
+        // forward to renderer for UI progress bar
+        try {
+          if (win && win.webContents) {
+            win.webContents.send("upload:progress", { loaded, total });
+          }
+        } catch (_) {}
+      }
     });
 
     // Mark upload complete immediately so we never re-upload this file again.

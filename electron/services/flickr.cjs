@@ -131,7 +131,7 @@ function privacyToFlags(p) {
   return out;
 }
 
-async function uploadPhoto({ apiKey, apiSecret, token, tokenSecret, item }) {
+async function uploadPhoto({ apiKey, apiSecret, token, tokenSecret, item, onProgress }) {
   const oauth = makeOAuth(apiKey, apiSecret);
   const url = FLICKR_UPLOAD;
 
@@ -149,6 +149,19 @@ async function uploadPhoto({ apiKey, apiSecret, token, tokenSecret, item }) {
 
   const contentType = mime.lookup(item.photoPath) || "application/octet-stream";
   form.append("photo", fs.createReadStream(item.photoPath), { contentType, filename: require("path").basename(item.photoPath) });
+
+  // determine total length for progress reporting
+  let totalLength = null;
+  try {
+    totalLength = await new Promise((resolve, reject) => {
+      form.getLength((err, len) => {
+        if (err) reject(err);
+        else resolve(len);
+      });
+    });
+  } catch (_e) {
+    totalLength = null;
+  }
 
   // OAuth header must be computed over the final URL (no querystring) and method POST
   const signatureData = {
@@ -172,8 +185,24 @@ async function uploadPhoto({ apiKey, apiSecret, token, tokenSecret, item }) {
       r.on("end", () => resolve({ status: r.statusCode || 0, body: data }));
     });
     req.on("error", reject);
+
+    if (onProgress && totalLength != null) {
+      req.on('socket', (socket) => {
+        const iv = setInterval(() => {
+          try {
+            onProgress(socket.bytesWritten, totalLength);
+          } catch (_) {}
+        }, 500);
+        socket.on('close', () => clearInterval(iv));
+      });
+    }
+
     form.pipe(req);
   });
+  // final progress notification
+  if (onProgress && totalLength != null) {
+    try { onProgress(totalLength, totalLength); } catch (_) {}
+  }
 
   if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}: ${res.body}`);
 

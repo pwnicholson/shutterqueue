@@ -37,5 +37,9 @@ declare global {
 
       pickPhotos: () => Promise<string[]>;
     };
+    // custom event emitted from preload when an upload is in progress
+    interface WindowEventMap {
+      "sq-upload-progress": CustomEvent<{loaded:number; total:number}>;
+    }
   }
 }
