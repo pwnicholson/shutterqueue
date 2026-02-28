@@ -431,7 +431,21 @@ function createWindow() {
     win.loadURL("http://localhost:5173");
     win.webContents.openDevTools({ mode: "detach" });
   } else {
-    win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+    // When the app is packaged the JS files are bundled inside an ASAR archive.
+    // __dirname will point at something like
+    //   /Applications/ShutterQueue.app/Contents/Resources/app.asar/electron
+    // and joining "..", "dist", "index.html" generally works, but we saw
+    // a rare macOS issue where this produced a malformed path (missing the
+    // "s" in "Applications") and the renderer would silently fail with
+    // "Not allowed to load local resource".  The preload script fix earlier
+    // used app.getAppPath(), which is more trustworthy in the packaged app,
+    // so do the same for the index file.
+
+    const indexFile = path.join(app.getAppPath(), "dist", "index.html");
+    console.log("[main] loading index file", indexFile);
+    win.loadFile(indexFile).catch((err) => {
+      logEvent("ERROR", "Failed to load index.html", { error: String(err), path: indexFile });
+    });
   }
 
   // Keep icon in sync (Windows/Linux). Safe no-op on macOS.

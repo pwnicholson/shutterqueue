@@ -1,6 +1,6 @@
 {
   "name": "shutterqueue",
-  "version": "0.7.8a",
+  "version": "0.7.8b",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
