@@ -1292,13 +1292,20 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   {active.lastError ? (() => {
                     const msg = friendlyIdInMessage(active.lastError) || "";
                     const parts = msg.split("|").map((s) => s.trim()).filter(Boolean);
+                    // If status is "done" (not "done_warn" or "failed"), these are informational messages, not errors
+                    const isInfo = active.status === "done";
+                    const color = isInfo ? "var(--good)" : "var(--bad)";
+                    const label = isInfo ? "Info" : "Error";
                     if (parts.length <= 1) {
-                      return <div className="small" style={{ color: "var(--bad)", marginTop: 10 }}>{msg}</div>;
+                      return <div className="small" style={{ color, marginTop: 10 }}><strong>{label}:</strong> {msg}</div>;
                     }
                     return (
-                      <ul className="small" style={{ color: "var(--bad)", marginTop: 10, marginBottom: 0, paddingLeft: 18 }}>
-                        {parts.map((p, i) => <li key={i}>{p}</li>)}
-                      </ul>
+                      <div style={{ marginTop: 10 }}>
+                        <div className="small" style={{ color, fontWeight: "bold" }}>{label}:</div>
+                        <ul className="small" style={{ color, marginTop: 4, marginBottom: 0, paddingLeft: 18 }}>
+                          {parts.map((p, i) => <li key={i}>{p}</li>)}
+                        </ul>
+                      </div>
                     );
                   })() : null}
                 </>

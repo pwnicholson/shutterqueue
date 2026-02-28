@@ -83,7 +83,21 @@ module.exports = { loadQueue, saveQueue, addPaths, removeIds, updateItems, reord
 
 
 function clearUploaded() {
-  const q = loadQueue().filter(it => !(it.status === "done" && !it.lastError));
+  const q = loadQueue().filter(it => {
+    // Remove items that are fully done (no pending work)
+    if (it.status !== "done" && it.status !== "done_warn") return true;
+    
+    // If it's done_warn, check if there are actual retries/failures pending
+    if (it.status === "done_warn") return true;
+    
+    // Status is "done" – check if there are any pending group retries
+    const states = it.groupAddStates || {};
+    const hasPendingRetry = Object.values(states).some(st => st && (st.status === "retry" || st.status === "gave_up"));
+    
+    // If there are no pending retries, this is fully done (even with informational messages)
+    // so remove it. Otherwise keep it.
+    return hasPendingRetry;
+  });
   return saveQueue(q);
 }
 

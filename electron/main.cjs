@@ -251,25 +251,35 @@ function normalizeGroupAddState(it) {
 
 function setItemLastErrorFromGroupStates(item, baseParts) {
   const states = item.groupAddStates || {};
-  const parts = Array.isArray(baseParts) ? [...baseParts] : [];
+  const errorParts = Array.isArray(baseParts) ? [...baseParts] : [];
+  const infoParts = [];
+  
   for (const [gid, st] of Object.entries(states)) {
     if (!st) continue;
     if (st.status === "retry") {
       const when = st.nextRetryAt ? formatLocal(st.nextRetryAt) : "—";
       const base = st.message || `Photo will be retried for group ${gid}.`;
-      parts.push(`${base} Will attempt again at ${when}`);
+      errorParts.push(`${base} Will attempt again at ${when}`);
     } else if (st.status === "gave_up") {
-      parts.push(`Adding to group ${gid} failed for 1 week. No more retries.`);
+      errorParts.push(`Adding to group ${gid} failed for 1 week. No more retries.`);
     } else if (st.status === "failed") {
       // st.message is already user-facing.
-      parts.push(st.message || `Group add failed for group ${gid}.`);
+      errorParts.push(st.message || `Group add failed for group ${gid}.`);
     } else if (st.status === "done" && st.message) {
-      // Informational messages (e.g., already in pool, moderation queue)
-      parts.push(st.message);
+      // Informational messages (e.g., already in pool, moderation queue) – not warnings
+      infoParts.push(st.message);
     }
   }
-  item.lastError = parts.join(" | ");
-  if (parts.length) item.status = "done_warn";
+  
+  // Combine error parts and info parts, but only set done_warn if there are actual errors
+  const allParts = [...errorParts, ...infoParts];
+  item.lastError = allParts.join(" | ");
+  
+  // Only set done_warn if there are actual problems (retries, gave_up, failed)
+  // Informational messages (moderation queue, already in pool) don't trigger warning status
+  if (errorParts.length > 0) {
+    item.status = "done_warn";
+  }
 }
 
 function formatLocal(iso) {
