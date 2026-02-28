@@ -853,17 +853,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   return (
     <div className="container">
-      <div className="row" style={{ justifyContent: "space-between" }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <div>
           <div className="h1">ShutterQueue</div>
           <div className="sub">A paced uploader for Flickr. Build a queue, reorder on the fly, and upload every 1–168 hours.</div>
         </div>
-        <div className="row">
+        <div className="btncluster" style={{ alignItems: "center" }}>
           {cfg?.authed ? <span className="badge good">Authorized</span> : <span className="badge warn">Not authorized</span>}
           <span className="badge">{queue.length} in queue</span>
           {sched?.schedulerOn ? <span className="badge good">Scheduler ON</span> : <span className="badge">Scheduler OFF</span>}
-
-          {/* progress bar container, keeps height even when idle */}
           <div style={{position:'relative', width:200, height:6, marginLeft:12, background:'rgba(255,255,255,0.05)', borderRadius:3, overflow:'hidden'}}>
             {uploadProgress != null && (
               <div style={{position:'absolute', left:0, top:0, bottom:0, width:`${Math.round(uploadProgress*100)}%`, background:'var(--accent)'}} />
@@ -872,11 +870,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
       </div>
 
-      <div className="row" style={{ marginBottom: 12 }}>
-        <button className={`btn ${tab==="queue"?"primary":""}`} onClick={() => setTab("queue")}>Queue</button>
-        <button className={`btn ${tab==="schedule"?"primary":""}`} onClick={() => setTab("schedule")}>Schedule</button>
-        <button className={`btn ${tab==="logs"?"primary":""}`} onClick={() => setTab("logs")}>Logs</button>
-        <button className={`btn ${tab==="setup"?"primary":""}`} onClick={() => setTab("setup")}>Setup</button>
+      {/* tab strip */}
+      <div className="tabs">
+        <div className={`tab ${tab==="queue"?"selected":""}`} onClick={() => setTab("queue")}>Queue</div>
+        <div className={`tab ${tab==="schedule"?"selected":""}`} onClick={() => setTab("schedule")}>Schedule</div>
+        <div className={`tab ${tab==="logs"?"selected":""}`} onClick={() => setTab("logs")}>Logs</div>
+        <div className={`tab ${tab==="setup"?"selected":""}`} onClick={() => setTab("setup")}>Setup</div>
       </div>
 
       {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}

@@ -24,6 +24,26 @@ body{
 .h1{font-size:28px;font-weight:700;letter-spacing:0.2px}
 .sub{color:var(--muted);margin-top:6px;max-width:900px;line-height:1.35}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+
+.tabs{
+  display:flex;
+  gap:0;
+  border-bottom:1px solid var(--border);
+  margin-bottom:12px;
+}
+.tab{
+  padding:8px 14px;
+  cursor:pointer;
+  border:1px solid var(--border);
+  border-bottom: none;
+  border-radius:8px 8px 0 0;
+  background: var(--panel2);
+  margin-right:2px;
+}
+.tab.selected{
+  background: var(--panel);
+  font-weight:600;
+}
 .grid{display:grid;grid-template-columns: 1fr 1fr; gap:14px}
 @media (max-width: 980px){ .grid{grid-template-columns:1fr} }
 
