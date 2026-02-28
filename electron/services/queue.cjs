@@ -14,7 +14,25 @@ function loadQueue() {
   ensureRoot();
   if (!fs.existsSync(QUEUE_PATH)) return [];
   try {
-    return JSON.parse(fs.readFileSync(QUEUE_PATH, "utf-8"));
+    const q = JSON.parse(fs.readFileSync(QUEUE_PATH, "utf-8")) || [];
+
+    // Migration: normalize older items that were marked `done_warn` solely
+    // because of informational group messages (e.g., "added to moderation
+    // queue"). If there are no retry/failed/gave_up states left for the
+    // item, treat it as fully done so the UI and "Clear uploaded" behave
+    // as expected after upgrades.
+    for (const it of q) {
+      if (!it) continue;
+      if (it.status === "done_warn") {
+        const states = it.groupAddStates || {};
+        const hasProblem = Object.values(states).some(st => st && (st.status === "retry" || st.status === "failed" || st.status === "gave_up"));
+        if (!hasProblem) {
+          it.status = "done";
+        }
+      }
+    }
+
+    return q;
   } catch {
     return [];
   }
@@ -84,19 +102,17 @@ module.exports = { loadQueue, saveQueue, addPaths, removeIds, updateItems, reord
 
 function clearUploaded() {
   const q = loadQueue().filter(it => {
-    // Remove items that are fully done (no pending work)
+    // Keep items that are not done at all
     if (it.status !== "done" && it.status !== "done_warn") return true;
-    
-    // If it's done_warn, check if there are actual retries/failures pending
-    if (it.status === "done_warn") return true;
-    
-    // Status is "done" – check if there are any pending group retries
+
+    // For done/done_warn, check whether any group states indicate a pending
+    // problem that should prevent clearing (retry, failed, or gave_up).
     const states = it.groupAddStates || {};
-    const hasPendingRetry = Object.values(states).some(st => st && (st.status === "retry" || st.status === "gave_up"));
-    
-    // If there are no pending retries, this is fully done (even with informational messages)
-    // so remove it. Otherwise keep it.
-    return hasPendingRetry;
+    const hasPendingProblem = Object.values(states).some(st => st && (st.status === "retry" || st.status === "failed" || st.status === "gave_up"));
+
+    // If there are pending problems, keep the item. Otherwise remove it
+    // (i.e., return false so filter drops it).
+    return hasPendingProblem;
   });
   return saveQueue(q);
 }
