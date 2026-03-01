@@ -1,6 +1,6 @@
 # ShutterQueue Wishlist / Roadmap
 
-## Next
+## Done
 
 * [x] Fix preview full-screen display sizing (fit to window)
 * [x] Fix scheduler starter dialog to offer "now, wait, or cancel" options.
@@ -13,19 +13,20 @@
 * [X] Clean up 'item successfully added to group moderation queue' still showing up in red like an error on some items
 * [X] Address queue tab loading lag
 * [X] Verbose logging mode option: Capture all codes from Flickr API and display them in the log* 
-\[ ] Verify fix for group limit due to pagination of group lists
+* [X] Enable Minimize to System Tray on Windows option
+* \[ ] Verify status Menu Bar on Mac
+* \[ ] Verify fix for group limit due to pagination of group lists
 
 ## Soon
 
 * \[ ] Click and drag to move item priority for the group add list
 * \[ ] Improve progress bar on uploads (just flashes now, doesn't show actual progress of the individual item or the batch it is in)
-* \[ ] Minimize to System Tray on Windows and the status Menu/Bar on Mac
+* \[ ] Allow photos to be scheduled for a specific time, not just an interval and queue order
+* \[ ] Saved “Sets” of groups/albums (user-defined)
 
 ## Nice-to-have
 
-* \[ ] Allow photos to be scheduled for a specific time, not just an interval and queue order
 * \[ ] Add geographic data after upload (country/region/city lookup; optional map pick)
-* \[ ] Saved “Sets” of groups/albums (user-defined)
 * \[ ] Spellcheck for title/description/tags (free/open-source)
 * \[ ] Pull in basic info about groups (size, etc)
 * \[ ] Per-group throttling (freq + quantity), link to group rules
