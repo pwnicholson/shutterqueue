@@ -45,8 +45,8 @@ body{
   border-color: rgba(139,211,255,0.35);
 }
 .tab.selected{
-  background: var(--panel);
-  border-bottom: 1px solid var(--panel);
+  background: var(--bg);
+  border-bottom: none;
   font-weight:600;
 }
 .grid{display:grid;grid-template-columns: 1fr 1fr; gap:14px}
