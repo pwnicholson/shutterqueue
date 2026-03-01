@@ -874,24 +874,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <div className="h1">ShutterQueue</div>
           <div className="sub">A paced uploader for Flickr. Build a queue, reorder on the fly, and upload every 1–168 hours.</div>
         </div>
+      </div>
+
+      {/* sticky header with tabs and badges */}
+      <div className="sticky-header">
+        <div className="tabs">
+          <div className={`tab ${tab==="queue"?"selected":""}`} onClick={() => setTab("queue")} role="tab" tabIndex={0}>Queue</div>
+          <div className={`tab ${tab==="schedule"?"selected":""}`} onClick={() => setTab("schedule")} role="tab" tabIndex={0}>Schedule</div>
+          <div className={`tab ${tab==="logs"?"selected":""}`} onClick={() => setTab("logs")} role="tab" tabIndex={0}>Logs</div>
+          <div className={`tab ${tab==="setup"?"selected":""}`} onClick={() => setTab("setup")} role="tab" tabIndex={0}>Setup</div>
+        </div>
         <div className="btncluster" style={{ alignItems: "center", marginLeft: "auto" }}>
-          {cfg?.authed ? <span className="badge good">Authorized</span> : <span className="badge warn">Not authorized</span>}
-          <span className="badge">{queue.length} in queue</span>
-          {sched?.schedulerOn ? <span className="badge good">Scheduler ON</span> : <span className="badge">Scheduler OFF</span>}
+          {cfg?.authed ? <span className="badge good" onClick={() => setTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Authorized</span> : <span className="badge warn" onClick={() => setTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Not authorized</span>}
+          <span className="badge" onClick={() => setTab("queue")} style={{ cursor: "pointer" }} title="Click to jump to Queue">{queue.length} in queue</span>
+          {sched?.schedulerOn ? (
+            <span className="badge good" onClick={async () => { await stopSched(); }} style={{ cursor: "pointer" }} title="Click to stop scheduler">Scheduler ON</span>
+          ) : (
+            <span className="badge" onClick={async () => { setTab("schedule"); await startSched(); }} style={{ cursor: "pointer" }} title="Click to start scheduler">Scheduler OFF</span>
+          )}
           <div style={{position:'relative', width:200, height:6, marginLeft:12, background:'rgba(255,255,255,0.05)', borderRadius:3, overflow:'hidden'}}>
             {uploadProgress != null && (
               <div style={{position:'absolute', left:0, top:0, bottom:0, width:`${Math.round(uploadProgress*100)}%`, background:'var(--accent)'}} />
             )}
           </div>
         </div>
-      </div>
-
-      {/* tab strip */}
-      <div className="tabs">
-        <div className={`tab ${tab==="queue"?"selected":""}`} onClick={() => setTab("queue")} role="tab" tabIndex={0}>Queue</div>
-        <div className={`tab ${tab==="schedule"?"selected":""}`} onClick={() => setTab("schedule")} role="tab" tabIndex={0}>Schedule</div>
-        <div className={`tab ${tab==="logs"?"selected":""}`} onClick={() => setTab("logs")} role="tab" tabIndex={0}>Logs</div>
-        <div className={`tab ${tab==="setup"?"selected":""}`} onClick={() => setTab("setup")} role="tab" tabIndex={0}>Setup</div>
       </div>
 
       {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}
@@ -1393,6 +1399,14 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <div className="card">
             <h2>Scheduler</h2>
             <div className="content">
+              <div className="row" style={{ gap: 14, marginBottom: 16 }}>
+                <button className="btn btn-start" onClick={startSched} disabled={!cfg?.authed || !queue.length} style={{ fontWeight: 700, fontSize: 15, padding: "12px 20px" }}>▶ Start</button>
+                <button className="btn btn-stop" onClick={stopSched} style={{ fontWeight: 700, fontSize: 15, padding: "12px 20px" }}>■ Stop</button>
+                <button className="btn" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
+              </div>
+
+              <div className="hr" />
+
               <div className="small">Uploads the next item at each interval. Reordering affects what uploads next.</div>
 
               <div style={{ height: 12 }} />
@@ -1512,13 +1526,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 <span className="small">Automatically resume scheduler when app restarts</span>
               </label>
 
-
-              <div style={{ height: 12 }} />
-              <div className="row">
-                <button className="btn primary" onClick={startSched} disabled={!cfg?.authed || !queue.length}>Start</button>
-                <button className="btn" onClick={stopSched}>Stop</button>
-                <button className="btn" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
-              </div>
 
               <div style={{ height: 12 }} />
               <div className="small">Next run: <span style={{ fontFamily: "ui-monospace" }}>{formatLocal(sched?.nextRunAt)}</span></div>

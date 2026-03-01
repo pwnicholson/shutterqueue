@@ -25,11 +25,24 @@ body{
 .sub{color:var(--muted);margin-top:6px;max-width:900px;line-height:1.35}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 
+/* Sticky header with tabs and badges */
+.sticky-header{
+  position:sticky;
+  top:0;
+  z-index:100;
+  background:var(--bg);
+  padding:10px 0;
+  margin-bottom:12px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+}
+
 .tabs{
   display:flex;
   gap:0;
   border-bottom:1px solid var(--border);
-  margin-bottom:12px;
 }
 .tab{
   padding:8px 14px;
@@ -92,6 +105,31 @@ body{
 .btn.primary{background: rgba(139,211,255,0.12); border-color: rgba(139,211,255,0.35)}
 .btn.danger{background: rgba(255,107,138,0.10); border-color: rgba(255,107,138,0.30)}
 
+/* Bold scheduler control buttons */
+.btn-start{
+  background: rgba(46,229,157,0.15);
+  border-color: rgba(46,229,157,0.45);
+  color: var(--good);
+  box-shadow: 0 2px 8px rgba(46,229,157,0.15);
+}
+.btn-start:hover:not(:disabled){
+  background: rgba(46,229,157,0.22);
+  border-color: rgba(46,229,157,0.60);
+  box-shadow: 0 2px 12px rgba(46,229,157,0.25);
+}
+
+.btn-stop{
+  background: rgba(255,107,138,0.15);
+  border-color: rgba(255,107,138,0.45);
+  color: var(--bad);
+  box-shadow: 0 2px 8px rgba(255,107,138,0.15);
+}
+.btn-stop:hover{
+  background: rgba(255,107,138,0.22);
+  border-color: rgba(255,107,138,0.60);
+  box-shadow: 0 2px 12px rgba(255,107,138,0.25);
+}
+
 .badge{
   display:inline-flex;
   gap:6px;
@@ -101,10 +139,15 @@ body{
   border:1px solid var(--border);
   color:var(--muted);
   font-size:12px;
+  transition: opacity 0.15s, border-color 0.15s;
 }
 .badge.good{border-color: rgba(46,229,157,0.35); color: var(--good)}
 .badge.warn{border-color: rgba(255,211,107,0.35); color: var(--warn)}
 .badge.bad{border-color: rgba(255,107,138,0.35); color: var(--bad)}
+.badge[style*="cursor: pointer"]:hover{
+  opacity:0.8;
+  border-color:rgba(139,211,255,0.45);
+}
 
 .listbox{
   max-height: 320px;
