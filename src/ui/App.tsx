@@ -131,6 +131,18 @@ const albumTitleById = useMemo(() => {
   return m;
 }, [albums]);
 
+const filteredGroups = useMemo(() => {
+  const q = groupsFilter.trim().toLowerCase();
+  if (!q) return groups;
+  return groups.filter(g => String(g.name || "").toLowerCase().includes(q));
+}, [groups, groupsFilter]);
+
+const filteredAlbums = useMemo(() => {
+  const q = albumsFilter.trim().toLowerCase();
+  if (!q) return albums;
+  return albums.filter(a => String(a.title || "").toLowerCase().includes(q));
+}, [albums, albumsFilter]);
+
 const friendlyIdInMessage = (msg?: string) => {
   if (!msg) return msg;
   // Replace "group <id>" / "album <id>" with friendly names when possible.
@@ -948,12 +960,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <input className="input" value={groupsFilter} onChange={(e) => setGroupsFilter(e.target.value)} placeholder="search..." />
                   <div style={{ height: 8 }} />
                   <div className="listbox">
-                    {groups.filter(g => g.name.toLowerCase().includes(groupsFilter.toLowerCase())).slice(0, 200).map(g => (
+                    {filteredGroups.slice(0, 200).map(g => (
                       <div key={g.id} className="listrow">
                         <div className="small">{g.name}</div>
                       </div>
                     ))}
                     {!groups.length && <div className="small">Not loaded yet.</div>}
+                    {!!groups.length && !filteredGroups.length && <div className="small">No groups match this filter.</div>}
                   </div>
                 </div>
                 <div>
@@ -961,12 +974,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <input className="input" value={albumsFilter} onChange={(e) => setAlbumsFilter(e.target.value)} placeholder="search..." />
                   <div style={{ height: 8 }} />
                   <div className="listbox">
-                    {albums.filter(a => a.title.toLowerCase().includes(albumsFilter.toLowerCase())).slice(0, 200).map(a => (
+                    {filteredAlbums.slice(0, 200).map(a => (
                       <div key={a.id} className="listrow">
                         <div className="small">{a.title}</div>
                       </div>
                     ))}
                     {!albums.length && <div className="small">Not loaded yet.</div>}
+                    {!!albums.length && !filteredAlbums.length && <div className="small">No albums match this filter.</div>}
                   </div>
                 </div>
               </div>
@@ -1194,28 +1208,32 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div className="split">
                     <div>
                       <div className="small">Groups</div>
+                      <input className="input" value={groupsFilter} onChange={(e) => setGroupsFilter(e.target.value)} placeholder="Filter groups..." />
                       <div style={{ height: 8 }} />
                       <div className="listbox">
-                        {groups.map(g => (
+                        {filteredGroups.map(g => (
                           <label key={g.id} className="listrow trirow">
                             <TriCheck state={triState("group", g.id)} onToggle={(next) => setForSelected("group", g.id, next)} />
                             <span className="small">{g.name}</span>
                           </label>
                         ))}
                         {!groups.length && <div className="small">Load groups in Setup tab.</div>}
+                        {!!groups.length && !filteredGroups.length && <div className="small">No groups match this filter.</div>}
                       </div>
                     </div>
                     <div>
                       <div className="small">Albums</div>
+                      <input className="input" value={albumsFilter} onChange={(e) => setAlbumsFilter(e.target.value)} placeholder="Filter albums..." />
                       <div style={{ height: 8 }} />
                       <div className="listbox">
-                        {albums.map(a => (
+                        {filteredAlbums.map(a => (
                           <label key={a.id} className="listrow trirow">
                             <TriCheck state={triState("album", a.id)} onToggle={(next) => setForSelected("album", a.id, next)} />
                             <span className="small">{a.title}</span>
                           </label>
                         ))}
                         {!albums.length && <div className="small">Load albums in Setup tab.</div>}
+                        {!!albums.length && !filteredAlbums.length && <div className="small">No albums match this filter.</div>}
                       </div>
                     </div>
                   </div>
@@ -1277,8 +1295,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div className="split">
                     <div>
                       <div className="small">Groups</div>
+                      <input className="input" value={groupsFilter} onChange={(e) => setGroupsFilter(e.target.value)} placeholder="Filter groups..." />
+                      <div style={{ height: 8 }} />
                       <div className="listbox">
-                        {groups.map(g => (
+                        {filteredGroups.map(g => (
                           <label key={g.id} className="listrow">
                             <input
                               type="checkbox"
@@ -1301,12 +1321,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           </label>
                         ))}
                         {!groups.length && <div className="small">Load groups in Setup tab.</div>}
+                        {!!groups.length && !filteredGroups.length && <div className="small">No groups match this filter.</div>}
                       </div>
                     </div>
                     <div>
                       <div className="small">Albums</div>
+                      <input className="input" value={albumsFilter} onChange={(e) => setAlbumsFilter(e.target.value)} placeholder="Filter albums..." />
+                      <div style={{ height: 8 }} />
                       <div className="listbox">
-                        {albums.map(a => (
+                        {filteredAlbums.map(a => (
                           <label key={a.id} className="listrow">
                             <input
                               type="checkbox"
@@ -1317,6 +1340,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           </label>
                         ))}
                         {!albums.length && <div className="small">Load albums in Setup tab.</div>}
+                        {!!albums.length && !filteredAlbums.length && <div className="small">No albums match this filter.</div>}
                       </div>
                     </div>
                   </div>
