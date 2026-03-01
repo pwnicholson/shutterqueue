@@ -1182,29 +1182,33 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="hr" />
 
-                  <div className="small">Groups (tri-state)</div>
-                  <div style={{ height: 8 }} />
-                  <div className="listbox">
-                    {groups.map(g => (
-                      <label key={g.id} className="listrow">
-                        <TriCheck state={triState("group", g.id)} onToggle={(next) => setForSelected("group", g.id, next)} />
-                        <span className="small">{g.name}</span>
-                      </label>
-                    ))}
-                    {!groups.length && <div className="small">Load groups in Setup tab.</div>}
-                  </div>
-
-                  <div style={{ height: 12 }} />
-                  <div className="small">Albums (tri-state)</div>
-                  <div style={{ height: 8 }} />
-                  <div className="listbox">
-                    {albums.map(a => (
-                      <label key={a.id} className="listrow">
-                        <TriCheck state={triState("album", a.id)} onToggle={(next) => setForSelected("album", a.id, next)} />
-                        <span className="small">{a.title}</span>
-                      </label>
-                    ))}
-                    {!albums.length && <div className="small">Load albums in Setup tab.</div>}
+                  <div className="split">
+                    <div>
+                      <div className="small">Groups (tri-state)</div>
+                      <div style={{ height: 8 }} />
+                      <div className="listbox">
+                        {groups.map(g => (
+                          <label key={g.id} className="listrow">
+                            <TriCheck state={triState("group", g.id)} onToggle={(next) => setForSelected("group", g.id, next)} />
+                            <span className="small">{g.name}</span>
+                          </label>
+                        ))}
+                        {!groups.length && <div className="small">Load groups in Setup tab.</div>}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="small">Albums (tri-state)</div>
+                      <div style={{ height: 8 }} />
+                      <div className="listbox">
+                        {albums.map(a => (
+                          <label key={a.id} className="listrow">
+                            <TriCheck state={triState("album", a.id)} onToggle={(next) => setForSelected("album", a.id, next)} />
+                            <span className="small">{a.title}</span>
+                          </label>
+                        ))}
+                        {!albums.length && <div className="small">Load albums in Setup tab.</div>}
+                      </div>
+                    </div>
                   </div>
                 </>
               )}
