@@ -491,8 +491,25 @@ function createWindow() {
 function createTray() {
   if (tray) return; // Already exists
   
-  const iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
-  tray = new Tray(iconPath);
+  let iconPath;
+  if (process.platform === "darwin") {
+    // On macOS, use smaller template images for the menu bar
+    // Electron treats filenames with "Template" in them as template images that automatically invert for dark mode
+    const active = !!store.get("schedulerOn") && hasPendingWork();
+    const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
+    iconPath = path.join(__dirname, "..", "assets", filename);
+    
+    // If template images don't exist, use the app icons as fallback but they may be oversized
+    if (!fs.existsSync(iconPath)) {
+      logEvent("WARN", "Menu bar icons not found, using app icons as fallback", { filename });
+      iconPath = getIconPath(active);
+    }
+    tray = new Tray(iconPath);
+  } else {
+    // Windows/Linux: use normal icon sizing
+    iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
+    tray = new Tray(iconPath);
+  }
   
   const updateTrayMenu = () => {
     const schedulerOn = store.get("schedulerOn");
@@ -568,8 +585,19 @@ function createTray() {
 
 function updateTrayIcon() {
   if (tray) {
-    const iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
-    tray.setImage(iconPath);
+    const active = !!store.get("schedulerOn") && hasPendingWork();
+    if (process.platform === "darwin") {
+      // macOS: use menu bar icons
+      const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
+      const iconPath = path.join(__dirname, "..", "assets", filename);
+      if (fs.existsSync(iconPath)) {
+        tray.setImage(iconPath);
+      }
+    } else {
+      // Windows/Linux
+      const iconPath = getIconPath(active);
+      tray.setImage(iconPath);
+    }
   }
 }
 
