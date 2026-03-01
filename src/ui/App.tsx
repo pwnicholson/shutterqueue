@@ -273,6 +273,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   // Smart-sorted groups/albums for edit lists (only resorts when selectedIds changes)
+  // Smart-sorted groups/albums for edit lists (only resorts when selectedIds changes)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const sortedFilteredGroups = useMemo(() => {
     if (!selectedIds.length) return filteredGroups;
     
@@ -294,8 +296,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     });
     
     return withState;
-  }, [filteredGroups, selectedIds, queue]);
+  }, [filteredGroups, selectedIds]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const sortedFilteredAlbums = useMemo(() => {
     if (!selectedIds.length) return filteredAlbums;
     
@@ -317,7 +320,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     });
     
     return withState;
-  }, [filteredAlbums, selectedIds, queue]);
+  }, [filteredAlbums, selectedIds]);
 
   const selectedItems = useMemo(
     () => queue.filter(it => selectedSet.has(it.id)),
@@ -1408,7 +1411,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   />
 
                   <div style={{ height: 14 }} />
-                  <button className="btn primary" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
                   {active.lastError ? (() => {
                     const msg = friendlyIdInMessage(active.lastError) || "";
                     const parts = msg.split("|").map((s) => s.trim()).filter(Boolean);
