@@ -1784,7 +1784,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.7.9"}</span>
+          <span className="mono">v{appVersion || "0.8.0"}</span>
         </div>
       </div>
 
