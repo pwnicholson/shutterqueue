@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, Tray } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const Store = require("electron-store");
@@ -47,10 +47,24 @@ function logEvent(level, msg, extra) {
   logLine(`${ts} [${level}] ${msg}${suffix}`);
 }
 
+function logApiCallVerbose(methodName, params, result, error) {
+  if (!store.get("verboseLogging")) return;
+  const ts = new Date().toISOString();
+  const status = error ? "ERROR" : "OK";
+  const details = {
+    method: methodName,
+    params: typeof params === "object" ? Object.keys(params).join(", ") : String(params),
+    ...(error ? { error: String(error) } : { result: typeof result === "object" ? "received object" : String(result) })
+  };
+  logLine(`${ts} [API ${status}] ${methodName} - ${JSON.stringify(details)}`);
+}
+
 const queue = require("./services/queue.cjs");
 const flickr = require("./services/flickr.cjs");
 
 let win = null;
+let tray = null;
+let isQuitting = false;
 
 function getIconPath(active) {
   // Use a monochrome icon when scheduler is off OR there is no pending work.
@@ -108,7 +122,9 @@ const store = new Store({
     windowEnd: "22:00",
     daysEnabled: false,
     allowedDays: [1,2,3,4,5],
-    resumeOnLaunch: false
+    resumeOnLaunch: false,
+    verboseLogging: false,
+    minimizeToTray: false
   }
 });
 
@@ -460,6 +476,101 @@ function createWindow() {
 
   // Keep icon in sync (Windows/Linux). Safe no-op on macOS.
   updateWindowIcon();
+
+  // Handle window close: minimize to tray if enabled, otherwise quit
+  win.on("close", (event) => {
+    if (!isQuitting && store.get("minimizeToTray")) {
+      event.preventDefault();
+      win.hide();
+      // Ensure tray icon exists when minimizing
+      if (!tray) createTray();
+    }
+  });
+}
+
+function createTray() {
+  if (tray) return; // Already exists
+  
+  const iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
+  tray = new Tray(iconPath);
+  
+  const updateTrayMenu = () => {
+    const schedulerOn = store.get("schedulerOn");
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: "Show ShutterQueue",
+        click: () => {
+          if (win) {
+            win.show();
+            win.focus();
+          } else {
+            createWindow();
+          }
+        }
+      },
+      { type: "separator" },
+      {
+        label: schedulerOn ? "Stop Scheduler" : "Start Scheduler",
+        click: async () => {
+          if (schedulerOn) {
+            if (schedTimer) {
+              clearInterval(schedTimer);
+              schedTimer = null;
+            }
+            store.set("schedulerOn", false);
+            store.set("nextRunAt", null);
+          } else {
+            // Start scheduler with saved settings
+            const hours = store.get("intervalHours") || 24;
+            store.set("schedulerOn", true);
+            if (schedTimer) clearInterval(schedTimer);
+            schedTimer = setInterval(() => tickScheduler().catch(() => {}), 1000);
+          }
+          updateTrayMenu();
+          updateTrayIcon();
+        }
+      },
+      { type: "separator" },
+      {
+        label: "Quit ShutterQueue",
+        click: () => {
+          // Force quit without triggering minimize-to-tray
+          isQuitting = true;
+          app.quit();
+        }
+      }
+    ]);
+    tray.setContextMenu(contextMenu);
+  };
+  
+  updateTrayMenu();
+  tray.setToolTip("ShutterQueue");
+  
+  // Single click shows window
+  tray.on("click", () => {
+    if (win) {
+      if (win.isVisible()) {
+        win.focus();
+      } else {
+        win.show();
+        win.focus();
+      }
+    } else {
+      createWindow();
+    }
+  });
+
+  // Update menu periodically to reflect scheduler state
+  setInterval(() => {
+    if (tray) updateTrayMenu();
+  }, 2000);
+}
+
+function updateTrayIcon() {
+  if (tray) {
+    const iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
+    tray.setImage(iconPath);
+  }
 }
 
 
@@ -478,8 +589,17 @@ ipcMain.handle("open-third-party-licenses", async () => {
 
 app.whenReady().then(() => {
   createWindow();
+  
+  // Create tray if minimize-to-tray is enabled
+  if (store.get("minimizeToTray")) {
+    createTray();
+  }
+  
   // Keep icon in sync with scheduler/work state.
-  setInterval(() => updateWindowIcon(), 2000);
+  setInterval(() => {
+    updateWindowIcon();
+    updateTrayIcon();
+  }, 2000);
   // Prevent stale group/album warnings from persisting across launches.
   // Per-item warnings live on queue items; global lastError should be reserved for fatal/authorization errors.
   const le = String(store.get("lastError") || "");
@@ -504,6 +624,10 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
+app.on("before-quit", () => {
+  isQuitting = true;
+});
+
 
 ipcMain.handle("app:version", async () => {
   return app.getVersion();
@@ -526,7 +650,9 @@ ipcMain.handle("cfg:get", async () => ({
   daysEnabled: Boolean(store.get("daysEnabled")),
   allowedDays: store.get("allowedDays") || [1,2,3,4,5],
   resumeOnLaunch: Boolean(store.get("resumeOnLaunch")),
-  uploadBatchSize: Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1))))
+  uploadBatchSize: Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1)))),
+  verboseLogging: Boolean(store.get("verboseLogging")),
+  minimizeToTray: Boolean(store.get("minimizeToTray"))
 }));
 
 ipcMain.handle("cfg:setKeys", async (_e, { apiKey, apiSecret }) => {
@@ -670,24 +796,38 @@ ipcMain.handle("oauth:logout", async () => {
 ipcMain.handle("flickr:groups", async () => {
   if (!isAuthed()) throw new Error("Not authorized");
   const auth = getFlickrAuth();
-  return await flickr.listGroups({
-    apiKey: auth.apiKey,
-    apiSecret: auth.apiSecret,
-    token: auth.token,
-    tokenSecret: auth.tokenSecret,
-  });
+  try {
+    const result = await flickr.listGroups({
+      apiKey: auth.apiKey,
+      apiSecret: auth.apiSecret,
+      token: auth.token,
+      tokenSecret: auth.tokenSecret,
+    });
+    logApiCallVerbose("flickr.groups.getInfo", {}, result);
+    return result;
+  } catch (e) {
+    logApiCallVerbose("flickr.groups.getInfo", {}, null, e);
+    throw e;
+  }
 });
 
 ipcMain.handle("flickr:albums", async () => {
   if (!isAuthed()) throw new Error("Not authorized");
   const auth = getFlickrAuth();
-  return await flickr.listAlbums({
-    apiKey: auth.apiKey,
-    apiSecret: auth.apiSecret,
-    token: auth.token,
-    tokenSecret: auth.tokenSecret,
-    userNsid: store.get("userNsid"),
-  });
+  try {
+    const result = await flickr.listAlbums({
+      apiKey: auth.apiKey,
+      apiSecret: auth.apiSecret,
+      token: auth.token,
+      tokenSecret: auth.tokenSecret,
+      userNsid: store.get("userNsid"),
+    });
+    logApiCallVerbose("flickr.photosets.getList", {}, result);
+    return result;
+  } catch (e) {
+    logApiCallVerbose("flickr.photosets.getList", {}, null, e);
+    throw e;
+  }
 });
 ipcMain.handle("flickr:photoUrls", async (_e, { photoId }) => {
   if (!isAuthed()) throw new Error("Not authorized");
@@ -748,6 +888,53 @@ ipcMain.handle("log:clear", async () => {
     fs.writeFileSync(LOG_PATH, "", "utf-8");
   } catch {}
   return { ok: true };
+});
+
+ipcMain.handle("cfg:setVerboseLogging", async (_e, { enabled }) => {
+  store.set("verboseLogging", Boolean(enabled));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setMinimizeToTray", async (_e, { enabled }) => {
+  store.set("minimizeToTray", Boolean(enabled));
+  if (enabled) {
+    createTray();
+  } else if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+  return { ok: true };
+});
+
+ipcMain.handle("log:save", async () => {
+  try {
+    ensureRootDir();
+    if (!fs.existsSync(LOG_PATH)) return { ok: false };
+    const lines = fs.readFileSync(LOG_PATH, "utf-8");
+    const version = app.getVersion();
+    const now = new Date();
+    const dateStr = now.getFullYear().toString() + 
+      String(now.getMonth() + 1).padStart(2, '0') + 
+      String(now.getDate()).padStart(2, '0');
+    const timeStr = String(now.getHours()).padStart(2, '0') + 
+      String(now.getMinutes()).padStart(2, '0');
+    const defaultFileName = `ShutterQueue Log ${dateStr} ${timeStr}.txt`;
+    
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: path.join(os.homedir(), "Downloads", defaultFileName),
+      filters: [{ name: "Text Files", extensions: ["txt"] }]
+    });
+    
+    if (!result.canceled && result.filePath) {
+      const content = `ShutterQueue v${version}\n\n${lines}`;
+      fs.writeFileSync(result.filePath, content, "utf-8");
+      return { ok: true, filePath: result.filePath };
+    }
+    return { ok: false };
+  } catch (e) {
+    logEvent("ERROR", "Failed to save log", { error: String(e) });
+    return { ok: false };
+  }
 });
 
 

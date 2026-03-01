@@ -421,6 +421,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const [toast, setToast] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
+  const [verboseLogging, setVerboseLogging] = useState(false);
+  const [minimizeToTray, setMinimizeToTray] = useState(false);
 
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
 
@@ -441,6 +443,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setAllowedDays(Array.isArray(c.allowedDays) ? c.allowedDays : [1,2,3,4,5]);
     setResumeOnLaunch(Boolean(c.resumeOnLaunch));
     setUploadBatchSize(Math.max(1, Math.min(999, Math.round(Number((c as any).uploadBatchSize || 1)))));
+    setVerboseLogging(Boolean(c.verboseLogging));
+    setMinimizeToTray(Boolean(c.minimizeToTray));
 
     // scheduler defaults (only set once if missing)
     if (typeof c.timeWindowEnabled !== "boolean") setTimeWindowEnabled(false);
@@ -1056,6 +1060,26 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               <div className="small" style={{ marginTop: 10 }}>
                 Groups loaded: {groups.length} • Albums loaded: {albums.length}
               </div>
+              <div style={{ height: 12 }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={verboseLogging} onChange={(e) => {
+                  setVerboseLogging(e.target.checked);
+                  window.sq.setVerboseLogging(e.target.checked).catch(console.error);
+                }} />
+                <span className="small">Enable verbose API and activity logging</span>
+              </label>
+              <div style={{ height: 8 }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={minimizeToTray} onChange={(e) => {
+                  setMinimizeToTray(e.target.checked);
+                  window.sq.setMinimizeToTray(e.target.checked).catch(console.error);
+                }} />
+                <span className="small">
+                  {typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') 
+                    ? 'Minimize to menu bar when closing the app' 
+                    : 'Minimize to system tray when closing the app'}
+                </span>
+              </label>
             </div>
           </div>
 
@@ -1775,7 +1799,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         <div className="row" style={{ marginBottom: 10 }}>
           <button className="btn" onClick={async () => { setLogs(await window.sq.logGet()); showToast("Log refreshed."); }}>Refresh</button>
           <button className="btn danger" onClick={async () => { await window.sq.logClear(); setLogs([]); showToast("Log cleared."); }}>Clear log</button>
+          <button className="btn" onClick={async () => { const result = await window.sq.logSave(); showToast(result?.ok ? "Log saved." : "Failed to save log."); }}>Save log to file</button>
         </div>
+        <div style={{ height: 8 }} />
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="checkbox" checked={verboseLogging} onChange={(e) => {
+            setVerboseLogging(e.target.checked);
+            window.sq.setVerboseLogging(e.target.checked).catch(console.error);
+          }} />
+          <span className="small">Enable verbose API and activity logging</span>
+        </label>
         <div className="listbox" style={{ maxHeight: 520 }}>
           {logs.slice().reverse().map((line, i) => (
             <div key={i} className="listrow" style={{ alignItems: "flex-start" }}>

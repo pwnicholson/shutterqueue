@@ -32,6 +32,9 @@ contextBridge.exposeInMainWorld("sq", {
   showStartSchedulerDialog: () => ipcRenderer.invoke("ui:show-start-scheduler-dialog"),
   logGet: () => ipcRenderer.invoke("log:get"),
   logClear: () => ipcRenderer.invoke("log:clear"),
+  setVerboseLogging: (enabled) => ipcRenderer.invoke("cfg:setVerboseLogging", { enabled }),
+  setMinimizeToTray: (enabled) => ipcRenderer.invoke("cfg:setMinimizeToTray", { enabled }),
+  logSave: () => ipcRenderer.invoke("log:save"),
   appVersion: () => ipcRenderer.invoke("app:version"),
 
 });

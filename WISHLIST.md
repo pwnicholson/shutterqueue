@@ -12,14 +12,14 @@
 * [X] Group lists: sort selected groups alphabetically at top, then remaining groups alphabetically
 * [X] Clean up 'item successfully added to group moderation queue' still showing up in red like an error on some items
 * [X] Address queue tab loading lag
-* \[ ] Verify fix for group limit due to pagination of group lists
+* [X] Verbose logging mode option: Capture all codes from Flickr API and display them in the log* 
+\[ ] Verify fix for group limit due to pagination of group lists
 
 ## Soon
 
 * \[ ] Click and drag to move item priority for the group add list
 * \[ ] Improve progress bar on uploads (just flashes now, doesn't show actual progress of the individual item or the batch it is in)
 * \[ ] Minimize to System Tray on Windows and the status Menu/Bar on Mac
-* \[ ] Verbose logging mode option: Capture all codes from Flickr API and display them in the log
 
 ## Nice-to-have
 
