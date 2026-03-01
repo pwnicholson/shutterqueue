@@ -108,32 +108,46 @@ body{
 /* Bold scheduler control buttons */
 .btn-start{
   background: rgba(46,229,157,0.15);
-  border-color: rgba(46,229,157,0.45);
+  border: 1px solid rgba(46,229,157,0.45);
   color: var(--good);
   box-shadow: 0 2px 8px rgba(46,229,157,0.15);
   font-weight: 700;
   font-size: 15px;
   padding: 12px 20px;
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
 }
 .btn-start:hover:not(:disabled){
   background: rgba(46,229,157,0.22);
   border-color: rgba(46,229,157,0.60);
   box-shadow: 0 2px 12px rgba(46,229,157,0.25);
 }
+.btn-start:disabled{
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 .btn-stop{
   background: rgba(255,107,138,0.15);
-  border-color: rgba(255,107,138,0.45);
+  border: 1px solid rgba(255,107,138,0.45);
   color: var(--bad);
   box-shadow: 0 2px 8px rgba(255,107,138,0.15);
   font-weight: 700;
   font-size: 15px;
   padding: 12px 20px;
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
 }
 .btn-stop:hover{
   background: rgba(255,107,138,0.22);
   border-color: rgba(255,107,138,0.60);
   box-shadow: 0 2px 12px rgba(255,107,138,0.25);
+}
+.btn-stop:disabled{
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .badge{

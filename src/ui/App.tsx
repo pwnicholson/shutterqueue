@@ -108,20 +108,28 @@ function TriCheck(props: {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("queue");
+  const [displayTab, setDisplayTab] = useState<Tab>("queue");
   const [isTabLoading, setIsTabLoading] = useState(false);
 
   // Helper to switch tabs with immediate visual feedback
   const switchTab = (newTab: Tab) => {
     if (newTab === tab) return;
-    // Immediately update the tab selection (high priority)
-    setTab(newTab);
-    // Show loading state for heavy tabs
+    setTab(newTab); // Immediately update tab selection for visual feedback
+    
+    // For heavy tabs, show loading state before rendering content
     if (newTab === "queue" || newTab === "logs") {
-      setIsTabLoading(true);
-      // Defer hiding the loading state until after the next render
-      startTransition(() => {
-        setTimeout(() => setIsTabLoading(false), 50);
-      });
+      if (displayTab !== newTab) {
+        setIsTabLoading(true);
+        // Brief delay to ensure loading message renders before heavy content
+        setTimeout(() => {
+          setDisplayTab(newTab);
+          setTimeout(() => setIsTabLoading(false), 100);
+        }, 50);
+      }
+    } else {
+      // Light tabs render immediately
+      setDisplayTab(newTab);
+      setIsTabLoading(false);
     }
   };
   const [cfg, setCfg] = useState<any>(null);
@@ -984,7 +992,19 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}
       {cfg?.lastError ? <div className="badge bad" style={{ marginBottom: 12 }}> {friendlyIdInMessage(cfg.lastError)}</div> : null}
 
-      {tab === "setup" && (
+      {isTabLoading && (
+        <div className="grid">
+          <div className="card">
+            <div className="content">
+              <div style={{ fontSize: "16px", color: "var(--accent)", padding: "40px 0", textAlign: "center" }}>
+                Loading {tab === "queue" ? "queue" : tab === "logs" ? "logs" : "content"}...
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {displayTab === "setup" && (
         <div className="grid">
           <div className="card">
             <h2>Flickr API + OAuth</h2>
@@ -1085,12 +1105,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
       )}
 
-      {tab === "queue" && (
+      {displayTab === "queue" && (
         <div className="grid">
           <div className="card">
             <h2>Upload Queue (drag by handle ↕)</h2>
             <div className="content">
-              {isTabLoading && <div className="small" style={{ marginBottom: 10, color: "var(--accent)" }}>Loading queue...</div>}
               <div className="btnrow" style={{ marginBottom: 10, justifyContent: "space-between" }}>
                 <div className="btnrow">
                   <button className="btn primary" onClick={addPhotos} disabled={!cfg?.authed}>Add Photos</button>
@@ -1494,14 +1513,14 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
       )}
 
-      {tab === "schedule" && (
+      {displayTab === "schedule" && (
         <div className="grid">
           <div className="card">
             <h2>Scheduler</h2>
             <div className="content">
               <div className="row" style={{ gap: 14, marginBottom: 16 }}>
-                <button className="btn btn-start" onClick={startSched} disabled={!cfg?.authed || !queue.length}>▶ Start</button>
-                <button className="btn btn-stop" onClick={stopSched}>■ Stop</button>
+                <button className="btn-start" onClick={startSched} disabled={!cfg?.authed || !queue.length}>▶ Start</button>
+                <button className="btn-stop" onClick={stopSched}>■ Stop</button>
                 <button className="btn" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
               </div>
 
@@ -1733,12 +1752,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       )}
 
       
-{tab === "logs" && (
+{displayTab === "logs" && (
   <div className="grid">
     <div className="card">
       <h2>Activity Log</h2>
       <div className="content">
-        {isTabLoading && <div className="small" style={{ marginBottom: 10, color: "var(--accent)" }}>Loading logs...</div>}
         <div className="row" style={{ marginBottom: 10 }}>
           <button className="btn" onClick={async () => { setLogs(await window.sq.logGet()); showToast("Log refreshed."); }}>Refresh</button>
           <button className="btn danger" onClick={async () => { await window.sq.logClear(); setLogs([]); showToast("Log cleared."); }}>Clear log</button>
