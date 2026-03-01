@@ -164,6 +164,21 @@ const friendlyIdInMessage = (msg?: string) => {
   });
 };
 
+// Categorize a message as "success", "waiting", or "error"
+const categorizeMessage = (msg: string): "success" | "waiting" | "error" => {
+  const lower = msg.toLowerCase();
+  // Success: moderation queue, already in pool, adding to group (accepted)
+  if (/photo added to.*moderation queue|already in pool|^adding to group/i.test(msg)) {
+    return "success";
+  }
+  // Waiting: user limit reached (will retry)
+  if (/user limit reached|will attempt again/i.test(msg)) {
+    return "waiting";
+  }
+  // Error: actual failures
+  return "error";
+};
+
   const [didAutoLoadLists, setDidAutoLoadLists] = useState(false);
 
   const [appVersion, setAppVersion] = useState<string>("");
@@ -1414,19 +1429,38 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   {active.lastError ? (() => {
                     const msg = friendlyIdInMessage(active.lastError) || "";
                     const parts = msg.split("|").map((s) => s.trim()).filter(Boolean);
-                    // If status is "done" (not "done_warn" or "failed"), these are informational messages, not errors
-                    const isInfo = active.status === "done";
-                    const color = isInfo ? "var(--good)" : "var(--bad)";
-                    const label = isInfo ? "Info" : "Error";
-                    if (parts.length <= 1) {
-                      return <div className="small" style={{ color, marginTop: 10 }}><strong>{label}:</strong> {msg}</div>;
-                    }
+                    
+                    // Categorize messages
+                    const successMsgs = parts.filter(p => categorizeMessage(p) === "success");
+                    const waitingMsgs = parts.filter(p => categorizeMessage(p) === "waiting");
+                    const errorMsgs = parts.filter(p => categorizeMessage(p) === "error");
+                    
                     return (
                       <div style={{ marginTop: 10 }}>
-                        <div className="small" style={{ color, fontWeight: "bold" }}>{label}:</div>
-                        <ul className="small" style={{ color, marginTop: 4, marginBottom: 0, paddingLeft: 18 }}>
-                          {parts.map((p, i) => <li key={i}>{p}</li>)}
-                        </ul>
+                        {successMsgs.length > 0 && (
+                          <div>
+                            <div className="small" style={{ color: "var(--good)", fontWeight: "bold" }}>Success:</div>
+                            <ul className="small" style={{ color: "var(--good)", marginTop: 4, marginBottom: 8, paddingLeft: 18 }}>
+                              {successMsgs.map((p, i) => <li key={i}>{p}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                        {waitingMsgs.length > 0 && (
+                          <div>
+                            <div className="small" style={{ color: "var(--warn)", fontWeight: "bold" }}>Waiting:</div>
+                            <ul className="small" style={{ color: "var(--warn)", marginTop: 4, marginBottom: 8, paddingLeft: 18 }}>
+                              {waitingMsgs.map((p, i) => <li key={i}>{p}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                        {errorMsgs.length > 0 && (
+                          <div>
+                            <div className="small" style={{ color: "var(--bad)", fontWeight: "bold" }}>Errors:</div>
+                            <ul className="small" style={{ color: "var(--bad)", marginTop: 4, marginBottom: 0, paddingLeft: 18 }}>
+                              {errorMsgs.map((p, i) => <li key={i}>{p}</li>)}
+                            </ul>
+                          </div>
+                        )}
                       </div>
                     );
                   })() : null}
