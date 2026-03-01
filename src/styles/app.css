@@ -111,6 +111,9 @@ body{
   border-color: rgba(46,229,157,0.45);
   color: var(--good);
   box-shadow: 0 2px 8px rgba(46,229,157,0.15);
+  font-weight: 700;
+  font-size: 15px;
+  padding: 12px 20px;
 }
 .btn-start:hover:not(:disabled){
   background: rgba(46,229,157,0.22);
@@ -123,6 +126,9 @@ body{
   border-color: rgba(255,107,138,0.45);
   color: var(--bad);
   box-shadow: 0 2px 8px rgba(255,107,138,0.15);
+  font-weight: 700;
+  font-size: 15px;
+  padding: 12px 20px;
 }
 .btn-stop:hover{
   background: rgba(255,107,138,0.22);
