@@ -107,17 +107,22 @@ body{
 
 /* Bold scheduler control buttons */
 .btn-start{
+  display: inline-block;
+  box-sizing: border-box;
   background: rgba(46,229,157,0.15);
   border: 1px solid rgba(46,229,157,0.45);
   color: var(--good);
   box-shadow: 0 2px 8px rgba(46,229,157,0.15);
   font-weight: 700;
   font-size: 15px;
+  line-height: 1.2;
   padding: 12px 20px;
   border-radius: 12px;
   cursor: pointer;
   user-select: none;
+  vertical-align: middle;
   min-width: 90px;
+  min-height: 44px;
 }
 .btn-start:hover:not(:disabled){
   background: rgba(46,229,157,0.22);
@@ -130,17 +135,22 @@ body{
 }
 
 .btn-stop{
+  display: inline-block;
+  box-sizing: border-box;
   background: rgba(255,107,138,0.15);
   border: 1px solid rgba(255,107,138,0.45);
   color: var(--bad);
   box-shadow: 0 2px 8px rgba(255,107,138,0.15);
   font-weight: 700;
   font-size: 15px;
+  line-height: 1.2;
   padding: 12px 20px;
   border-radius: 12px;
   cursor: pointer;
   user-select: none;
+  vertical-align: middle;
   min-width: 90px;
+  min-height: 44px;
 }
 .btn-stop:hover{
   background: rgba(255,107,138,0.22);
