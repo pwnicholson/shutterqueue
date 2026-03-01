@@ -51,3 +51,4 @@ function normalizeLicense(val){
   fs.writeFileSync(outPath, header + body + "\n", "utf8");
   console.log(`Wrote ${outPath} with ${entries.length} entries.`);
 })();
+

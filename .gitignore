@@ -42,3 +42,4 @@ pnpm-debug.log*
 # local app data (ShutterQueue)
 # NOTE: If you later decide you WANT to sync these, remove from ignore.
 shutterqueue-data/
+
