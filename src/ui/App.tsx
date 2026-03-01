@@ -87,18 +87,34 @@ function TriCheck(props: {
   state: "all" | "none" | "some";
   onToggle: (next: "all" | "none") => void;
 }) {
-  const ref = useRef<HTMLInputElement | null>(null);
-  useEffect(() => {
-    if (!ref.current) return;
-    ref.current.indeterminate = props.state === "some";
-  }, [props.state]);
+  const bgColor = props.state === "all" ? "var(--accent)" : props.state === "some" ? "#7ba3d4" : "#f0f0f0";
+  const textColor = props.state === "none" ? "#999" : "#fff";
+  const symbol = props.state === "some" ? "−" : "✓";
+  const display = props.state === "none" ? "none" : "block";
+  
   return (
-    <input
-      ref={ref}
-      type="checkbox"
-      checked={props.state === "all"}
-      onChange={(e) => props.onToggle(e.target.checked ? "all" : "none")}
-    />
+    <div
+      onClick={() => props.onToggle(props.state === "all" ? "none" : "all")}
+      style={{
+        width: 18,
+        height: 18,
+        backgroundColor: bgColor,
+        border: `1px solid ${props.state === "all" ? "var(--accent)" : "#ccc"}`,
+        borderRadius: 2,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        fontSize: 14,
+        fontWeight: 600,
+        color: textColor,
+        lineHeight: 1,
+        transition: "background-color 0.15s",
+      }}
+      title={props.state === "all" ? "Uncheck all" : "Check all"}
+    >
+      <span style={{ display }}>{symbol}</span>
+    </div>
   );
 }
 
@@ -1110,13 +1126,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             <div className="content">
               {selectedIds.length > 1 && (
                 <>
-                  <div className="badge" style={{ marginBottom: 10, display: "block", width: "100%" }}>Batch edit: {selectedIds.length} selected</div>
+                  <div className="small" style={{ marginBottom: 12 }}>Batch edit: {selectedIds.length} selected items</div>
 
-                  <label className="small">Title (optional)</label>
+                  <label className="small">Title</label>
                   <input className="input" value={batchTitle} onChange={(e) => setBatchTitle(e.target.value)} placeholder="Leave blank to keep existing" />
 
                   <div style={{ height: 10 }} />
-                  <label className="small">Add tags (comma-separated) (optional)</label>
+                  <label className="small">Add tags (comma-separated)</label>
 
                   {commonTags.length > 0 && (
                     <div style={{ marginTop: 6, marginBottom: 6 }}>
@@ -1143,13 +1159,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   </div>
 
                   <div style={{ height: 10 }} />
-                  <label className="small">Description (optional)</label>
+                  <label className="small">Description</label>
                   <textarea className="textarea" value={batchDescription} onChange={(e) => setBatchDescription(e.target.value)} placeholder="Leave blank to keep existing" />
 
                   <div style={{ height: 10 }} />
                   <div className="split">
                     <div>
-                      <label className="small">Privacy (optional)</label>
+                      <label className="small">Privacy</label>
                       <select className="input" value={batchPrivacy} onChange={(e) => setBatchPrivacy(e.target.value as any)}>
                         <option value="">(leave unchanged)</option>
                         <option value="public">Public</option>
@@ -1160,7 +1176,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       </select>
                     </div>
                     <div>
-                      <label className="small">Safety level (optional)</label>
+                      <label className="small">Safety level</label>
                       <select className="input" value={batchSafety} onChange={(e) => {
                         const v = e.target.value;
                         setBatchSafety((v === "" ? "" : (Number(v) as any)));
@@ -1174,7 +1190,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   </div>
 
                   <div style={{ height: 10 }} />
-                  <label className="small">Create new albums (comma-separated titles) (optional)</label>
+                  <label className="small">Create new albums (comma-separated titles)</label>
                   <input className="input" value={batchCreateAlbums} onChange={(e) => setBatchCreateAlbums(e.target.value)} placeholder="e.g., Trip 2026, Portfolio" />
 
                   <div style={{ height: 12 }} />
@@ -1184,7 +1200,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="split">
                     <div>
-                      <div className="small">Groups (tri-state)</div>
+                      <div className="small">Groups</div>
                       <div style={{ height: 8 }} />
                       <div className="listbox">
                         {groups.map(g => (
@@ -1197,7 +1213,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       </div>
                     </div>
                     <div>
-                      <div className="small">Albums (tri-state)</div>
+                      <div className="small">Albums</div>
                       <div style={{ height: 8 }} />
                       <div className="listbox">
                         {albums.map(a => (
