@@ -87,34 +87,22 @@ function TriCheck(props: {
   state: "all" | "none" | "some";
   onToggle: (next: "all" | "none") => void;
 }) {
-  const bgColor = props.state === "all" ? "var(--accent)" : props.state === "some" ? "#7ba3d4" : "#f0f0f0";
-  const textColor = props.state === "none" ? "#999" : "#fff";
-  const symbol = props.state === "some" ? "−" : "✓";
-  const display = props.state === "none" ? "none" : "block";
-  
+  const ref = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    ref.current.indeterminate = props.state === "some";
+  }, [props.state]);
+
   return (
-    <div
-      onClick={() => props.onToggle(props.state === "all" ? "none" : "all")}
-      style={{
-        width: 18,
-        height: 18,
-        backgroundColor: bgColor,
-        border: `1px solid ${props.state === "all" ? "var(--accent)" : "#ccc"}`,
-        borderRadius: 2,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "pointer",
-        fontSize: 14,
-        fontWeight: 600,
-        color: textColor,
-        lineHeight: 1,
-        transition: "background-color 0.15s",
-      }}
+    <input
+      ref={ref}
+      type="checkbox"
+      checked={props.state === "all"}
+      className={`tricheck ${props.state === "some" ? "mixed" : ""}`}
+      onChange={(e) => props.onToggle(e.target.checked ? "all" : "none")}
+      onClick={(e) => e.stopPropagation()}
       title={props.state === "all" ? "Uncheck all" : "Check all"}
-    >
-      <span style={{ display }}>{symbol}</span>
-    </div>
+    />
   );
 }
 
@@ -1041,6 +1029,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     <div
                       key={it.id}
                       className={`qitem ${isSelected ? "selected" : ""} ${dragClass}`}
+                      onMouseDown={(e) => {
+                        const t = e.target as HTMLElement;
+                        if (t.closest("button, input, textarea, select, .drag")) return;
+                        e.preventDefault();
+                      }}
                       onClick={(e) => {
                         const t = e.target as HTMLElement;
                         if (t.classList.contains("drag")) return;
@@ -1204,7 +1197,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <div style={{ height: 8 }} />
                       <div className="listbox">
                         {groups.map(g => (
-                          <label key={g.id} className="listrow">
+                          <label key={g.id} className="listrow trirow">
                             <TriCheck state={triState("group", g.id)} onToggle={(next) => setForSelected("group", g.id, next)} />
                             <span className="small">{g.name}</span>
                           </label>
@@ -1217,7 +1210,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <div style={{ height: 8 }} />
                       <div className="listbox">
                         {albums.map(a => (
-                          <label key={a.id} className="listrow">
+                          <label key={a.id} className="listrow trirow">
                             <TriCheck state={triState("album", a.id)} onToggle={(next) => setForSelected("album", a.id, next)} />
                             <span className="small">{a.title}</span>
                           </label>

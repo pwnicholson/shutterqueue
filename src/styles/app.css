@@ -123,6 +123,29 @@ body{
 }
 .listrow:hover{background: rgba(255,255,255,0.03)}
 
+.trirow{
+  align-items:flex-start;
+}
+
+.tricheck{
+  width:16px;
+  height:16px;
+  min-width:16px;
+  min-height:16px;
+  flex:0 0 16px;
+  margin-top:1px;
+  cursor:pointer;
+}
+
+.tricheck.mixed{
+  accent-color: #7eaee6;
+}
+
+.trirow > .small{
+  min-width:0;
+  text-align:left;
+}
+
 .queue{
   display:flex;
   flex-direction:column;
@@ -137,8 +160,13 @@ body{
   border-radius: 14px;
   padding:10px 12px;
   background: rgba(255,255,255,0.02);
+  user-select:none;
 }
 .qitem.selected { border-color: rgba(139,211,255,0.55); box-shadow: 0 0 0 2px rgba(139,211,255,0.18) inset; }
+
+.qitem *{
+  user-select:none;
+}
 
 .thumb{
   width:54px;height:54px;
