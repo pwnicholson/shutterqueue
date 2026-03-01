@@ -5,6 +5,8 @@
 * [x] Fix preview full-screen display sizing (fit to window)
 * [x] Fix scheduler starter dialog to offer "now, wait, or cancel" options.
 * [x] Store API keys in a more secure fashion
+* \[ ] Fix group limit due to pagination of group lists
+* \[ ] Improve location for "start" and "stop" buttons to make it more obvious
 
 ## Soon
 
