@@ -117,6 +117,7 @@ body{
   border-radius: 12px;
   cursor: pointer;
   user-select: none;
+  min-width: 90px;
 }
 .btn-start:hover:not(:disabled){
   background: rgba(46,229,157,0.22);
@@ -139,6 +140,7 @@ body{
   border-radius: 12px;
   cursor: pointer;
   user-select: none;
+  min-width: 90px;
 }
 .btn-stop:hover{
   background: rgba(255,107,138,0.22);

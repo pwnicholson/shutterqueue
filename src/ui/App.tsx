@@ -992,7 +992,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}
       {cfg?.lastError ? <div className="badge bad" style={{ marginBottom: 12 }}> {friendlyIdInMessage(cfg.lastError)}</div> : null}
 
-      {isTabLoading && (
+      {isTabLoading ? (
         <div className="grid">
           <div className="card">
             <div className="content">
@@ -1002,8 +1002,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             </div>
           </div>
         </div>
-      )}
-
+      ) : (
+        <>
       {displayTab === "setup" && (
         <div className="grid">
           <div className="card">
@@ -1776,6 +1776,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     </div>
   </div>
 )}
+        </>
+      )}
 <div className="small footer">By Paul Nicholson. Not an official Flickr app.</div>
       <div className="footer-fixed">
         <div className="footer-left">
