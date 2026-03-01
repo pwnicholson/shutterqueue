@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, Tray } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, Tray, nativeImage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const Store = require("electron-store");
@@ -494,7 +494,6 @@ function createTray() {
   let iconPath;
   if (process.platform === "darwin") {
     // On macOS, use smaller template images for the menu bar
-    // Electron treats filenames with "Template" in them as template images that automatically invert for dark mode
     const active = !!store.get("schedulerOn") && hasPendingWork();
     const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
     iconPath = path.join(__dirname, "..", "assets", filename);
@@ -503,8 +502,13 @@ function createTray() {
     if (!fs.existsSync(iconPath)) {
       logEvent("WARN", "Menu bar icons not found, using app icons as fallback", { filename });
       iconPath = getIconPath(active);
+      tray = new Tray(iconPath);
+    } else {
+      // Load and set as template image so Electron handles dark/light mode properly
+      const image = nativeImage.createFromPath(iconPath);
+      image.setTemplateImage(true);
+      tray = new Tray(image);
     }
-    tray = new Tray(iconPath);
   } else {
     // Windows/Linux: use normal icon sizing
     iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
@@ -587,11 +591,16 @@ function updateTrayIcon() {
   if (tray) {
     const active = !!store.get("schedulerOn") && hasPendingWork();
     if (process.platform === "darwin") {
-      // macOS: use menu bar icons
+      // macOS: use menu bar icons with explicit template mode
       const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
       const iconPath = path.join(__dirname, "..", "assets", filename);
       if (fs.existsSync(iconPath)) {
-        tray.setImage(iconPath);
+        const image = nativeImage.createFromPath(iconPath);
+        image.setTemplateImage(true);
+        tray.setImage(image);
+      } else {
+        // Fallback to app icon
+        tray.setImage(getIconPath(active));
       }
     } else {
       // Windows/Linux
