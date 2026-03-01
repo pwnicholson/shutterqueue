@@ -310,6 +310,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
 
   const active = useMemo(() => queue.find(q => q.id === activeId) || null, [queue, activeId]);
+  const isUploaded = useMemo(() => active?.photoId && (active.status === "done" || active.status === "done_warn"), [active]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   // Smart-sorted groups/albums for edit lists (only resorts when selectedIds changes)
@@ -1194,7 +1195,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         <div className="qpath">{it.photoPath}</div>
                         <div className="qmeta">
                           {it.status === "done_warn" ? (
-                            hasPendingGroupRetries ? <span className="badge">done</span> : <span className="badge warn">done (warnings)</span>
+                            hasPendingGroupRetries ? <span className="badge accent">Uploaded</span> : <span className="badge warn">done (warnings)</span>
+                          ) : it.status === "done" ? (
+                            hasPendingGroupRetries ? <span className="badge accent">Uploaded</span> : <span className="badge good">done</span>
                           ) : (
                             <span className="badge">{it.status}</span>
                           )}
@@ -1357,25 +1360,36 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     Single-item edit. (Tip: select multiple items in the queue for batch edit.)
                   </div>
 
+                  {isUploaded && (
+                    <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 8, marginBottom: 12, borderRadius: 4 }}>
+                      <div className="small" style={{ color: "var(--warn)", fontWeight: "bold" }}>
+                        ✓ Already uploaded to Flickr
+                      </div>
+                      <div className="small" style={{ color: "var(--warn)", marginTop: 4 }}>
+                        Metadata fields below are locked. To modify this photo on Flickr, edit it directly on flickr.com.
+                      </div>
+                    </div>
+                  )}
+
                   <label className="small">Title</label>
-                  <input className="input" value={active.title} onChange={(e) => updateActive({ title: e.target.value })} />
+                  <input className="input" disabled={isUploaded} value={active.title} onChange={(e) => updateActive({ title: e.target.value })} />
 
                   <div style={{ height: 10 }} />
                   <label className="small">Tags (comma-separated)</label>
-                  <input className="input" value={active.tags} onChange={(e) => updateActive({ tags: e.target.value })} placeholder="e.g., travel, street photo, black and white" />
+                  <input className="input" disabled={isUploaded} value={active.tags} onChange={(e) => updateActive({ tags: e.target.value })} placeholder="e.g., travel, street photo, black and white" />
                   <div className="small" style={{ marginTop: 6 }}>
                     Multi-word tags are supported (we’ll quote them automatically for Flickr).
                   </div>
 
                   <div style={{ height: 10 }} />
                   <label className="small">Description</label>
-                  <textarea className="textarea" value={active.description} onChange={(e) => updateActive({ description: e.target.value })} />
+                  <textarea className="textarea" disabled={isUploaded} value={active.description} onChange={(e) => updateActive({ description: e.target.value })} />
 
                   <div style={{ height: 10 }} />
                   <div className="split">
                     <div>
                       <label className="small">Privacy</label>
-                      <select className="input" value={active.privacy || "private"} onChange={(e) => updateActive({ privacy: e.target.value as any })}>
+                      <select className="input" disabled={isUploaded} value={active.privacy || "private"} onChange={(e) => updateActive({ privacy: e.target.value as any })}>
                         <option value="public">Public</option>
                         <option value="friends">Friends only</option>
                         <option value="family">Family only</option>
@@ -1387,6 +1401,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <label className="small">Safety level</label>
                       <select
                         className="input"
+                        disabled={isUploaded}
                         value={String((active as any).safetyLevel || 1)}
                         onChange={(e) => updateActive({ safetyLevel: Number(e.target.value) as any })}
                       >

@@ -9,6 +9,7 @@
   --good:#2ee59d;
   --warn:#ffd36b;
   --bad:#ff6b8a;
+  --warn-bg:rgba(255, 211, 107, 0.08);
 }
 
 *{box-sizing:border-box}
@@ -90,6 +91,7 @@ body{
 }
 .textarea{min-height:90px;resize:vertical}
 .input:focus,.textarea:focus, select.input:focus{border-color: rgba(139,211,255,0.4); box-shadow: 0 0 0 3px rgba(139,211,255,0.12)}
+.input:disabled,.textarea:disabled, select.input:disabled{opacity:0.5;background: rgba(255,255,255,0.01);cursor: not-allowed;color:var(--muted)}
 
 .btn{
   background: rgba(255,255,255,0.02);
@@ -176,6 +178,7 @@ body{
 .badge.good{border-color: rgba(46,229,157,0.35); color: var(--good)}
 .badge.warn{border-color: rgba(255,211,107,0.35); color: var(--warn)}
 .badge.bad{border-color: rgba(255,107,138,0.35); color: var(--bad)}
+.badge.accent{border-color: rgba(139,211,255,0.35); color: var(--accent)}
 .badge[style*="cursor: pointer"]:hover{
   opacity:0.8;
   border-color:rgba(139,211,255,0.45);
