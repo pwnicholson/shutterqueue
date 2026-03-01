@@ -7,6 +7,7 @@
 * [x] Store API keys in a more secure fashion
 * \[ ] Fix group limit due to pagination of group lists
 * \[ ] Improve location for "start" and "stop" buttons to make it more obvious
+* \[ ] Fix queue tab loading time (lazy load images/thumbnails?)
 
 ## Soon
 
@@ -19,6 +20,7 @@
 
 ## Nice-to-have
 
+* \[ ] Allow photos to be scheduled for a specific time, not just an interval and queue order
 * \[ ] Add geographic data after upload (country/region/city lookup; optional map pick)
 * \[ ] Saved “Sets” of groups/albums (user-defined)
 * \[ ] Spellcheck for title/description/tags (free/open-source)
