@@ -143,53 +143,6 @@ const filteredAlbums = useMemo(() => {
   return albums.filter(a => String(a.title || "").toLowerCase().includes(q));
 }, [albums, albumsFilter]);
 
-// Smart-sorted groups/albums for edit lists (only resorts when selectedIds changes)
-const sortedFilteredGroups = useMemo(() => {
-  if (!selectedIds.length) return filteredGroups;
-  
-  const withState = filteredGroups.map(g => {
-    let on = 0;
-    for (const sid of selectedIds) {
-      const it = queue.find(x => x.id === sid);
-      if (it?.groupIds?.includes(g.id)) on += 1;
-    }
-    const state = on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
-    return { ...g, state };
-  });
-  
-  withState.sort((a, b) => {
-    const order = { all: 0, some: 1, none: 2 };
-    const stateCompare = order[a.state] - order[b.state];
-    if (stateCompare !== 0) return stateCompare;
-    return (a.name || "").localeCompare(b.name || "");
-  });
-  
-  return withState;
-}, [filteredGroups, selectedIds, queue]);
-
-const sortedFilteredAlbums = useMemo(() => {
-  if (!selectedIds.length) return filteredAlbums;
-  
-  const withState = filteredAlbums.map(a => {
-    let on = 0;
-    for (const sid of selectedIds) {
-      const it = queue.find(x => x.id === sid);
-      if (it?.albumIds?.includes(a.id)) on += 1;
-    }
-    const state = on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
-    return { ...a, state };
-  });
-  
-  withState.sort((a, b) => {
-    const order = { all: 0, some: 1, none: 2 };
-    const stateCompare = order[a.state] - order[b.state];
-    if (stateCompare !== 0) return stateCompare;
-    return (a.title || "").localeCompare(b.title || "");
-  });
-  
-  return withState;
-}, [filteredAlbums, selectedIds, queue]);
-
 const friendlyIdInMessage = (msg?: string) => {
   if (!msg) return msg;
   // Replace "group <id>" / "album <id>" with friendly names when possible.
@@ -318,6 +271,53 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const active = useMemo(() => queue.find(q => q.id === activeId) || null, [queue, activeId]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  // Smart-sorted groups/albums for edit lists (only resorts when selectedIds changes)
+  const sortedFilteredGroups = useMemo(() => {
+    if (!selectedIds.length) return filteredGroups;
+    
+    const withState = filteredGroups.map(g => {
+      let on = 0;
+      for (const sid of selectedIds) {
+        const it = queue.find(x => x.id === sid);
+        if (it?.groupIds?.includes(g.id)) on += 1;
+      }
+      const state = on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
+      return { ...g, state };
+    });
+    
+    withState.sort((a, b) => {
+      const order = { all: 0, some: 1, none: 2 };
+      const stateCompare = order[a.state] - order[b.state];
+      if (stateCompare !== 0) return stateCompare;
+      return (a.name || "").localeCompare(b.name || "");
+    });
+    
+    return withState;
+  }, [filteredGroups, selectedIds, queue]);
+
+  const sortedFilteredAlbums = useMemo(() => {
+    if (!selectedIds.length) return filteredAlbums;
+    
+    const withState = filteredAlbums.map(a => {
+      let on = 0;
+      for (const sid of selectedIds) {
+        const it = queue.find(x => x.id === sid);
+        if (it?.albumIds?.includes(a.id)) on += 1;
+      }
+      const state = on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
+      return { ...a, state };
+    });
+    
+    withState.sort((a, b) => {
+      const order = { all: 0, some: 1, none: 2 };
+      const stateCompare = order[a.state] - order[b.state];
+      if (stateCompare !== 0) return stateCompare;
+      return (a.title || "").localeCompare(b.title || "");
+    });
+    
+    return withState;
+  }, [filteredAlbums, selectedIds, queue]);
 
   const selectedItems = useMemo(
     () => queue.filter(it => selectedSet.has(it.id)),
