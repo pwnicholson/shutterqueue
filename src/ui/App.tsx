@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, startTransition } from "react";
 import type { Album, Group, Privacy, QueueItem } from "../types";
 
 type Tab = "setup" | "queue" | "schedule" | "logs";
@@ -108,6 +108,22 @@ function TriCheck(props: {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("queue");
+  const [isTabLoading, setIsTabLoading] = useState(false);
+
+  // Helper to switch tabs with immediate visual feedback
+  const switchTab = (newTab: Tab) => {
+    if (newTab === tab) return;
+    // Immediately update the tab selection (high priority)
+    setTab(newTab);
+    // Show loading state for heavy tabs
+    if (newTab === "queue" || newTab === "logs") {
+      setIsTabLoading(true);
+      // Defer hiding the loading state until after the next render
+      startTransition(() => {
+        setTimeout(() => setIsTabLoading(false), 50);
+      });
+    }
+  };
   const [cfg, setCfg] = useState<any>(null);
 
   const [apiKey, setApiKey] = useState("");
@@ -177,48 +193,6 @@ const categorizeMessage = (msg: string): "success" | "waiting" | "error" => {
   }
   // Error: actual failures
   return "error";
-};
-
-// Lazy-loaded queue item thumbnail component
-const LazyQueueItemThumb = ({ item, srcs, onLoadThumbnail, onPreview }: any) => {
-  const imgRef = useRef<HTMLImageElement>(null);
-  const [hasLoaded, setHasLoaded] = useState(false);
-
-  useEffect(() => {
-    if (hasLoaded || !imgRef.current) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setHasLoaded(true);
-          onLoadThumbnail(item);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "100px" } // Start loading 100px before entering viewport
-    );
-
-    observer.observe(imgRef.current);
-    return () => observer.disconnect();
-  }, [hasLoaded, item, onLoadThumbnail]);
-
-  return (
-    <img
-      ref={imgRef}
-      className={`thumb ${srcs.thumbSrc ? "" : "empty"}`}
-      src={srcs.thumbSrc || ""}
-      alt=""
-      onClick={(e) => {
-        e.stopPropagation();
-        if (!srcs.previewSrc) return;
-        onPreview({
-          src: srcs.previewSrc,
-          title: item.title || fileNameFromPath(item.photoPath),
-        });
-      }}
-      style={{ cursor: srcs.previewSrc ? "pointer" : "default" }}
-    />
-  );
 };
 
 
@@ -588,26 +562,29 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     })();
   }, [cfg?.authed, didAutoLoadLists]);
 
-
-  // Lazy-load thumbnails and Flickr metadata only when scrolled into view
-  const loadThumbnailForItem = async (it: any) => {
-    // Try to load local thumbnail if we haven't cached it yet
-    let dataUrl = thumbs[it.photoPath];
-    if (dataUrl === undefined) {
-      dataUrl = await window.sq.getThumbDataUrl(it.photoPath);
-      setThumbs(t => ({ ...t, [it.photoPath]: dataUrl }));
-    }
-    // If local thumbnail is missing and item has a photoId, try fetching from Flickr
-    if (!dataUrl && it.photoId && flickrUrls[it.photoId] === undefined) {
-      try {
-        // @ts-ignore - dynamic typing for sq API
-        const u = await window.sq.getFlickrPhotoUrls(it.photoId);
-        setFlickrUrls(m => ({ ...m, [it.photoId as any]: u }));
-      } catch {
-        // ignore
+  useEffect(() => {
+    (async () => {
+      for (const it of queue.slice(0, 120)) {
+        // Try to load local thumbnail if we haven't cached it yet
+        let dataUrl = thumbs[it.photoPath];
+        if (dataUrl === undefined) {
+          dataUrl = await window.sq.getThumbDataUrl(it.photoPath);
+          setThumbs(t => ({ ...t, [it.photoPath]: dataUrl }));
+        }
+        // If local thumbnail is missing and item has a photoId, try fetching from Flickr
+        if (!dataUrl && it.photoId && flickrUrls[it.photoId] === undefined) {
+          try {
+            // @ts-ignore - dynamic typing for sq API
+            const u = await window.sq.getFlickrPhotoUrls(it.photoId);
+            setFlickrUrls(m => ({ ...m, [it.photoId as any]: u }));
+          } catch {
+            // ignore
+          }
+        }
       }
-    }
-  };
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue]);
 
   const saveKeys = async () => {
     await window.sq.setApiKeySecret(apiKey, apiSecret);
@@ -983,18 +960,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       {/* sticky header with tabs and badges */}
       <div className="sticky-header">
         <div className="tabs">
-          <div className={`tab ${tab==="queue"?"selected":""}`} onClick={() => setTab("queue")} role="tab" tabIndex={0}>Queue</div>
-          <div className={`tab ${tab==="schedule"?"selected":""}`} onClick={() => setTab("schedule")} role="tab" tabIndex={0}>Schedule</div>
-          <div className={`tab ${tab==="logs"?"selected":""}`} onClick={() => setTab("logs")} role="tab" tabIndex={0}>Logs</div>
-          <div className={`tab ${tab==="setup"?"selected":""}`} onClick={() => setTab("setup")} role="tab" tabIndex={0}>Setup</div>
+          <div className={`tab ${tab==="queue"?"selected":""}`} onClick={() => switchTab("queue")} role="tab" tabIndex={0}>Queue</div>
+          <div className={`tab ${tab==="schedule"?"selected":""}`} onClick={() => switchTab("schedule")} role="tab" tabIndex={0}>Schedule</div>
+          <div className={`tab ${tab==="logs"?"selected":""}`} onClick={() => switchTab("logs")} role="tab" tabIndex={0}>Logs</div>
+          <div className={`tab ${tab==="setup"?"selected":""}`} onClick={() => switchTab("setup")} role="tab" tabIndex={0}>Setup</div>
         </div>
         <div className="btncluster" style={{ alignItems: "center", marginLeft: "auto" }}>
-          {cfg?.authed ? <span className="badge good" onClick={() => setTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Authorized</span> : <span className="badge warn" onClick={() => setTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Not authorized</span>}
-          <span className="badge" onClick={() => setTab("queue")} style={{ cursor: "pointer" }} title="Click to jump to Queue">{queue.length} in queue</span>
+          {cfg?.authed ? <span className="badge good" onClick={() => switchTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Authorized</span> : <span className="badge warn" onClick={() => switchTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Not authorized</span>}
+          <span className="badge" onClick={() => switchTab("queue")} style={{ cursor: "pointer" }} title="Click to jump to Queue">{queue.length} in queue</span>
           {sched?.schedulerOn ? (
             <span className="badge good" onClick={async () => { await stopSched(); }} style={{ cursor: "pointer" }} title="Click to stop scheduler">Scheduler ON</span>
           ) : (
-            <span className="badge" onClick={async () => { setTab("schedule"); await startSched(); }} style={{ cursor: "pointer" }} title="Click to start scheduler">Scheduler OFF</span>
+            <span className="badge" onClick={async () => { switchTab("schedule"); await startSched(); }} style={{ cursor: "pointer" }} title="Click to start scheduler">Scheduler OFF</span>
           )}
           <div style={{position:'relative', width:200, height:6, marginLeft:12, background:'rgba(255,255,255,0.05)', borderRadius:3, overflow:'hidden'}}>
             {uploadProgress != null && (
@@ -1113,6 +1090,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <div className="card">
             <h2>Upload Queue (drag by handle ↕)</h2>
             <div className="content">
+              {isTabLoading && <div className="small" style={{ marginBottom: 10, color: "var(--accent)" }}>Loading queue...</div>}
               <div className="btnrow" style={{ marginBottom: 10, justifyContent: "space-between" }}>
                 <div className="btnrow">
                   <button className="btn primary" onClick={addPhotos} disabled={!cfg?.authed}>Add Photos</button>
@@ -1177,11 +1155,20 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         onDropReorder(fromId, it.id, pos);
                       }}
                     >
-                      <LazyQueueItemThumb
-                        item={it}
-                        srcs={srcs}
-                        onLoadThumbnail={loadThumbnailForItem}
-                        onPreview={setPreview}
+                      <img
+                        className={`thumb ${thumb ? "" : "empty"}`}
+                        src={thumb || ""}
+                        alt=""
+                        onClick={(e) => {
+                          // Prevent row-click selection toggle when opening preview.
+                          e.stopPropagation();
+                          if (!srcs.previewSrc) return;
+                          setPreview({
+                            src: srcs.previewSrc,
+                            title: it.title || fileNameFromPath(it.photoPath),
+                          });
+                        }}
+                        style={{ cursor: srcs.previewSrc ? "pointer" : "default" }}
                       />
                       <div className="qmid">
                         <div className="qtitle">{it.title || "(untitled)"}</div>
@@ -1751,6 +1738,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     <div className="card">
       <h2>Activity Log</h2>
       <div className="content">
+        {isTabLoading && <div className="small" style={{ marginBottom: 10, color: "var(--accent)" }}>Loading logs...</div>}
         <div className="row" style={{ marginBottom: 10 }}>
           <button className="btn" onClick={async () => { setLogs(await window.sq.logGet()); showToast("Log refreshed."); }}>Refresh</button>
           <button className="btn danger" onClick={async () => { await window.sq.logClear(); setLogs([]); showToast("Log cleared."); }}>Clear log</button>
