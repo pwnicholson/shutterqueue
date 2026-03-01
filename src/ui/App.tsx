@@ -858,7 +858,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <div className="h1">ShutterQueue</div>
           <div className="sub">A paced uploader for Flickr. Build a queue, reorder on the fly, and upload every 1–168 hours.</div>
         </div>
-        <div className="btncluster" style={{ alignItems: "center" }}>
+        <div className="btncluster" style={{ alignItems: "center", marginLeft: "auto" }}>
           {cfg?.authed ? <span className="badge good">Authorized</span> : <span className="badge warn">Not authorized</span>}
           <span className="badge">{queue.length} in queue</span>
           {sched?.schedulerOn ? <span className="badge good">Scheduler ON</span> : <span className="badge">Scheduler OFF</span>}
@@ -872,10 +872,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
       {/* tab strip */}
       <div className="tabs">
-        <div className={`tab ${tab==="queue"?"selected":""}`} onClick={() => setTab("queue")}>Queue</div>
-        <div className={`tab ${tab==="schedule"?"selected":""}`} onClick={() => setTab("schedule")}>Schedule</div>
-        <div className={`tab ${tab==="logs"?"selected":""}`} onClick={() => setTab("logs")}>Logs</div>
-        <div className={`tab ${tab==="setup"?"selected":""}`} onClick={() => setTab("setup")}>Setup</div>
+        <div className={`tab ${tab==="queue"?"selected":""}`} onClick={() => setTab("queue")} role="tab" tabIndex={0}>Queue</div>
+        <div className={`tab ${tab==="schedule"?"selected":""}`} onClick={() => setTab("schedule")} role="tab" tabIndex={0}>Schedule</div>
+        <div className={`tab ${tab==="logs"?"selected":""}`} onClick={() => setTab("logs")} role="tab" tabIndex={0}>Logs</div>
+        <div className={`tab ${tab==="setup"?"selected":""}`} onClick={() => setTab("setup")} role="tab" tabIndex={0}>Setup</div>
       </div>
 
       {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}
