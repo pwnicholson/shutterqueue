@@ -229,23 +229,61 @@ async function addPhotoToGroup({ apiKey, apiSecret, token, tokenSecret, photoId,
 }
 
 async function listGroups({ apiKey, apiSecret, token, tokenSecret }) {
-  const j = await flickrRestCall({
-    apiKey, apiSecret, token, tokenSecret,
-    methodName: "flickr.groups.pools.getGroups",
-    params: {}
-  });
-  const list = (j.groups && j.groups.group) ? j.groups.group : [];
-  return list.map(g => ({ id: g.nsid, name: g.name }));
+  let allGroups = [];
+  let page = 1;
+  let pages = 1;
+  
+  // Fetch all pages
+  while (page <= pages) {
+    const j = await flickrRestCall({
+      apiKey, apiSecret, token, tokenSecret,
+      methodName: "flickr.groups.pools.getGroups",
+      params: { page: String(page), per_page: "500" }
+    });
+    
+    if (j.groups) {
+      pages = Number(j.groups.pages || 1);
+      const list = j.groups.group ? (Array.isArray(j.groups.group) ? j.groups.group : [j.groups.group]) : [];
+      allGroups = allGroups.concat(list.map(g => ({ id: g.nsid, name: g.name })));
+      
+      if (pages > 1) {
+        console.log(`[Flickr] Fetched groups page ${page}/${pages} (${allGroups.length} groups so far)`);
+      }
+    }
+    
+    page++;
+  }
+  
+  return allGroups;
 }
 
 async function listAlbums({ apiKey, apiSecret, token, tokenSecret, userNsid }) {
-  const j = await flickrRestCall({
-    apiKey, apiSecret, token, tokenSecret,
-    methodName: "flickr.photosets.getList",
-    params: { user_id: userNsid }
-  });
-  const list = (j.photosets && j.photosets.photoset) ? j.photosets.photoset : [];
-  return list.map(a => ({ id: a.id, title: a.title?._content || a.title || "" }));
+  let allAlbums = [];
+  let page = 1;
+  let pages = 1;
+  
+  // Fetch all pages
+  while (page <= pages) {
+    const j = await flickrRestCall({
+      apiKey, apiSecret, token, tokenSecret,
+      methodName: "flickr.photosets.getList",
+      params: { user_id: userNsid, page: String(page), per_page: "500" }
+    });
+    
+    if (j.photosets) {
+      pages = Number(j.photosets.pages || 1);
+      const list = j.photosets.photoset ? (Array.isArray(j.photosets.photoset) ? j.photosets.photoset : [j.photosets.photoset]) : [];
+      allAlbums = allAlbums.concat(list.map(a => ({ id: a.id, title: a.title?._content || a.title || "" })));
+      
+      if (pages > 1) {
+        console.log(`[Flickr] Fetched albums page ${page}/${pages} (${allAlbums.length} albums so far)`);
+      }
+    }
+    
+    page++;
+  }
+  
+  return allAlbums;
 }
 
 
