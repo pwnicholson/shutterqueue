@@ -10,8 +10,8 @@
 * [X] Improve UI/UX around indicators in the top right corner
 * [X] Group lists: filterable (type text to filter to groups that have a string in their name)
 * [X] Group lists: sort selected groups alphabetically at top, then remaining groups alphabetically
+* [X] Clean up 'item successfully added to group moderation queue' still showing up in red like an error on some items
 * \[ ] Fix group limit due to pagination of group lists
-* \[ ] Clean up 'item successfully added to group moderation queue' still showing up in red like an error on some items.
 
 ## Soon
 

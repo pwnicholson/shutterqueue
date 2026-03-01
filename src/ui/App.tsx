@@ -179,6 +179,49 @@ const categorizeMessage = (msg: string): "success" | "waiting" | "error" => {
   return "error";
 };
 
+// Lazy-loaded queue item thumbnail component
+const LazyQueueItemThumb = ({ item, srcs, onLoadThumbnail, onPreview }: any) => {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [hasLoaded, setHasLoaded] = useState(false);
+
+  useEffect(() => {
+    if (hasLoaded || !imgRef.current) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setHasLoaded(true);
+          onLoadThumbnail(item);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "100px" } // Start loading 100px before entering viewport
+    );
+
+    observer.observe(imgRef.current);
+    return () => observer.disconnect();
+  }, [hasLoaded, item, onLoadThumbnail]);
+
+  return (
+    <img
+      ref={imgRef}
+      className={`thumb ${srcs.thumbSrc ? "" : "empty"}`}
+      src={srcs.thumbSrc || ""}
+      alt=""
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!srcs.previewSrc) return;
+        onPreview({
+          src: srcs.previewSrc,
+          title: item.title || fileNameFromPath(item.photoPath),
+        });
+      }}
+      style={{ cursor: srcs.previewSrc ? "pointer" : "default" }}
+    />
+  );
+};
+
+
   const [didAutoLoadLists, setDidAutoLoadLists] = useState(false);
 
   const [appVersion, setAppVersion] = useState<string>("");
@@ -546,29 +589,25 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   }, [cfg?.authed, didAutoLoadLists]);
 
 
-  useEffect(() => {
-    (async () => {
-      for (const it of queue.slice(0, 120)) {
-        // Try to load local thumbnail if we haven't cached it yet
-        let dataUrl = thumbs[it.photoPath];
-        if (dataUrl === undefined) {
-          dataUrl = await window.sq.getThumbDataUrl(it.photoPath);
-          setThumbs(t => ({ ...t, [it.photoPath]: dataUrl }));
-        }
-        // If local thumbnail is missing and item has a photoId, try fetching from Flickr
-        if (!dataUrl && it.photoId && flickrUrls[it.photoId] === undefined) {
-          try {
-            // @ts-ignore - dynamic typing for sq API
-            const u = await window.sq.getFlickrPhotoUrls(it.photoId);
-            setFlickrUrls(m => ({ ...m, [it.photoId as any]: u }));
-          } catch {
-            // ignore
-          }
-        }
+  // Lazy-load thumbnails and Flickr metadata only when scrolled into view
+  const loadThumbnailForItem = async (it: any) => {
+    // Try to load local thumbnail if we haven't cached it yet
+    let dataUrl = thumbs[it.photoPath];
+    if (dataUrl === undefined) {
+      dataUrl = await window.sq.getThumbDataUrl(it.photoPath);
+      setThumbs(t => ({ ...t, [it.photoPath]: dataUrl }));
+    }
+    // If local thumbnail is missing and item has a photoId, try fetching from Flickr
+    if (!dataUrl && it.photoId && flickrUrls[it.photoId] === undefined) {
+      try {
+        // @ts-ignore - dynamic typing for sq API
+        const u = await window.sq.getFlickrPhotoUrls(it.photoId);
+        setFlickrUrls(m => ({ ...m, [it.photoId as any]: u }));
+      } catch {
+        // ignore
       }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queue]);
+    }
+  };
 
   const saveKeys = async () => {
     await window.sq.setApiKeySecret(apiKey, apiSecret);
@@ -1138,21 +1177,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         onDropReorder(fromId, it.id, pos);
                       }}
                     >
-	                      <img
-	                        className={`thumb ${thumb ? "" : "empty"}`}
-	                        src={thumb || ""}
-	                        alt=""
-	                        onClick={(e) => {
-	                          // Prevent row-click selection toggle when opening preview.
-	                          e.stopPropagation();
-	                          if (!srcs.previewSrc) return;
-	                          setPreview({
-	                            src: srcs.previewSrc,
-	                            title: it.title || fileNameFromPath(it.photoPath),
-	                          });
-	                        }}
-	                        style={{ cursor: srcs.previewSrc ? "pointer" : "default" }}
-	                      />
+                      <LazyQueueItemThumb
+                        item={it}
+                        srcs={srcs}
+                        onLoadThumbnail={loadThumbnailForItem}
+                        onPreview={setPreview}
+                      />
                       <div className="qmid">
                         <div className="qtitle">{it.title || "(untitled)"}</div>
                         <div className="qpath">{it.photoPath}</div>
