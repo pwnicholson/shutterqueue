@@ -268,6 +268,24 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     return out;
   }, [queue, pendingGroupFocus]);
 
+  const pendingRetryTopItemIdForFocus = useMemo(() => pendingRetryItemsForFocus[0]?.itemId || "", [pendingRetryItemsForFocus]);
+
+  const pendingRetryNextAtForFocus = useMemo(() => {
+    if (!pendingGroupFocus) return null as string | null;
+    let minTs = Number.POSITIVE_INFINITY;
+    let minIso: string | null = null;
+    for (const item of queue) {
+      const st = item.groupAddStates?.[pendingGroupFocus];
+      if (st?.status !== "retry" || !st.nextRetryAt) continue;
+      const ts = new Date(st.nextRetryAt).getTime();
+      if (Number.isFinite(ts) && ts < minTs) {
+        minTs = ts;
+        minIso = st.nextRetryAt;
+      }
+    }
+    return minIso;
+  }, [queue, pendingGroupFocus]);
+
   useEffect(() => {
     if (!pendingRetryGroups.length) return;
     const exists = pendingRetryGroups.some(g => g.groupId === pendingGroupFocus);
@@ -782,13 +800,14 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
     const rankById = new Map(copy.map((id, index) => [id, index + 1]));
     const changed: QueueItem[] = [];
+    const baseNextRetryAt = pendingRetryNextAtForFocus || new Date(Date.now() + 1000).toISOString();
 
     const nextQueue = queue.map((item) => {
       const rank = rankById.get(item.id);
       if (!rank) return item;
       const st = item.groupAddStates?.[pendingGroupFocus];
       if (!st || st.status !== "retry") return item;
-      if (st.retryPriority === rank) return item;
+      if (st.retryPriority === rank && st.nextRetryAt === baseNextRetryAt) return item;
 
       const updated: QueueItem = {
         ...item,
@@ -797,6 +816,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           [pendingGroupFocus]: {
             ...st,
             retryPriority: rank,
+            nextRetryAt: baseNextRetryAt,
           },
         },
       };
@@ -1857,7 +1877,14 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                               e.dataTransfer.setData("text/plain", it.itemId);
                             }}
                           >↕</button>
-                          <div className="small" style={{ fontFamily: "ui-monospace" }}>{sched?.schedulerOn ? formatLocal(it.nextRetryAt) : "waiting for scheduler restart"}</div>
+                          <div className="small" style={{ fontFamily: "ui-monospace" }}>
+                            {!sched?.schedulerOn
+                              ? "waiting for scheduler restart"
+                              : it.itemId === pendingRetryTopItemIdForFocus
+                                ? `next slot: ${formatLocal(pendingRetryNextAtForFocus || it.nextRetryAt)}`
+                                : "queued"
+                            }
+                          </div>
                           <button
                             className="btn danger"
                             style={{ padding: "6px 10px", borderRadius: 10 }}

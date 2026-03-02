@@ -375,7 +375,8 @@ async function attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item, 
           firstFailedAt,
           nextRetryAt,
           lastAttemptAt: nowIso(),
-          code
+          code,
+          retryPriority: Number.isFinite(Number(prev?.retryPriority)) ? Number(prev.retryPriority) : undefined
         };
       }
       logEvent("WARN", "Group add retry scheduled", { id: item.id, photoId, groupId, code, nextRetryAt: states[groupId].nextRetryAt });
@@ -417,36 +418,63 @@ async function processDueGroupRetries({ apiKey, apiSecret, token, tokenSecret, m
   let attempts = 0;
   let changed = false;
 
-  const dueRetries = [];
+  // Group-level scheduling: one retry attempt per group per cycle.
+  // Candidate within each group is selected by retryPriority, then queue order.
+  const dueByGroup = new Map();
+
   for (let idx = 0; idx < q.length; idx++) {
     const it = q[idx];
     if (!it || !it.photoId) continue;
     const states = it.groupAddStates;
     if (!states) continue;
+
     for (const [gid, st] of Object.entries(states)) {
       if (!st || st.status !== "retry") continue;
       const due = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : 0;
       if (!due || due > now) continue;
-      dueRetries.push({
+
+      const job = {
         item: it,
         groupId: gid,
         due,
         queueIndex: idx,
         retryPriority: Number.isFinite(Number(st.retryPriority)) ? Number(st.retryPriority) : Number.MAX_SAFE_INTEGER,
-      });
+      };
+
+      const prev = dueByGroup.get(gid);
+      if (!prev) {
+        dueByGroup.set(gid, job);
+      } else {
+        const better =
+          (job.retryPriority < prev.retryPriority) ||
+          (job.retryPriority === prev.retryPriority && job.queueIndex < prev.queueIndex);
+        if (better) dueByGroup.set(gid, job);
+      }
     }
   }
 
-  dueRetries.sort((a, b) => {
+  const groupJobs = Array.from(dueByGroup.values()).sort((a, b) => {
     if (a.due !== b.due) return a.due - b.due;
     if (a.retryPriority !== b.retryPriority) return a.retryPriority - b.retryPriority;
     return a.queueIndex - b.queueIndex;
   });
 
-  for (const job of dueRetries) {
+  for (const job of groupJobs) {
     if (attempts >= (maxAttempts || 5)) break;
     attempts++;
+
     await attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item: job.item, groupId: job.groupId });
+
+    const attemptedState = job.item.groupAddStates?.[job.groupId];
+    if (attemptedState && attemptedState.status === "retry" && attemptedState.nextRetryAt) {
+      // Propagate the group-level retry slot to all retrying photos for this group.
+      for (const it of q) {
+        const st = it.groupAddStates?.[job.groupId];
+        if (!st || st.status !== "retry") continue;
+        st.nextRetryAt = attemptedState.nextRetryAt;
+      }
+    }
+
     const existingNonGroupParts = String(job.item.lastError || "")
       .split("|")
       .map(s => s.trim())
