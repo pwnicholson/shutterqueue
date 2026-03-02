@@ -734,6 +734,33 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setScheduleDialogOpen(true);
   };
 
+  const reorderPendingForManualSchedule = (sourceQueue: QueueItem[]): QueueItem[] => {
+    const nowMs = Date.now();
+    const originalIndex = new Map(sourceQueue.map((it, idx) => [it.id, idx]));
+
+    const readyAtMs = (item: QueueItem) => {
+      const raw = item.scheduledUploadAt ? Date.parse(item.scheduledUploadAt) : Number.NaN;
+      return Number.isFinite(raw) ? raw : nowMs;
+    };
+
+    const sortedPending = sourceQueue
+      .filter(it => it.status === "pending")
+      .sort((a, b) => {
+        const ra = readyAtMs(a);
+        const rb = readyAtMs(b);
+        if (ra !== rb) return ra - rb;
+        return (originalIndex.get(a.id) || 0) - (originalIndex.get(b.id) || 0);
+      });
+
+    let pendingCursor = 0;
+    return sourceQueue.map(it => {
+      if (it.status !== "pending") return it;
+      const next = sortedPending[pendingCursor];
+      pendingCursor += 1;
+      return next;
+    });
+  };
+
   const scheduleSelectedAt = async () => {
     if (!schedulingItemIds.length) {
       setScheduleDialogOpen(false);
@@ -768,10 +795,31 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       return;
     }
 
-    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
-    await updateItems(changed);
+    const changedById = new Map(changed.map(it => [it.id, it]));
+    const updatedQueue = queue.map(it => changedById.get(it.id) || it);
+    const reorderedQueue = reorderPendingForManualSchedule(updatedQueue);
+
+    setQueue(reorderedQueue);
+    
+    const [, confirmedQueue] = await Promise.all([
+      updateItems(changed),
+      window.sq.queueReorder(reorderedQueue.map(it => it.id)),
+    ]);
+    
+    // Use the confirmed queue order from the backend
+    if (confirmedQueue && Array.isArray(confirmedQueue)) {
+      setQueue(confirmedQueue);
+    }
+    
+    // Find new position(s) for toast feedback
+    const newPositions = changed.map(it => {
+      const idx = (confirmedQueue || reorderedQueue).findIndex(q => q.id === it.id);
+      return idx >= 0 ? idx + 1 : "?";
+    });
+    
     setScheduleDialogOpen(false);
-    showToast(`Scheduled ${changed.length} item(s) for ${formatLocal(iso)}.`);
+    const posText = newPositions.length === 1 ? `moved to position ${newPositions[0]}` : `moved to positions ${newPositions.join(", ")}`;
+    showToast(`Scheduled ${changed.length} item(s) for ${formatLocal(iso)} — ${posText}.`);
   };
 
   const uploadScheduledItemsNow = async () => {
