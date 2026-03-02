@@ -882,22 +882,43 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [batchTitle, setBatchTitle] = useState("");
   const [batchTags, setBatchTags] = useState("");
 
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadByteProgress, setUploadByteProgress] = useState<number | null>(null);
 
   useEffect(() => {
     const cb = (e: any) => {
       const { loaded, total } = e.detail || {};
       if (typeof loaded === 'number' && typeof total === 'number' && total > 0) {
-        setUploadProgress(Math.min(1, loaded / total));
+        setUploadByteProgress(Math.min(1, loaded / total));
         if (loaded >= total) {
           // clear after a short delay so bar reaches 100%
-          setTimeout(() => setUploadProgress(null), 500);
+          setTimeout(() => setUploadByteProgress(null), 500);
         }
       }
     };
     window.addEventListener('sq-upload-progress', cb as any);
     return () => window.removeEventListener('sq-upload-progress', cb as any);
   }, []);
+
+  const batchProgressInfo = useMemo(() => {
+    const isBatchActive = Boolean((sched as any)?.batchRunActive);
+    if (!isBatchActive) return null as { progress: number; completed: number; batchSize: number } | null;
+
+    const startedAtRaw = (sched as any)?.batchRunStartedAt ? String((sched as any).batchRunStartedAt) : "";
+    const startedAtMs = Date.parse(startedAtRaw);
+    if (!Number.isFinite(startedAtMs)) return null as { progress: number; completed: number; batchSize: number } | null;
+
+    const batchSize = Math.max(1, Math.min(999, Math.round(Number((sched as any)?.batchRunSize || uploadBatchSize || 1))));
+    const completed = queue.filter(it => it.uploadedAt && Date.parse(it.uploadedAt) >= startedAtMs).length;
+    const hasUploading = queue.some(it => it.status === "uploading");
+    const currentPartial = hasUploading ? Math.max(0, Math.min(1, uploadByteProgress ?? 0)) : 0;
+    const pct = (completed + currentPartial) / batchSize;
+    return { progress: Math.max(0, Math.min(1, pct)), completed, batchSize };
+  }, [sched, queue, uploadBatchSize, uploadByteProgress]);
+
+  const uploadProgress = batchProgressInfo?.progress ?? uploadByteProgress;
+  const batchProgressLabel = batchProgressInfo && batchProgressInfo.batchSize > 1
+    ? `${Math.min(batchProgressInfo.completed, batchProgressInfo.batchSize)}/${batchProgressInfo.batchSize}`
+    : null;
 
   // Clear the batch tag input whenever the selection changes in multi-select mode.
   useEffect(() => {
@@ -1072,6 +1093,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               <div style={{position:'absolute', left:0, top:0, bottom:0, width:`${Math.round(uploadProgress*100)}%`, background:'var(--accent)'}} />
             )}
           </div>
+          {batchProgressLabel && (
+            <span className="small" style={{ marginLeft: 8, fontFamily: "ui-monospace" }} title="Batch progress">
+              {batchProgressLabel}
+            </span>
+          )}
         </div>
       </div>
 

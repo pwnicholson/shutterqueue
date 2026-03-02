@@ -16,10 +16,10 @@
 * [X] Verify fix for group limit due to pagination of group lists
 * [X] Enable Minimize to System Tray on Windows option
 * [X] Verify status Menu Bar on Mac
+* [X] Click and drag to move item priority for the group add list
 
 ## Soon
 
-* \[ ] Click and drag to move item priority for the group add list
 * \[ ] Improve progress bar on uploads (just flashes now, doesn't show actual progress of the individual item or the batch it is in)
 * \[ ] Allow photos to be scheduled for a specific time, not just an interval and queue order
 * \[ ] Saved “Sets” of groups/albums (user-defined)
