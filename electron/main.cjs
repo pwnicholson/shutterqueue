@@ -493,7 +493,7 @@ function createTray() {
   
   let iconPath;
   if (process.platform === "darwin") {
-    const active = !!store.get("schedulerOn");
+    const active = !!store.get("schedulerOn") && hasPendingWork();
     const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
     iconPath = path.join(__dirname, "..", "assets", filename);
 
@@ -526,7 +526,7 @@ function createTray() {
     }
   } else {
     // Windows/Linux: use normal icon sizing
-    iconPath = getIconPath(!!store.get("schedulerOn"));
+    iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
     tray = new Tray(iconPath);
   }
   
@@ -604,7 +604,7 @@ function createTray() {
 
 function updateTrayIcon() {
   if (tray) {
-    const active = !!store.get("schedulerOn");
+    const active = !!store.get("schedulerOn") && hasPendingWork();
     if (process.platform === "darwin") {
       // macOS: use explicitly resized menu bar icons
       const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
@@ -1224,6 +1224,7 @@ ipcMain.handle("sched:start", async (_e, { intervalHours, uploadImmediately, set
   scheduleNext(uploadImmediately ? 0 : h);
   if (schedTimer) clearInterval(schedTimer);
   schedTimer = setInterval(() => tickScheduler().catch(() => {}), 1000);
+  updateTrayIcon();
   return { ok: true };
 });
 
@@ -1231,6 +1232,7 @@ ipcMain.handle("sched:stop", async () => {
   store.set("schedulerOn", false);
   if (schedTimer) clearInterval(schedTimer);
   schedTimer = null;
+  updateTrayIcon();
   return { ok: true };
 });
 
