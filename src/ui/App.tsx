@@ -245,14 +245,26 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
 
   const pendingRetryItemsForFocus = useMemo(() => {
     if (!pendingGroupFocus) return [];
-    const out: Array<{ itemId: string; title: string; photoPath: string; photoId: string; nextRetryAt?: string | null }> = [];
+    const out: Array<{ itemId: string; title: string; photoPath: string; photoId: string; nextRetryAt?: string | null; retryPriority?: number }> = [];
     for (const item of queue) {
       const st = item.groupAddStates?.[pendingGroupFocus];
       if (st?.status === "retry") {
-        out.push({ itemId: item.id, title: item.title || "(untitled)", photoPath: item.photoPath, photoId: item.photoId || "", nextRetryAt: st.nextRetryAt || null });
+        out.push({
+          itemId: item.id,
+          title: item.title || "(untitled)",
+          photoPath: item.photoPath,
+          photoId: item.photoId || "",
+          nextRetryAt: st.nextRetryAt || null,
+          retryPriority: typeof st.retryPriority === "number" ? st.retryPriority : undefined,
+        });
       }
     }
-    out.sort((a, b) => String(a.nextRetryAt || "").localeCompare(String(b.nextRetryAt || "")));
+    out.sort((a, b) => {
+      const ap = typeof a.retryPriority === "number" ? a.retryPriority : Number.MAX_SAFE_INTEGER;
+      const bp = typeof b.retryPriority === "number" ? b.retryPriority : Number.MAX_SAFE_INTEGER;
+      if (ap !== bp) return ap - bp;
+      return String(a.nextRetryAt || "").localeCompare(String(b.nextRetryAt || ""));
+    });
     return out;
   }, [queue, pendingGroupFocus]);
 
@@ -729,6 +741,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   };
 
   const [dragOver, setDragOver] = useState<{ id: string; pos: "top" | "bottom" } | null>(null);
+  const [pendingRetryDragOver, setPendingRetryDragOver] = useState<{ id: string; pos: "top" | "bottom" } | null>(null);
 
   const onDropReorder = async (fromId: string, toId: string, pos: "top" | "bottom") => {
     const from = queue.findIndex(x => x.id === fromId);
@@ -748,6 +761,54 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setQueue(copy);
     setDragOver(null);
     await window.sq.queueReorder(copy.map(x => x.id));
+  };
+
+  const onDropPendingRetryReorder = async (fromId: string, toId: string, pos: "top" | "bottom") => {
+    if (!pendingGroupFocus) return;
+
+    const ids = pendingRetryItemsForFocus.map(x => x.itemId);
+    const from = ids.indexOf(fromId);
+    const to = ids.indexOf(toId);
+    if (from < 0 || to < 0 || from === to) return;
+
+    const copy = [...ids];
+    const [movedId] = copy.splice(from, 1);
+
+    let insertAt = to;
+    if (from < to) insertAt -= 1;
+    if (pos === "bottom") insertAt += 1;
+    insertAt = Math.max(0, Math.min(copy.length, insertAt));
+    copy.splice(insertAt, 0, movedId);
+
+    const rankById = new Map(copy.map((id, index) => [id, index + 1]));
+    const changed: QueueItem[] = [];
+
+    const nextQueue = queue.map((item) => {
+      const rank = rankById.get(item.id);
+      if (!rank) return item;
+      const st = item.groupAddStates?.[pendingGroupFocus];
+      if (!st || st.status !== "retry") return item;
+      if (st.retryPriority === rank) return item;
+
+      const updated: QueueItem = {
+        ...item,
+        groupAddStates: {
+          ...(item.groupAddStates || {}),
+          [pendingGroupFocus]: {
+            ...st,
+            retryPriority: rank,
+          },
+        },
+      };
+      changed.push(updated);
+      return updated;
+    });
+
+    setQueue(nextQueue);
+    setPendingRetryDragOver(null);
+    if (changed.length) {
+      await updateItems(changed);
+    }
   };
 
   const uploadNext = async () => {
@@ -1747,7 +1808,24 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <div className="small">No pending photos for this group.</div>
                     ) : (
                       pendingRetryItemsForFocus.map((it) => (
-                        <div key={it.itemId} className="listrow">
+                        <div
+                          key={it.itemId}
+                          className={`listrow ${pendingRetryDragOver?.id === it.itemId ? (pendingRetryDragOver.pos === "top" ? "drag-over-top" : "drag-over-bottom") : ""}`}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+                            const pos: "top" | "bottom" = (e.clientY - rect.top) < rect.height / 2 ? "top" : "bottom";
+                            setPendingRetryDragOver({ id: it.itemId, pos });
+                          }}
+                          onDragLeave={() => setPendingRetryDragOver(null)}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            const fromId = e.dataTransfer.getData("application/x-sq-group-retry-id") || e.dataTransfer.getData("text/plain");
+                            if (!fromId) return;
+                            const pos = pendingRetryDragOver?.id === it.itemId ? pendingRetryDragOver.pos : "top";
+                            onDropPendingRetryReorder(fromId, it.itemId, pos);
+                          }}
+                        >
                           <div style={{ flex: 1, display: "flex", gap: 10, alignItems: "center" }}>
                             {(() => {
                               const fullItem = queue.find(q => q.id === it.itemId);
@@ -1769,6 +1847,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                               );
                             })()}
                           </div>
+                          <button
+                            className="drag"
+                            draggable
+                            title="Drag to change retry priority for this group"
+                            onDragStart={(e) => {
+                              e.dataTransfer.effectAllowed = "move";
+                              e.dataTransfer.setData("application/x-sq-group-retry-id", it.itemId);
+                              e.dataTransfer.setData("text/plain", it.itemId);
+                            }}
+                          >↕</button>
                           <div className="small" style={{ fontFamily: "ui-monospace" }}>{sched?.schedulerOn ? formatLocal(it.nextRetryAt) : "waiting for scheduler restart"}</div>
                           <button
                             className="btn danger"
