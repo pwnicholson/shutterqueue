@@ -44,6 +44,7 @@ export type QueueItem = {
     firstFailedAt?: string;
     nextRetryAt?: string;
     lastAttemptAt?: string;
+    retryPriority?: number;
   }>;
 };
 
