@@ -494,8 +494,9 @@ function createTray() {
     
     let iconPath;
     if (process.platform === "darwin") {
-      const active = !!store.get("schedulerOn") && hasPendingWork();
-      const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
+      // Menu bar icon reflects scheduler state directly
+      const schedulerOn = !!store.get("schedulerOn");
+      const filename = schedulerOn ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
       iconPath = path.join(__dirname, "..", "assets", filename);
       
       // Try path-based approach first on macOS (simpler and more reliable)
@@ -509,12 +510,12 @@ function createTray() {
         }
       } else {
         // Fallback to app icons if menu icons don't exist
-        iconPath = getIconPath(active);
+        iconPath = getIconPath(schedulerOn);
         tray = new Tray(iconPath);
       }
     } else {
-      // Windows/Linux: use normal icon sizing
-      iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
+      // Windows/Linux: use normal icon sizing (menu bar icon also follows scheduler state)
+      iconPath = getIconPath(!!store.get("schedulerOn"));
       tray = new Tray(iconPath);
     }
     
@@ -598,19 +599,19 @@ function createTray() {
 
 function updateTrayIcon() {
   if (tray) {
-    const active = !!store.get("schedulerOn") && hasPendingWork();
+    // Menu bar icon should reflect scheduler on/off state directly
+    const schedulerOn = !!store.get("schedulerOn");
     if (process.platform === "darwin") {
-      // macOS: try menu bar icons first, fallback to app icons
-      const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
+      const filename = schedulerOn ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
       const iconPath = path.join(__dirname, "..", "assets", filename);
       if (fs.existsSync(iconPath)) {
         tray.setImage(iconPath);
+        logEvent("INFO", "Updated tray icon", { schedulerOn, filename });
       } else {
-        tray.setImage(getIconPath(active));
+        tray.setImage(getIconPath(schedulerOn));
       }
     } else {
-      // Windows/Linux
-      const iconPath = getIconPath(active);
+      const iconPath = getIconPath(schedulerOn);
       tray.setImage(iconPath);
     }
   }
