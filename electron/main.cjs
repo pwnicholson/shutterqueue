@@ -493,7 +493,7 @@ function createTray() {
   
   let iconPath;
   if (process.platform === "darwin") {
-    const active = !!store.get("schedulerOn") && hasPendingWork();
+    const active = !!store.get("schedulerOn");
     const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
     iconPath = path.join(__dirname, "..", "assets", filename);
 
@@ -526,7 +526,7 @@ function createTray() {
     }
   } else {
     // Windows/Linux: use normal icon sizing
-    iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
+    iconPath = getIconPath(!!store.get("schedulerOn"));
     tray = new Tray(iconPath);
   }
   
@@ -604,7 +604,7 @@ function createTray() {
 
 function updateTrayIcon() {
   if (tray) {
-    const active = !!store.get("schedulerOn") && hasPendingWork();
+    const active = !!store.get("schedulerOn");
     if (process.platform === "darwin") {
       // macOS: use explicitly resized menu bar icons
       const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
