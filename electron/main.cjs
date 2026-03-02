@@ -65,6 +65,7 @@ const flickr = require("./services/flickr.cjs");
 let win = null;
 let tray = null;
 let isQuitting = false;
+let lastTraySchedulerState = null;
 
 function getIconPath(active) {
   // Use a monochrome icon when scheduler is off OR there is no pending work.
@@ -99,6 +100,20 @@ function updateWindowIcon() {
   } catch (_) {
     // ignore
   }
+}
+
+function getMenuBarIconPath(schedulerOn) {
+  const filename = schedulerOn ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
+  return path.join(__dirname, "..", "assets", filename);
+}
+
+function getMenuBarImage(schedulerOn) {
+  const iconPath = getMenuBarIconPath(schedulerOn);
+  if (!fs.existsSync(iconPath)) return null;
+  const image = nativeImage.createFromPath(iconPath);
+  if (image.isEmpty()) return null;
+  image.setTemplateImage(true);
+  return image;
 }
 
 const store = new Store({
@@ -494,25 +509,15 @@ function createTray() {
     
     let iconPath;
     if (process.platform === "darwin") {
-      // Menu bar icon reflects scheduler state directly
       const schedulerOn = !!store.get("schedulerOn");
-      const filename = schedulerOn ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
-      iconPath = path.join(__dirname, "..", "assets", filename);
-      
-      // Try path-based approach first on macOS (simpler and more reliable)
-      if (fs.existsSync(iconPath)) {
-        tray = new Tray(iconPath);
-        if (tray) {
-          const img = nativeImage.createFromPath(iconPath);
-          if (!img.isEmpty()) {
-            tray.setImage(img);
-          }
-        }
+      const menuImage = getMenuBarImage(schedulerOn);
+      if (menuImage) {
+        tray = new Tray(menuImage);
       } else {
-        // Fallback to app icons if menu icons don't exist
         iconPath = getIconPath(schedulerOn);
         tray = new Tray(iconPath);
       }
+      lastTraySchedulerState = schedulerOn;
     } else {
       // Windows/Linux: use normal icon sizing (menu bar icon also follows scheduler state)
       iconPath = getIconPath(!!store.get("schedulerOn"));
@@ -599,14 +604,13 @@ function createTray() {
 
 function updateTrayIcon() {
   if (tray) {
-    // Menu bar icon should reflect scheduler on/off state directly
     const schedulerOn = !!store.get("schedulerOn");
+    if (lastTraySchedulerState === schedulerOn) return;
+
     if (process.platform === "darwin") {
-      const filename = schedulerOn ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
-      const iconPath = path.join(__dirname, "..", "assets", filename);
-      if (fs.existsSync(iconPath)) {
-        tray.setImage(iconPath);
-        logEvent("INFO", "Updated tray icon", { schedulerOn, filename });
+      const menuImage = getMenuBarImage(schedulerOn);
+      if (menuImage) {
+        tray.setImage(menuImage);
       } else {
         tray.setImage(getIconPath(schedulerOn));
       }
@@ -614,6 +618,8 @@ function updateTrayIcon() {
       const iconPath = getIconPath(schedulerOn);
       tray.setImage(iconPath);
     }
+
+    lastTraySchedulerState = schedulerOn;
   }
 }
 
@@ -642,7 +648,6 @@ app.whenReady().then(() => {
   // Keep icon in sync with scheduler/work state.
   setInterval(() => {
     updateWindowIcon();
-    updateTrayIcon();
   }, 2000);
   // Prevent stale group/album warnings from persisting across launches.
   // Per-item warnings live on queue items; global lastError should be reserved for fatal/authorization errors.
