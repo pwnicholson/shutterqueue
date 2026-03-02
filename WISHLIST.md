@@ -15,7 +15,7 @@
 * [X] Verbose logging mode option: Capture all codes from Flickr API and display them in the log* 
 * [X] Verify fix for group limit due to pagination of group lists
 * [X] Enable Minimize to System Tray on Windows option
-* \[ ] Verify status Menu Bar on Mac
+* [X] Verify status Menu Bar on Mac
 
 ## Soon
 
