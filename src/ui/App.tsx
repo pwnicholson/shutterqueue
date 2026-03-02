@@ -25,6 +25,12 @@ function formatLocal(iso: string | null | undefined) {
   const d = new Date(iso);
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
+function toDateTimeLocalValue(iso: string | null | undefined) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "";
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
 function uniq<T>(arr: T[]) {
   return Array.from(new Set(arr));
 }
@@ -214,6 +220,11 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [anchorId, setAnchorId] = useState<string | null>(null);
+  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
+  const [scheduleAtLocal, setScheduleAtLocal] = useState("");
+  const [schedulingItemIds, setSchedulingItemIds] = useState<string[]>([]);
+  const [pastTimeDialogOpen, setPastTimeDialogOpen] = useState(false);
+  const [pastTimeValue, setPastTimeValue] = useState("");
 
   const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
 
@@ -689,6 +700,115 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const selectAll = () => setSelectedIds(queue.map(q => q.id));
   const clearSelection = () => setSelectedIds([]);
+  const manuallyScheduledCount = useMemo(
+    () => queue.filter(it => it.status === "pending" && !!it.scheduledUploadAt).length,
+    [queue]
+  );
+
+  const hasPendingSelected = useMemo(
+    () => selectedIds.some(id => {
+      const it = queue.find(q => q.id === id);
+      return it && it.status === "pending";
+    }),
+    [selectedIds, queue]
+  );
+
+  const openScheduleSelectedDialog = () => {
+    if (!selectedIds.length) {
+      showToast("Error: No items selected to schedule.");
+      return;
+    }
+    setSchedulingItemIds(selectedIds);
+    const firstSelected = queue.find(it => selectedIds.includes(it.id) && it.status === "pending");
+    const defaultIso = firstSelected?.scheduledUploadAt || new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    setScheduleAtLocal(toDateTimeLocalValue(defaultIso));
+    setScheduleDialogOpen(true);
+  };
+
+  const openScheduleDialogForItem = (itemId: string) => {
+    const item = queue.find(it => it.id === itemId);
+    if (!item || item.status !== "pending") return;
+    setSchedulingItemIds([itemId]);
+    const defaultIso = item.scheduledUploadAt || new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    setScheduleAtLocal(toDateTimeLocalValue(defaultIso));
+    setScheduleDialogOpen(true);
+  };
+
+  const scheduleSelectedAt = async () => {
+    if (!schedulingItemIds.length) {
+      setScheduleDialogOpen(false);
+      showToast("Error: No items selected to schedule.");
+      return;
+    }
+    if (!scheduleAtLocal) {
+      showToast("Error: Please choose a valid schedule time.");
+      return;
+    }
+    const when = new Date(scheduleAtLocal);
+    if (!Number.isFinite(when.getTime())) {
+      showToast("Error: Please choose a valid schedule time.");
+      return;
+    }
+
+    // Check if time is in the past
+    if (when.getTime() < Date.now()) {
+      setPastTimeValue(scheduleAtLocal);
+      setPastTimeDialogOpen(true);
+      return;
+    }
+
+    const iso = when.toISOString();
+    const changed = queue
+      .filter(it => schedulingItemIds.includes(it.id) && it.status === "pending")
+      .map(it => ({ ...it, scheduledUploadAt: iso }));
+
+    if (!changed.length) {
+      setScheduleDialogOpen(false);
+      showToast("Error: Selected items are not pending.");
+      return;
+    }
+
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    await updateItems(changed);
+    setScheduleDialogOpen(false);
+    showToast(`Scheduled ${changed.length} item(s) for ${formatLocal(iso)}.`);
+  };
+
+  const uploadScheduledItemsNow = async () => {
+    setPastTimeDialogOpen(false);
+    setScheduleDialogOpen(false);
+    const pendingItems = queue.filter(it => schedulingItemIds.includes(it.id) && it.status === "pending");
+    if (!pendingItems.length) return;
+    for (const item of pendingItems) {
+      try {
+        await window.sq.uploadNowOne({ itemId: item.id });
+      } catch (e) {
+        console.error("Upload failed:", e);
+      }
+    }
+    await refreshDynamic();
+    showToast(`Uploaded ${pendingItems.length} item(s) now.`);
+  };
+
+  const clearManualScheduleForItem = async (itemId: string) => {
+    const item = queue.find(it => it.id === itemId);
+    if (!item) return;
+    const updated = { ...item, scheduledUploadAt: "" };
+    setQueue(prev => prev.map(it => it.id === itemId ? updated : it));
+    await updateItems([updated]);
+    setScheduleDialogOpen(false);
+    showToast("Cleared manual schedule.");
+  };
+
+  const clearManualSchedule = async () => {
+    const changed = queue
+      .filter(it => it.status === "pending" && !!it.scheduledUploadAt)
+      .map(it => ({ ...it, scheduledUploadAt: "" }));
+    if (!changed.length) return;
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    await updateItems(changed);
+    showToast(`Cleared manual schedule on ${changed.length} item(s).`);
+  };
 
   const removeSelected = async () => {
     const ids = selectedIds.length ? selectedIds : (activeId ? [activeId] : []);
@@ -1027,7 +1147,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const batchStartedAt = (sched as any)?.batchRunStartedAt ? String((sched as any).batchRunStartedAt) : null;
     const batchRunSize = Number((sched as any)?.batchRunSize || batch);
 
-    const pending = queue.filter(it => it.status === "pending");
+    const pending = queue.filter(it => it.status === "pending" && !it.scheduledUploadAt);
     if (!pending.length) return out;
 
     if (isBatchActive && batchStartedAt) {
@@ -1242,18 +1362,86 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <div className="card">
             <h2>Upload Queue (drag by handle ↕)</h2>
             <div className="content">
-              <div className="btnrow" style={{ marginBottom: 10, justifyContent: "space-between" }}>
+              <div style={{ marginBottom: 10, display: "grid", gap: 8 }}>
                 <div className="btnrow">
                   <button className="btn primary" onClick={addPhotos} disabled={!cfg?.authed}>Add Photos</button>
-                  <button className="btn danger" onClick={removeSelected} disabled={!activeId && !selectedIds.length}>Remove</button>
-                  <button className="btn" onClick={async () => { const q = await window.sq.queueClearUploaded(); setQueue(q); showToast("Cleared successfully uploaded photos."); }} disabled={!queue.length}>Clear uploaded</button>
-                  <button className="btn" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
+                  <button className="btn danger" onClick={removeSelected} disabled={!selectedIds.length}>Remove Selected</button>
+                  <button className="btn" onClick={async () => { const q = await window.sq.queueClearUploaded(); setQueue(q); showToast("Cleared successfully uploaded photos."); }} disabled={!queue.length}>Clear Uploaded</button>
                 </div>
-                <div className="btncluster">
-                  <button className="btn" onClick={selectAll} disabled={!queue.length}>Select all</button>
-                  <button className="btn" onClick={clearSelection} disabled={!selectedIds.length}>Clear selection ({selectedIds.length})</button>
+                <div className="btnrow">
+                  <button className="btn" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
+                  <button className="btn" onClick={openScheduleSelectedDialog} disabled={!hasPendingSelected}>Schedule Selected</button>
+                  {manuallyScheduledCount > 0 ? (
+                    <button className="btn" onClick={clearManualSchedule}>Clear Manual Schedule</button>
+                  ) : null}
+                </div>
+                <div className="btncluster btncluster-secondary" style={{ justifySelf: "start" }}>
+                  <span className="small">Selection</span>
+                  <button className="btn btn-sm" onClick={selectAll} disabled={!queue.length}>Select all</button>
+                  <button className="btn btn-sm" onClick={clearSelection} disabled={!selectedIds.length}>Clear ({selectedIds.length})</button>
                 </div>
               </div>
+
+              {scheduleDialogOpen && (() => {
+                const isSingleItem = schedulingItemIds.length === 1;
+                const uploadedCount = schedulingItemIds.filter(id => {
+                  const it = queue.find(q => q.id === id);
+                  return it && it.status !== "pending";
+                }).length;
+                const hasUploadedItems = uploadedCount > 0;
+                return (
+                  <div className="schedule-dialog-backdrop" onClick={() => setScheduleDialogOpen(false)}>
+                    <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+                      <div style={{ fontWeight: 650, marginBottom: 8 }}>
+                        {isSingleItem ? "Schedule Upload" : "Schedule Selected"}
+                      </div>
+                      <div className="small" style={{ marginBottom: 8 }}>
+                        {isSingleItem
+                          ? "This item will upload at the exact time specified and will be skipped by normal queue order until then."
+                          : "Selected items will upload at this exact time and will be skipped by normal queue order until then."}
+                      </div>
+                      {hasUploadedItems && (
+                        <div className="small" style={{ marginBottom: 8, color: "var(--warn)" }}>
+                          Previously uploaded items will not be reuploaded or scheduled.
+                        </div>
+                      )}
+                      <input
+                        className="input"
+                        type="datetime-local"
+                        value={scheduleAtLocal}
+                        onChange={(e) => setScheduleAtLocal(e.target.value)}
+                      />
+                      <div className="btnrow" style={{ justifyContent: "space-between", marginTop: 10 }}>
+                        <div>
+                          {isSingleItem && (
+                            <button className="btn" onClick={() => clearManualScheduleForItem(schedulingItemIds[0])}>Clear Manual Schedule</button>
+                          )}
+                        </div>
+                        <div className="btnrow" style={{ justifyContent: "flex-end" }}>
+                          <button className="btn" onClick={() => setScheduleDialogOpen(false)}>Cancel</button>
+                          <button className="btn primary" onClick={scheduleSelectedAt}>Schedule</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {pastTimeDialogOpen && (
+                <div className="schedule-dialog-backdrop" onClick={() => setPastTimeDialogOpen(false)}>
+                  <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+                    <div style={{ fontWeight: 650, marginBottom: 8 }}>Selected time is in the past</div>
+                    <div className="small" style={{ marginBottom: 12 }}>
+                      The time you selected ({formatLocal(pastTimeValue)}) has already passed.
+                    </div>
+                    <div className="btnrow" style={{ flexDirection: "column", gap: 8 }}>
+                      <button className="btn primary" style={{ width: "100%" }} onClick={uploadScheduledItemsNow}>Upload Now</button>
+                      <button className="btn" style={{ width: "100%" }} onClick={() => { setPastTimeDialogOpen(false); }}>Edit Scheduled Time</button>
+                      <button className="btn" style={{ width: "100%" }} onClick={() => { setPastTimeDialogOpen(false); setScheduleDialogOpen(false); }}>Cancel schedule and return to queue</button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="queue">
 	                {queue.map((it) => {
@@ -1335,7 +1523,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           <span className="badge">{PRIVACY_LABEL[it.privacy || "private"]}</span>
                           {(it.groupIds?.length || 0) > 0 ? <span className="badge">{it.groupIds.length} groups</span> : null}
                           {(it.albumIds?.length || 0) > 0 ? <span className="badge">{it.albumIds.length} albums</span> : null}
-                          {sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Scheduled: {scheduledMap[it.id] === "__current_batch__" ? "current batch" : formatLocal(scheduledMap[it.id])}</span> : null}
+                          {it.status === "pending" && it.scheduledUploadAt ? <span className="badge accent" style={{ cursor: "pointer" }} onClick={() => openScheduleDialogForItem(it.id)}>Manual: {formatLocal(it.scheduledUploadAt)}</span> : null}
+                          {sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Queued: {scheduledMap[it.id] === "__current_batch__" ? "current batch" : formatLocal(scheduledMap[it.id])}</span> : null}
                           {it.status === "done_warn" && !hasPendingGroupRetries && it.lastError ? (
                             <span className="badge warn" title={friendlyIdInMessage(it.lastError)}>warnings: see details</span>
                           ) : null}
@@ -1967,7 +2156,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 )}
         </>
       )}
-<div className="small footer">By Paul Nicholson. Not an official Flickr app.</div>
       <div className="footer-fixed">
         <div className="footer-left">
           <span>By Paul Nicholson. Not an official Flickr app.</span>

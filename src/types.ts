@@ -35,6 +35,7 @@ export type QueueItem = {
   lastError?: string;
   photoId?: string;
   uploadedAt?: string;
+  scheduledUploadAt?: string;
   // Per-group add status after upload (for retry/backoff and user messaging)
   groupAddStates?: Record<string, {
     status: "pending" | "done" | "failed" | "retry" | "gave_up";

@@ -25,7 +25,7 @@ declare global {
       queueReorder: (idsInOrder: string[]) => Promise<QueueItem[]>;
       queueClearUploaded: () => Promise<QueueItem[]>;
 
-      uploadNowOne: () => Promise<any>;
+      uploadNowOne: (options?: { itemId?: string; reason?: string }) => Promise<any>;
       logGet: () => Promise<string[]>;
       logClear: () => Promise<any>;
       schedulerStart: (intervalHours: number, uploadImmediately: boolean, settings: any) => Promise<any>;

@@ -90,6 +90,27 @@ function hasPendingWork() {
   return false;
 }
 
+function getManualScheduleMs(item) {
+  const iso = item && item.scheduledUploadAt ? String(item.scheduledUploadAt) : "";
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function getDueManualScheduledPendingItem(q, nowMs) {
+  let best = null;
+  for (let i = 0; i < q.length; i++) {
+    const it = q[i];
+    if (!it || it.status !== "pending") continue;
+    const scheduleMs = getManualScheduleMs(it);
+    if (scheduleMs == null || scheduleMs > nowMs) continue;
+    if (!best || scheduleMs < best.scheduleMs || (scheduleMs === best.scheduleMs && i < best.index)) {
+      best = { item: it, index: i, scheduleMs };
+    }
+  }
+  return best ? best.item : null;
+}
+
 function updateWindowIcon() {
   if (!win || win.isDestroyed()) return;
   const active = !!store.get("schedulerOn") && hasPendingWork();
@@ -1071,7 +1092,7 @@ async function ensureAlbumByTitle(title) {
   return null;
 }
 
-async function uploadNowOneInternal() {
+async function uploadNowOneInternal(options = {}) {
   const auth = getFlickrAuth();
 
   // Prevent overlapping uploads
@@ -1081,7 +1102,21 @@ async function uploadNowOneInternal() {
     if (!isAuthed()) throw new Error("Not authorized");
 
     const q = queue.loadQueue();
-    const next = q.find(it => it.status === "pending");
+    const requestedId = options && options.itemId ? String(options.itemId) : "";
+    const nowMs = Date.now();
+    let next = null;
+    if (requestedId) {
+      next = q.find(it => it.id === requestedId && it.status === "pending") || null;
+    } else {
+      next = getDueManualScheduledPendingItem(q, nowMs);
+      if (!next) {
+        next = q.find(it => {
+          if (it.status !== "pending") return false;
+          const scheduleMs = getManualScheduleMs(it);
+          return scheduleMs == null || scheduleMs <= nowMs;
+        }) || null;
+      }
+    }
     if (!next) return { ok: true, message: "No pending items." };
 
     next.status = "uploading";
@@ -1116,6 +1151,7 @@ async function uploadNowOneInternal() {
     next.photoId = photoId;
     next.uploadedAt = new Date().toISOString();
     next.status = "done";
+    next.scheduledUploadAt = "";
     queue.saveQueue(q);
 
     logEvent("INFO", "Uploaded photo", { id: next.id, photoId });
@@ -1170,7 +1206,7 @@ async function uploadNowOneInternal() {
   }
 }
 
-ipcMain.handle("upload:nowOne", async () => uploadNowOneInternal());
+ipcMain.handle("upload:nowOne", async (_e, options) => uploadNowOneInternal(options || {}));
 
 let schedTimer = null;
 let uploadLock = false; // prevents overlapping uploads (fixes duplicate uploads)
@@ -1195,6 +1231,19 @@ async function tickScheduler() {
   } catch (e) {
     const msg = e?.message ? String(e.message) : String(e);
     logEvent("WARN", "Group retry processing failed", { error: msg });
+  }
+
+  if (!uploadLock) {
+    const q = queue.loadQueue();
+    const dueManual = getDueManualScheduledPendingItem(q, Date.now());
+    if (dueManual) {
+      try {
+        await uploadNowOneInternal({ itemId: dueManual.id, reason: "manual_scheduled" });
+      } catch (_) {
+        // keep scheduler alive; uploadNowOneInternal already logs and updates item status
+      }
+      return;
+    }
   }
 
   const nextRunAt = store.get("nextRunAt");

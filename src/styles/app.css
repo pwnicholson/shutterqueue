@@ -104,6 +104,7 @@ body{
 }
 .btn:hover{border-color: rgba(139,211,255,0.35)}
 .btn:disabled{opacity:0.5; cursor:not-allowed}
+.btn.btn-sm{padding:6px 10px; font-size:12px; border-radius:10px}
 .btn.primary{background: rgba(139,211,255,0.12); border-color: rgba(139,211,255,0.35)}
 .btn.danger{background: rgba(255,107,138,0.10); border-color: rgba(255,107,138,0.30)}
 
@@ -314,6 +315,30 @@ body{
 
 .btnrow { display:flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .btncluster { display:flex; gap: 10px; align-items:center; padding: 6px; border:1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,0.02); }
+.btncluster-secondary{
+  gap:8px;
+  border-style: dashed;
+  background: rgba(255,255,255,0.01);
+}
+
+.schedule-dialog-backdrop{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 1200;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:16px;
+}
+.schedule-dialog{
+  width: min(460px, 100%);
+  border:1px solid var(--border);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(16,26,51,0.96), rgba(15,23,48,0.96));
+  padding: 14px;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+}
 
 /* Fixed footer (always visible) */
 .footer-fixed{

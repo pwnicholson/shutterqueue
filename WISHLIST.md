@@ -20,7 +20,7 @@
 
 ## Soon
 
-* \[ ] Improve progress bar on uploads (just flashes now, doesn't show actual progress of the individual item or the batch it is in)
+* \[ ] Improve progress bar on uploads (just flashes now, doesn't show actual progress of the individual item, only the batch that is it in)
 * \[ ] Allow photos to be scheduled for a specific time, not just an interval and queue order
 * \[ ] Saved “Sets” of groups/albums (user-defined)
 

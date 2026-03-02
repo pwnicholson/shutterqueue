@@ -22,7 +22,7 @@ contextBridge.exposeInMainWorld("sq", {
   queueReorder: (idsInOrder) => ipcRenderer.invoke("queue:reorder", { idsInOrder }),
   queueClearUploaded: () => ipcRenderer.invoke("queue:clearUploaded"),
 
-  uploadNowOne: () => ipcRenderer.invoke("upload:nowOne"),
+  uploadNowOne: (options) => ipcRenderer.invoke("upload:nowOne", options),
   schedulerStart: (intervalHours, uploadImmediately, settings) =>
     ipcRenderer.invoke("sched:start", { intervalHours, uploadImmediately, settings }),
   schedulerStop: () => ipcRenderer.invoke("sched:stop"),

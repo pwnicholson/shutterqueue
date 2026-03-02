@@ -65,7 +65,8 @@ function addPaths(paths) {
       status: "pending",
       lastError: "",
       uploadedAt: "",
-      photoId: ""
+      photoId: "",
+      scheduledUploadAt: ""
     });
   }
   return saveQueue(q);
