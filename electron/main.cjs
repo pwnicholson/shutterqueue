@@ -489,57 +489,39 @@ function createWindow() {
 }
 
 function createTray() {
-  if (tray) return; // Already exists
-  
-  logEvent("INFO", "createTray() called", { platform: process.platform });
-  
-  let iconPath;
-  if (process.platform === "darwin") {
-    const active = !!store.get("schedulerOn") && hasPendingWork();
-    const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
-    iconPath = path.join(__dirname, "..", "assets", filename);
+  try {
+    if (tray) return; // Already exists
     
-    logEvent("INFO", "macOS tray icon path", { iconPath, active, exists: fs.existsSync(iconPath) });
-
-    let image = null;
-    if (fs.existsSync(iconPath)) {
-      const loaded = nativeImage.createFromPath(iconPath);
-      logEvent("INFO", "Loaded menu bar icon", { 
-        isEmpty: loaded.isEmpty(), 
-        size: loaded.getSize()
-      });
-      if (!loaded.isEmpty()) {
-        // Use original 22x22 size - don't resize
-        image = loaded;
-        image.setTemplateImage(true);
+    let iconPath;
+    if (process.platform === "darwin") {
+      const active = !!store.get("schedulerOn") && hasPendingWork();
+      const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
+      iconPath = path.join(__dirname, "..", "assets", filename);
+      
+      // Try path-based approach first on macOS (simpler and more reliable)
+      if (fs.existsSync(iconPath)) {
+        tray = new Tray(iconPath);
+        if (tray) {
+          const img = nativeImage.createFromPath(iconPath);
+          if (!img.isEmpty()) {
+            tray.setImage(img);
+          }
+        }
+      } else {
+        // Fallback to app icons if menu icons don't exist
+        iconPath = getIconPath(active);
+        tray = new Tray(iconPath);
       }
-    }
-
-    if (!image || image.isEmpty()) {
-      const fallbackPath = getIconPath(active);
-      logEvent("WARN", "Menu bar icon unavailable, trying fallback", {
-        iconPath,
-        fallbackPath
-      });
-      const fallback = nativeImage.createFromPath(fallbackPath);
-      if (!fallback.isEmpty()) {
-        image = fallback.resize({ width: 22, height: 22, quality: "best" });
-        image.setTemplateImage(true);
-      }
-    }
-
-    if (image && !image.isEmpty()) {
-      tray = new Tray(image);
-      logEvent("INFO", "Tray created successfully with image");
     } else {
-      // Last resort: let Electron attempt path-based icon creation
-      tray = new Tray(getIconPath(active));
-      logEvent("WARN", "Tray created with path fallback", { active });
+      // Windows/Linux: use normal icon sizing
+      iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
+      tray = new Tray(iconPath);
     }
-  } else {
-    // Windows/Linux: use normal icon sizing
-    iconPath = getIconPath(!!store.get("schedulerOn") && hasPendingWork());
-    tray = new Tray(iconPath);
+    
+    if (!tray) return;
+  } catch (err) {
+    logEvent("ERROR", "Failed to create tray", { error: String(err), platform: process.platform });
+    return;
   }
   
   const updateTrayMenu = () => {
@@ -618,26 +600,14 @@ function updateTrayIcon() {
   if (tray) {
     const active = !!store.get("schedulerOn") && hasPendingWork();
     if (process.platform === "darwin") {
-      // macOS: use 22x22 template images
+      // macOS: try menu bar icons first, fallback to app icons
       const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
       const iconPath = path.join(__dirname, "..", "assets", filename);
       if (fs.existsSync(iconPath)) {
-        const image = nativeImage.createFromPath(iconPath);
-        if (!image.isEmpty()) {
-          image.setTemplateImage(true);
-          tray.setImage(image);
-          return;
-        }
+        tray.setImage(iconPath);
+      } else {
+        tray.setImage(getIconPath(active));
       }
-      // Fallback to app icon
-      const fallback = nativeImage.createFromPath(getIconPath(active));
-      if (!fallback.isEmpty()) {
-        const resized = fallback.resize({ width: 22, height: 22, quality: "best" });
-        resized.setTemplateImage(true);
-        tray.setImage(resized);
-        return;
-      }
-      tray.setImage(getIconPath(active));
     } else {
       // Windows/Linux
       const iconPath = getIconPath(active);
