@@ -493,21 +493,36 @@ function createTray() {
   
   let iconPath;
   if (process.platform === "darwin") {
-    // On macOS, use smaller template images for the menu bar
     const active = !!store.get("schedulerOn") && hasPendingWork();
     const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
     iconPath = path.join(__dirname, "..", "assets", filename);
-    
-    // If template images don't exist, use the app icons as fallback but they may be oversized
-    if (!fs.existsSync(iconPath)) {
-      logEvent("WARN", "Menu bar icons not found, using app icons as fallback", { filename });
-      iconPath = getIconPath(active);
-      tray = new Tray(iconPath);
-    } else {
-      // Load and set as template image so Electron handles dark/light mode properly
-      const image = nativeImage.createFromPath(iconPath);
-      image.setTemplateImage(true);
+
+    let image = null;
+    if (fs.existsSync(iconPath)) {
+      const loaded = nativeImage.createFromPath(iconPath);
+      if (!loaded.isEmpty()) {
+        image = loaded.resize({ width: 16, height: 16, quality: "best" });
+      }
+    }
+
+    if (!image || image.isEmpty()) {
+      const fallbackPath = getIconPath(active);
+      const fallback = nativeImage.createFromPath(fallbackPath);
+      if (!fallback.isEmpty()) {
+        image = fallback.resize({ width: 16, height: 16, quality: "best" });
+      }
+      logEvent("WARN", "Menu bar icon image unavailable, using fallback", {
+        iconPath,
+        fallbackPath
+      });
+    }
+
+    if (image && !image.isEmpty()) {
       tray = new Tray(image);
+    } else {
+      // Last resort: let Electron attempt path-based icon creation
+      tray = new Tray(getIconPath(active));
+      logEvent("WARN", "Menu bar icon image still empty; using path icon", { active });
     }
   } else {
     // Windows/Linux: use normal icon sizing
@@ -591,17 +606,24 @@ function updateTrayIcon() {
   if (tray) {
     const active = !!store.get("schedulerOn") && hasPendingWork();
     if (process.platform === "darwin") {
-      // macOS: use menu bar icons with explicit template mode
+      // macOS: use explicitly resized menu bar icons
       const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
       const iconPath = path.join(__dirname, "..", "assets", filename);
       if (fs.existsSync(iconPath)) {
         const image = nativeImage.createFromPath(iconPath);
-        image.setTemplateImage(true);
-        tray.setImage(image);
+        if (!image.isEmpty()) {
+          tray.setImage(image.resize({ width: 16, height: 16, quality: "best" }));
+          return;
+        }
       } else {
         // Fallback to app icon
-        tray.setImage(getIconPath(active));
+        const fallback = nativeImage.createFromPath(getIconPath(active));
+        if (!fallback.isEmpty()) {
+          tray.setImage(fallback.resize({ width: 16, height: 16, quality: "best" }));
+          return;
+        }
       }
+      tray.setImage(getIconPath(active));
     } else {
       // Windows/Linux
       const iconPath = getIconPath(active);
