@@ -491,38 +491,50 @@ function createWindow() {
 function createTray() {
   if (tray) return; // Already exists
   
+  logEvent("INFO", "createTray() called", { platform: process.platform });
+  
   let iconPath;
   if (process.platform === "darwin") {
     const active = !!store.get("schedulerOn") && hasPendingWork();
     const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
     iconPath = path.join(__dirname, "..", "assets", filename);
+    
+    logEvent("INFO", "macOS tray icon path", { iconPath, active, exists: fs.existsSync(iconPath) });
 
     let image = null;
     if (fs.existsSync(iconPath)) {
       const loaded = nativeImage.createFromPath(iconPath);
+      logEvent("INFO", "Loaded menu bar icon", { 
+        isEmpty: loaded.isEmpty(), 
+        size: loaded.getSize()
+      });
       if (!loaded.isEmpty()) {
-        image = loaded.resize({ width: 16, height: 16, quality: "best" });
+        // Use original 22x22 size - don't resize
+        image = loaded;
+        image.setTemplateImage(true);
       }
     }
 
     if (!image || image.isEmpty()) {
       const fallbackPath = getIconPath(active);
-      const fallback = nativeImage.createFromPath(fallbackPath);
-      if (!fallback.isEmpty()) {
-        image = fallback.resize({ width: 16, height: 16, quality: "best" });
-      }
-      logEvent("WARN", "Menu bar icon image unavailable, using fallback", {
+      logEvent("WARN", "Menu bar icon unavailable, trying fallback", {
         iconPath,
         fallbackPath
       });
+      const fallback = nativeImage.createFromPath(fallbackPath);
+      if (!fallback.isEmpty()) {
+        image = fallback.resize({ width: 22, height: 22, quality: "best" });
+        image.setTemplateImage(true);
+      }
     }
 
     if (image && !image.isEmpty()) {
       tray = new Tray(image);
+      logEvent("INFO", "Tray created successfully with image");
     } else {
       // Last resort: let Electron attempt path-based icon creation
       tray = new Tray(getIconPath(active));
-      logEvent("WARN", "Menu bar icon image still empty; using path icon", { active });
+      logEvent("WARN", "Tray created with path fallback", { active });
     }
   } else {
     // Windows/Linux: use normal icon sizing
@@ -606,22 +618,24 @@ function updateTrayIcon() {
   if (tray) {
     const active = !!store.get("schedulerOn") && hasPendingWork();
     if (process.platform === "darwin") {
-      // macOS: use explicitly resized menu bar icons
+      // macOS: use 22x22 template images
       const filename = active ? "ShutterQueue-IconMenu.png" : "ShutterQueue-IconMenu-Inactive.png";
       const iconPath = path.join(__dirname, "..", "assets", filename);
       if (fs.existsSync(iconPath)) {
         const image = nativeImage.createFromPath(iconPath);
         if (!image.isEmpty()) {
-          tray.setImage(image.resize({ width: 16, height: 16, quality: "best" }));
+          image.setTemplateImage(true);
+          tray.setImage(image);
           return;
         }
-      } else {
-        // Fallback to app icon
-        const fallback = nativeImage.createFromPath(getIconPath(active));
-        if (!fallback.isEmpty()) {
-          tray.setImage(fallback.resize({ width: 16, height: 16, quality: "best" }));
-          return;
-        }
+      }
+      // Fallback to app icon
+      const fallback = nativeImage.createFromPath(getIconPath(active));
+      if (!fallback.isEmpty()) {
+        const resized = fallback.resize({ width: 22, height: 22, quality: "best" });
+        resized.setTemplateImage(true);
+        tray.setImage(resized);
+        return;
       }
       tray.setImage(getIconPath(active));
     } else {
