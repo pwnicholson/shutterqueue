@@ -1090,6 +1090,7 @@ async function uploadNowOneInternal() {
 
     logEvent("INFO", "Uploading photo", { id: next.id, path: next.photoPath });
 
+    let lastProgressBytes = 0;
     const photoId = await flickr.uploadPhoto({
       apiKey: auth.apiKey,
       apiSecret: auth.apiSecret,
@@ -1097,12 +1098,17 @@ async function uploadNowOneInternal() {
       tokenSecret: auth.tokenSecret,
       item: next,
       onProgress: (loaded, total) => {
-        // forward to renderer for UI progress bar
-        try {
-          if (win && win.webContents) {
-            win.webContents.send("upload:progress", { loaded, total });
-          }
-        } catch (_) {}
+        // Only dispatch progress if bytes increased meaningfully or we're at the end.
+        // This avoids flashing caused by socket.bytesWritten jumping to 0 between files.
+        const minThreshold = 512; // 512 bytes minimum before first report
+        if (loaded > lastProgressBytes && (loaded >= minThreshold || loaded === total)) {
+          lastProgressBytes = loaded;
+          try {
+            if (win && win.webContents) {
+              win.webContents.send("upload:progress", { loaded, total });
+            }
+          } catch (_) {}
+        }
       }
     });
 
