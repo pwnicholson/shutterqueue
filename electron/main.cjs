@@ -742,6 +742,15 @@ app.on("before-quit", () => {
   isQuitting = true;
 });
 
+ipcMain.handle("shell:openExternal", async (_e, { url }) => {
+  if (!url || typeof url !== "string") return { ok: false, error: "Invalid URL" };
+  try {
+    await shell.openExternal(url);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
 
 ipcMain.handle("app:version", async () => {
   return app.getVersion();

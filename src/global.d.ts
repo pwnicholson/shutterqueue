@@ -36,6 +36,7 @@ declare global {
       schedulerStatus: () => Promise<any>;
 
       pickPhotos: () => Promise<string[]>;
+      openExternal: (options: { url: string }) => Promise<any>;
     };
     // custom event emitted from preload when an upload is in progress
     interface WindowEventMap {

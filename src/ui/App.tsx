@@ -1380,9 +1380,45 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     </div>
   </>
 ) : (
-  <>
+              <>
     <div className="small">OAuth is done in your browser (no Flickr password stored by ShutterQueue). Keys + tokens are saved between versions.</div>
-    <div style={{ height: 12 }} />
+    <div style={{ height: 16 }} />
+    <div className="card" style={{ backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
+      <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>Setup Instructions:</div>
+      <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+        <li style={{ marginBottom: 8 }}>
+          Go to{" "}
+          <button
+            style={{
+              background: "none",
+              border: "none",
+              padding: 0,
+              color: "var(--accent)",
+              cursor: "pointer",
+              textDecoration: "underline",
+              fontSize: "inherit",
+              font: "inherit",
+            }}
+            onClick={() => window.sq.openExternal({ url: "https://www.flickr.com/services/" })}
+          >
+            Flickr's Developer Page
+          </button>
+          {" "}
+          and click "Get an API key"
+          <ul style={{ marginTop: 4, marginLeft: 20 }}>
+            <li>Choose "Non-commercial" for your key type</li>
+            <li>Name the app something like "ShutterQueue - [your username]"</li>
+            <li>Read and acknowledge the Flickr terms</li>
+          </ul>
+        </li>
+        <li style={{ marginBottom: 8 }}>Copy the API Key and paste it below</li>
+        <li style={{ marginBottom: 8 }}>Copy the API Secret and paste it below</li>
+        <li style={{ marginBottom: 8 }}>Click "Save", then click "Start Authorization"</li>
+        <li style={{ marginBottom: 8 }}>A browser window will open for Flickr's OAuth page - log in if needed</li>
+        <li>Click "Ok I'll Authorize It" and you'll return to ShutterQueue, logged in!</li>
+      </ol>
+    </div>
+    <div style={{ height: 16 }} />
     <label className="small">API Key</label>
     <input className="input" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Paste API Key" />
     <div style={{ height: 10 }} />

@@ -10,8 +10,6 @@ Note that this is purely vibe-coded using a combination of different AI tools. I
 - **Queue item context menu**: Click the ⋮ (three-dot) menu button on any queue item to Remove, Upload Now, or Schedule items. Supports single and multi-selection.
 - **Right-click context menu**: Windows users can right-click queue items. Mac users can also right-click (or ctrl-click). Menu availability updated for all platforms.
 - **Confirmation dialogs**: Remove Item now requires confirmation to prevent accidental deletion.
-- **Queue time badge layout**: Schedule and Queued time badges now always display on their own line for consistent, scannable queue item layout.
-- **Selection performance**: Optimized selection interactions with `useCallback` memoization and `startTransition` deferred updates to reduce UI lag during multi-item selection.
 
 ## New to 0.8.0
 

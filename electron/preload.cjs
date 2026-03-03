@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld("sq", {
   setMinimizeToTray: (enabled) => ipcRenderer.invoke("cfg:setMinimizeToTray", { enabled }),
   logSave: () => ipcRenderer.invoke("log:save"),
   appVersion: () => ipcRenderer.invoke("app:version"),
+  openExternal: (options) => ipcRenderer.invoke("shell:openExternal", options),
 
 });
 
