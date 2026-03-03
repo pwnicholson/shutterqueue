@@ -23,12 +23,13 @@
 
 ## Soon
 
-* \[ ] Improve progress bar on uploads (just flashes now, doesn't show actual progress of the individual item, only the batch that is it in)
+* \[ ] Improve setup instructions in-app (so ReadMe is not required)
 * \[ ] Saved “Sets” of groups/albums (user-defined)
+* \[ ] Add geographic data after upload (country/region/city lookup; optional map pick)
 
 ## Nice-to-have
 
-* \[ ] Add geographic data after upload (country/region/city lookup; optional map pick)
 * \[ ] Spellcheck for title/description/tags (free/open-source)
 * \[ ] Pull in basic info about groups (size, etc)
 * \[ ] Per-group throttling (freq + quantity), link to group rules
+* \[ ] Improve progress bar on uploads (just flashes now, doesn't show actual progress of the individual item, only the batch that is it in)
