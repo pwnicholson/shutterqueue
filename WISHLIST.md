@@ -20,10 +20,10 @@
 * [X] Allow photos to be scheduled for a specific time, not just an interval and queue order
 * [X] Add right-click context menu for queue items (single + multi-select actions)
 * [X] Keep queued/scheduled time badges on their own line for consistent queue item layout
+* [X] Improve setup instructions in-app (clickable Flickr developer link, step-by-step guide)
 
 ## Soon
 
-* \[ ] Improve setup instructions in-app (so ReadMe is not required)
 * \[ ] Saved “Sets” of groups/albums (user-defined)
 * \[ ] Add geographic data after upload (country/region/city lookup; optional map pick)
 
