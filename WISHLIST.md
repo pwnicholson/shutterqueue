@@ -18,6 +18,8 @@
 * [X] Verify status Menu Bar on Mac
 * [X] Click and drag to move item priority for the group add list
 * [X] Allow photos to be scheduled for a specific time, not just an interval and queue order
+* [X] Add right-click context menu for queue items (single + multi-select actions)
+* [X] Keep queued/scheduled time badges on their own line for consistent queue item layout
 
 ## Soon
 

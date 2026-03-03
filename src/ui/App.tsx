@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, startTransition } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
 import type { Album, Group, Privacy, QueueItem } from "../types";
 
 type Tab = "setup" | "queue" | "schedule" | "logs";
@@ -233,6 +233,9 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
 
   // Full-window image preview overlay.
   const [preview, setPreview] = useState<{ src: string; title?: string } | null>(null);
+
+  // Context menu for queue items
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; itemId: string } | null>(null);
 
   const [pendingGroupFocus, setPendingGroupFocus] = useState<string>("");
 
@@ -735,30 +738,32 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   };
 
   const reorderPendingForManualSchedule = (sourceQueue: QueueItem[]): QueueItem[] => {
-    const nowMs = Date.now();
-    const originalIndex = new Map(sourceQueue.map((it, idx) => [it.id, idx]));
+    // Separate items: non-pending stay at original positions, 
+    // manually scheduled items go before unscheduled pending items (sorted by time)
+    const nonPending: QueueItem[] = [];
+    const scheduled: QueueItem[] = [];
+    const unscheduled: QueueItem[] = [];
 
-    const readyAtMs = (item: QueueItem) => {
-      const raw = item.scheduledUploadAt ? Date.parse(item.scheduledUploadAt) : Number.NaN;
-      return Number.isFinite(raw) ? raw : nowMs;
-    };
+    for (const it of sourceQueue) {
+      if (it.status !== "pending") {
+        nonPending.push(it);
+      } else if (it.scheduledUploadAt) {
+        scheduled.push(it);
+      } else {
+        unscheduled.push(it);
+      }
+    }
 
-    const sortedPending = sourceQueue
-      .filter(it => it.status === "pending")
-      .sort((a, b) => {
-        const ra = readyAtMs(a);
-        const rb = readyAtMs(b);
-        if (ra !== rb) return ra - rb;
-        return (originalIndex.get(a.id) || 0) - (originalIndex.get(b.id) || 0);
-      });
+    // Sort scheduled by time
+    scheduled.sort((a, b) => Date.parse(a.scheduledUploadAt || "") - Date.parse(b.scheduledUploadAt || ""));
 
-    let pendingCursor = 0;
-    return sourceQueue.map(it => {
-      if (it.status !== "pending") return it;
-      const next = sortedPending[pendingCursor];
-      pendingCursor += 1;
-      return next;
-    });
+    // Rebuild: non-pending first, then scheduled (sorted), then unscheduled
+    const result: QueueItem[] = [];
+    result.push(...nonPending);
+    result.push(...scheduled);
+    result.push(...unscheduled);
+
+    return result;
   };
 
   const scheduleSelectedAt = async () => {
@@ -800,26 +805,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const reorderedQueue = reorderPendingForManualSchedule(updatedQueue);
 
     setQueue(reorderedQueue);
-    
-    const [, confirmedQueue] = await Promise.all([
-      updateItems(changed),
-      window.sq.queueReorder(reorderedQueue.map(it => it.id)),
-    ]);
-    
-    // Use the confirmed queue order from the backend
-    if (confirmedQueue && Array.isArray(confirmedQueue)) {
-      setQueue(confirmedQueue);
-    }
-    
-    // Find new position(s) for toast feedback
-    const newPositions = changed.map(it => {
-      const idx = (confirmedQueue || reorderedQueue).findIndex(q => q.id === it.id);
-      return idx >= 0 ? idx + 1 : "?";
-    });
+    await window.sq.queueUpdate(changed);
+    await window.sq.queueReorder(reorderedQueue.map(it => it.id));
     
     setScheduleDialogOpen(false);
-    const posText = newPositions.length === 1 ? `moved to position ${newPositions[0]}` : `moved to positions ${newPositions.join(", ")}`;
-    showToast(`Scheduled ${changed.length} item(s) for ${formatLocal(iso)} — ${posText}.`);
+    showToast(`Scheduled ${changed.length} item(s) for ${formatLocal(iso)}.`);
   };
 
   const uploadScheduledItemsNow = async () => {
@@ -856,6 +846,89 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
     await updateItems(changed);
     showToast(`Cleared manual schedule on ${changed.length} item(s).`);
+  };
+
+  const handleContextMenu = useCallback((e: React.MouseEvent, itemId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // If right-clicked item isn't selected, select it
+    if (!selectedIds.includes(itemId)) {
+      setSelectedIds([itemId]);
+    }
+    
+    setContextMenu({ x: e.clientX, y: e.clientY, itemId });
+  }, [selectedIds]);
+
+  const removeContextMenuItems = async () => {
+    const idsToRemove = selectedIds.length > 0 ? selectedIds : (contextMenu ? [contextMenu.itemId] : []);
+    setContextMenu(null);
+    if (!idsToRemove.length) return;
+    
+    const confirmed = window.confirm(
+      idsToRemove.length === 1
+        ? "Remove this item from the queue?"
+        : `Remove ${idsToRemove.length} items from the queue?`
+    );
+    
+    if (!confirmed) return;
+    
+    await removeSelected();
+  };
+
+  const uploadContextMenuItemsNow = async () => {
+    const idsToUpload = selectedIds.length > 0 ? selectedIds : (contextMenu ? [contextMenu.itemId] : []);
+    setContextMenu(null);
+    if (!idsToUpload.length) return;
+    
+    const confirmed = window.confirm(
+      idsToUpload.length === 1
+        ? "Upload this item now?"
+        : `Upload ${idsToUpload.length} items now?`
+    );
+    
+    if (!confirmed) return;
+    
+    for (const id of idsToUpload) {
+      try {
+        await window.sq.uploadNowOne({ itemId: id });
+      } catch (e) {
+        console.error("Upload failed:", e);
+      }
+    }
+    await refreshDynamic();
+    showToast(`Uploaded ${idsToUpload.length} item(s).`);
+  };
+
+  const toggleScheduleContextMenu = () => {
+    const idsToSchedule = selectedIds.length > 0 ? selectedIds : (contextMenu ? [contextMenu.itemId] : []);
+    setContextMenu(null);
+    if (!idsToSchedule.length) return;
+    
+    const items = queue.filter(it => idsToSchedule.includes(it.id));
+    const hasScheduled = items.some(it => it.scheduledUploadAt);
+    
+    if (hasScheduled) {
+      // Clear manual schedules
+      const changed = items
+        .filter(it => it.scheduledUploadAt)
+        .map(it => ({ ...it, scheduledUploadAt: "" }));
+      if (!changed.length) return;
+      setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+      updateItems(changed);
+      showToast(`Cleared manual schedule on ${changed.length} item(s).`);
+    } else {
+      // Open schedule dialog
+      if (idsToSchedule.length === 1) {
+        openScheduleDialogForItem(idsToSchedule[0]);
+      } else {
+        setSchedulingItemIds(idsToSchedule);
+        const firstSelected = queue.find(it => idsToSchedule.includes(it.id) && it.status === "pending");
+        const defaultIso = firstSelected?.scheduledUploadAt || new Date(Date.now() + 10 * 60 * 1000).toISOString();
+        setScheduleAtLocal(toDateTimeLocalValue(defaultIso));
+        setScheduleDialogOpen(true);
+      }
+    }
   };
 
   const removeSelected = async () => {
@@ -899,7 +972,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     await updateItems([updated]);
   };
 
-  const handleRowClick = (id: string, e: React.MouseEvent) => {
+  const handleRowClick = useCallback((id: string, e: React.MouseEvent) => {
     const isMeta = e.metaKey || e.ctrlKey;
     const isShift = e.shiftKey;
 
@@ -911,20 +984,26 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       if (a >= 0 && b >= 0) {
         const [lo, hi] = a < b ? [a, b] : [b, a];
         const range = queue.slice(lo, hi + 1).map(x => x.id);
-        setSelectedIds(prev => uniq([...prev, ...range]));
+        startTransition(() => {
+          setSelectedIds(prev => uniq([...prev, ...range]));
+        });
         return;
       }
     }
 
     if (isMeta) {
-      setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : uniq([...prev, id]));
+      startTransition(() => {
+        setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : uniq([...prev, id]));
+      });
       setAnchorId(id);
       return;
     }
 
-    setSelectedIds([id]);
+    startTransition(() => {
+      setSelectedIds([id]);
+    });
     setAnchorId(id);
-  };
+  }, [anchorId, queue]);
 
   const [dragOver, setDragOver] = useState<{ id: string; pos: "top" | "bottom" } | null>(null);
   const [pendingRetryDragOver, setPendingRetryDragOver] = useState<{ id: string; pos: "top" | "bottom" } | null>(null);
@@ -1521,7 +1600,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       onMouseDown={(e) => {
                         const t = e.target as HTMLElement;
                         if (t.closest("button, input, textarea, select, .drag")) return;
-                        e.preventDefault();
+                        // Don't prevent default for right-click or ctrl-click (context menu triggers)
+                        if (e.button === 2 || e.button === 1) return;
+                        // On left-click, prevent text selection  
+                        if (e.button === 0 && !e.ctrlKey) {
+                          e.preventDefault();
+                        }
                       }}
                       onClick={(e) => {
                         const t = e.target as HTMLElement;
@@ -1540,6 +1624,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         const fromId = e.dataTransfer.getData("text/plain");
                         const pos = dragOver?.id === it.id ? dragOver.pos : "top";
                         onDropReorder(fromId, it.id, pos);
+                      }}
+                      onContextMenu={(e) => handleContextMenu(e, it.id)}
+                      onMouseUp={(e) => {
+                        // Detect right-click (button 2) on Mac where ctrl-click also triggers this
+                        if (e.button === 2) {
+                          handleContextMenu(e as any, it.id);
+                        }
                       }}
                     >
                       <img
@@ -1571,8 +1662,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           <span className="badge">{PRIVACY_LABEL[it.privacy || "private"]}</span>
                           {(it.groupIds?.length || 0) > 0 ? <span className="badge">{it.groupIds.length} groups</span> : null}
                           {(it.albumIds?.length || 0) > 0 ? <span className="badge">{it.albumIds.length} albums</span> : null}
-                          {it.status === "pending" && it.scheduledUploadAt ? <span className="badge accent" style={{ cursor: "pointer" }} onClick={() => openScheduleDialogForItem(it.id)}>Manual: {formatLocal(it.scheduledUploadAt)}</span> : null}
-                          {sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Queued: {scheduledMap[it.id] === "__current_batch__" ? "current batch" : formatLocal(scheduledMap[it.id])}</span> : null}
                           {it.status === "done_warn" && !hasPendingGroupRetries && it.lastError ? (
                             <span className="badge warn" title={friendlyIdInMessage(it.lastError)}>warnings: see details</span>
                           ) : null}
@@ -1583,28 +1672,133 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                             hasActualErrorText(it.lastError) ? <span className="badge bad" title={friendlyIdInMessage(it.lastError)}>Error</span> : null
                           )}
                         </div>
+                        <div className="qmeta">
+                          {it.status === "pending" && it.scheduledUploadAt ? <span className="badge accent" style={{ cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); openScheduleDialogForItem(it.id); }}>Manual: {formatLocal(it.scheduledUploadAt)}</span> : null}
+                          {sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Queued: {scheduledMap[it.id] === "__current_batch__" ? "current batch" : formatLocal(scheduledMap[it.id])}</span> : null}
+                        </div>
                       </div>
-                      <span
-                        className="drag"
-                        draggable
-                        title="Drag to reorder"
-                        onDragStart={(e) => {
-                          e.dataTransfer.setData("text/plain", it.id);
-                          e.dataTransfer.effectAllowed = "move";
-                        }}
-                      >
-                        ↕
-                      </span>
+                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <button
+                          className="qmenu-btn"
+                          title="Item menu"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!selectedIds.includes(it.id)) {
+                              setSelectedIds([it.id]);
+                            }
+                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                            setContextMenu({ x: rect.left, y: rect.bottom + 4, itemId: it.id });
+                          }}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            padding: 0,
+                            cursor: "pointer",
+                            fontSize: "18px",
+                            lineHeight: 1,
+                            color: "var(--text-secondary)",
+                          }}
+                        >
+                          ⋮
+                        </button>
+                        <span
+                          className="drag"
+                          draggable
+                          title="Drag to reorder"
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData("text/plain", it.id);
+                            e.dataTransfer.effectAllowed = "move";
+                          }}
+                        >
+                          ↕
+                        </span>
+                      </div>
                     </div>
                   );
                 })}
               </div>
               {!queue.length && <div className="small">Queue is empty. Click “Add Photos”.</div>}
               <div className="small" style={{ marginTop: 10 }}>
-                Selection: click • shift-click (range) • cmd/ctrl-click (toggle)
+                Selection: click • shift-click (range) • cmd/ctrl-click (toggle) • right-click (menu)
               </div>
             </div>
           </div>
+
+          {contextMenu && (
+            <>
+              <div 
+                style={{ position: "fixed", inset: 0, zIndex: 9998 }} 
+                onClick={() => setContextMenu(null)}
+              />
+              <div
+                style={{
+                  position: "fixed",
+                  top: contextMenu.y,
+                  left: contextMenu.x,
+                  backgroundColor: "var(--bg)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 4,
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+                  zIndex: 9999,
+                  minWidth: 180,
+                }}
+              >
+                {(() => {
+                  const idsToCheck = selectedIds.length > 0 ? selectedIds : [contextMenu.itemId];
+                  const items = queue.filter(it => idsToCheck.includes(it.id));
+                  const hasPending = items.some(it => it.status === "pending");
+                  const hasScheduled = items.some(it => it.scheduledUploadAt);
+                  
+                  return (
+                    <>
+                      <div
+                        className="context-menu-item"
+                        onClick={removeContextMenuItems}
+                        style={{
+                          padding: "8px 12px",
+                          cursor: "pointer",
+                          borderBottom: hasPending ? "1px solid var(--border)" : "none",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        Remove Item{selectedIds.length > 1 ? "s" : ""}
+                      </div>
+                      {hasPending && (
+                        <>
+                          <div
+                            className="context-menu-item"
+                            onClick={uploadContextMenuItemsNow}
+                            style={{
+                              padding: "8px 12px",
+                              cursor: "pointer",
+                              borderBottom: "1px solid var(--border)",
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
+                            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                          >
+                            Upload Now
+                          </div>
+                          <div
+                            className="context-menu-item"
+                            onClick={toggleScheduleContextMenu}
+                            style={{
+                              padding: "8px 12px",
+                              cursor: "pointer",
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
+                            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                          >
+                            {hasScheduled ? "Clear Manual Schedule" : "Schedule Time"}
+                          </div>
+                        </>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            </>
+          )}
 
           <div className="card">
             <h2>Edit</h2>
