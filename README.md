@@ -1,9 +1,23 @@
-# ShutterQueue — A paced uploader for Flickr (v0.8.0)
+# ShutterQueue — A paced uploader for Flickr (v0.8.1)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
 
 Note that this is purely vibe-coded using a combination of different AI tools. I am very open to suggestions, feedback, and help optimizing the tool or adding features.
+
+## New to 0.8.1
+
+- **Queue item context menu**: Click the ⋮ (three-dot) menu button on any queue item to Remove, Upload Now, or Schedule items. Supports single and multi-selection.
+- **Right-click context menu**: Windows users can right-click queue items. Mac users can also right-click (or ctrl-click). Menu availability updated for all platforms.
+- **Confirmation dialogs**: Remove Item now requires confirmation to prevent accidental deletion.
+- **Queue time badge layout**: Schedule and Queued time badges now always display on their own line for consistent, scannable queue item layout.
+- **Selection performance**: Optimized selection interactions with `useCallback` memoization and `startTransition` deferred updates to reduce UI lag during multi-item selection.
+
+## New to 0.8.0
+
+- **Manual photo scheduling**: Items can now be scheduled for a specific upload time within the current queue, rather than just relying on queue order and batch intervals. Manually scheduled items are automatically reordered to their correct position when modified.
+- **Enhanced visual feedback**: Added toast notifications and confirmation dialogs for user actions.
+- **Improved queue management**: Better UI/UX for group management and batch operations.
 
 
 ## Setup Process
