@@ -1387,7 +1387,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>Setup Instructions:</div>
       <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
         <li style={{ marginBottom: 8 }}>
-          Go to{" "}
+          Go to Flickr's Developer Page ({" "}
           <button
             style={{
               background: "none",
@@ -1401,10 +1401,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             }}
             onClick={() => window.sq.openExternal({ url: "https://www.flickr.com/services/" })}
           >
-            Flickr's Developer Page
+            https://www.flickr.com/services
           </button>
-          {" "}
-          and click "Get an API key"
+          {") and click \"Get an API key\""}
           <ul style={{ marginTop: 4, marginLeft: 20 }}>
             <li>Choose "Non-commercial" for your key type</li>
             <li>Name the app something like "ShutterQueue - [your username]"</li>
