@@ -26,6 +26,8 @@
 
 * \[ ] Saved “Sets” of groups/albums (user-defined)
 * \[ ] Add geographic data after upload (country/region/city lookup; optional map pick)
+* \[ ] Allow drag-and-drop of files into the app
+* \[ ] Allow "open with" feature to open image files straight into the queue
 
 ## Nice-to-have
 
