@@ -487,12 +487,33 @@ async function processDueGroupRetries({ apiKey, apiSecret, token, tokenSecret, m
     await attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item: job.item, groupId: job.groupId });
 
     const attemptedState = job.item.groupAddStates?.[job.groupId];
+    let propagatedNextRetryAt = "";
     if (attemptedState && attemptedState.status === "retry" && attemptedState.nextRetryAt) {
+      propagatedNextRetryAt = attemptedState.nextRetryAt;
+    } else {
+      // If any retry entries for this group remain overdue, bump them together
+      // to avoid repeatedly hammering the same group/API window.
+      let hasOverdueRetry = false;
+      for (const it of q) {
+        const st = it.groupAddStates?.[job.groupId];
+        if (!st || st.status !== "retry") continue;
+        const due = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : 0;
+        if (!due || due <= Date.now()) {
+          hasOverdueRetry = true;
+          break;
+        }
+      }
+      if (hasOverdueRetry) {
+        propagatedNextRetryAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      }
+    }
+
+    if (propagatedNextRetryAt) {
       // Propagate the group-level retry slot to all retrying photos for this group.
       for (const it of q) {
         const st = it.groupAddStates?.[job.groupId];
         if (!st || st.status !== "retry") continue;
-        st.nextRetryAt = attemptedState.nextRetryAt;
+        st.nextRetryAt = propagatedNextRetryAt;
       }
     }
 
@@ -775,7 +796,9 @@ ipcMain.handle("cfg:get", async () => ({
   resumeOnLaunch: Boolean(store.get("resumeOnLaunch")),
   uploadBatchSize: Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1)))),
   verboseLogging: Boolean(store.get("verboseLogging")),
-  minimizeToTray: Boolean(store.get("minimizeToTray"))
+  minimizeToTray: Boolean(store.get("minimizeToTray")),
+  savedGroupSets: Array.isArray(store.get("savedGroupSets")) ? store.get("savedGroupSets") : [],
+  savedAlbumSets: Array.isArray(store.get("savedAlbumSets")) ? store.get("savedAlbumSets") : []
 }));
 
 ipcMain.handle("cfg:setKeys", async (_e, { apiKey, apiSecret }) => {
@@ -871,6 +894,28 @@ ipcMain.handle("cfg:setSchedulerSettings", async (_e, payload) => {
   }
 
   return { ok: true, updated: out };
+});
+
+ipcMain.handle("cfg:setSavedSets", async (_e, payload) => {
+  const kind = payload?.kind === "album" ? "album" : "group";
+  const key = kind === "group" ? "savedGroupSets" : "savedAlbumSets";
+  const incoming = Array.isArray(payload?.sets) ? payload.sets : [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of incoming) {
+    const name = String(raw?.name || "").trim();
+    if (!name) continue;
+    const lower = name.toLowerCase();
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    const ids = Array.isArray(raw?.ids)
+      ? Array.from(new Set(raw.ids.map((x) => String(x)).filter(Boolean)))
+      : [];
+    out.push({ name, ids });
+  }
+  out.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  store.set(key, out);
+  return { ok: true, kind, sets: out };
 });
 
 

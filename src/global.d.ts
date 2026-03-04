@@ -9,6 +9,7 @@ declare global {
       setApiKeySecret: (apiKey: string, apiSecret: string) => Promise<any>;
       setUploadBatchSize: (uploadBatchSize: number) => Promise<any>;
       setSchedulerSettings: (payload: any) => Promise<any>;
+      setSavedSets: (options: { kind: "group" | "album"; sets: Array<{ name: string; ids: string[] }> }) => Promise<any>;
       startOAuth: () => Promise<any>;
       finishOAuth: (verifier: string) => Promise<any>;
       logout: () => Promise<any>;

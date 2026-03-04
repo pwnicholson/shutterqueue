@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, startTransiti
 import type { Album, Group, Privacy, QueueItem } from "../types";
 
 type Tab = "setup" | "queue" | "schedule" | "logs";
+type SavedIdSet = { name: string; ids: string[] };
 
 const PRIVACY_LABEL: Record<Privacy, string> = {
   public: "Public",
@@ -87,6 +88,23 @@ function deriveTitleFromPhotoPath(photoPath: string): string {
   return noExt || base || "";
 }
 
+function normalizeSavedIdSets(input: any): SavedIdSet[] {
+  if (!Array.isArray(input)) return [];
+  const out: SavedIdSet[] = [];
+  const seen = new Set<string>();
+  for (const raw of input) {
+    const name = String(raw?.name || "").trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const ids = Array.isArray(raw?.ids) ? uniq(raw.ids.map((x: any) => String(x)).filter(Boolean)) : [];
+    out.push({ name, ids });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
 
 
 function TriCheck(props: {
@@ -149,6 +167,14 @@ export default function App() {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [groupsFilter, setGroupsFilter] = useState("");
   const [albumsFilter, setAlbumsFilter] = useState("");
+  const [savedGroupSets, setSavedGroupSets] = useState<SavedIdSet[]>([]);
+  const [savedAlbumSets, setSavedAlbumSets] = useState<SavedIdSet[]>([]);
+  const [activeGroupSetName, setActiveGroupSetName] = useState("");
+  const [activeAlbumSetName, setActiveAlbumSetName] = useState("");
+  const [groupSetMenuOpen, setGroupSetMenuOpen] = useState(false);
+  const [albumSetMenuOpen, setAlbumSetMenuOpen] = useState(false);
+  const [saveSetDialog, setSaveSetDialog] = useState<{ kind: "group" | "album"; ids: string[] } | null>(null);
+  const [saveSetNameInput, setSaveSetNameInput] = useState("");
 const groupNameById = useMemo(() => {
   const m = new Map<string, string>();
   for (const g of groups) m.set(String(g.id), String(g.name));
@@ -161,17 +187,36 @@ const albumTitleById = useMemo(() => {
   return m;
 }, [albums]);
 
+const activeGroupSetIdSet = useMemo(() => {
+  const set = savedGroupSets.find(s => s.name === activeGroupSetName);
+  return set ? new Set(set.ids.map(String)) : null;
+}, [savedGroupSets, activeGroupSetName]);
+
+const activeAlbumSetIdSet = useMemo(() => {
+  const set = savedAlbumSets.find(s => s.name === activeAlbumSetName);
+  return set ? new Set(set.ids.map(String)) : null;
+}, [savedAlbumSets, activeAlbumSetName]);
+
 const filteredGroups = useMemo(() => {
   const q = groupsFilter.trim().toLowerCase();
-  if (!q) return groups;
-  return groups.filter(g => String(g.name || "").toLowerCase().includes(q));
-}, [groups, groupsFilter]);
+  return groups.filter(g => {
+    const inText = !q || String(g.name || "").toLowerCase().includes(q);
+    const inSet = !activeGroupSetIdSet || activeGroupSetIdSet.has(String(g.id));
+    return inText && inSet;
+  });
+}, [groups, groupsFilter, activeGroupSetIdSet]);
 
 const filteredAlbums = useMemo(() => {
   const q = albumsFilter.trim().toLowerCase();
-  if (!q) return albums;
-  return albums.filter(a => String(a.title || "").toLowerCase().includes(q));
-}, [albums, albumsFilter]);
+  return albums.filter(a => {
+    const inText = !q || String(a.title || "").toLowerCase().includes(q);
+    const inSet = !activeAlbumSetIdSet || activeAlbumSetIdSet.has(String(a.id));
+    return inText && inSet;
+  });
+}, [albums, albumsFilter, activeAlbumSetIdSet]);
+
+const isGroupFilterActive = Boolean(groupsFilter.trim() || activeGroupSetName);
+const isAlbumFilterActive = Boolean(albumsFilter.trim() || activeAlbumSetName);
 
 const friendlyIdInMessage = (msg?: string) => {
   if (!msg) return msg;
@@ -489,6 +534,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setUploadBatchSize(Math.max(1, Math.min(999, Math.round(Number((c as any).uploadBatchSize || 1)))));
     setVerboseLogging(Boolean(c.verboseLogging));
     setMinimizeToTray(Boolean(c.minimizeToTray));
+    const nextSavedGroupSets = normalizeSavedIdSets((c as any).savedGroupSets);
+    const nextSavedAlbumSets = normalizeSavedIdSets((c as any).savedAlbumSets);
+    setSavedGroupSets(nextSavedGroupSets);
+    setSavedAlbumSets(nextSavedAlbumSets);
+    if (activeGroupSetName && !nextSavedGroupSets.some(s => s.name === activeGroupSetName)) setActiveGroupSetName("");
+    if (activeAlbumSetName && !nextSavedAlbumSets.some(s => s.name === activeAlbumSetName)) setActiveAlbumSetName("");
 
     // scheduler defaults (only set once if missing)
     if (typeof c.timeWindowEnabled !== "boolean") setTimeWindowEnabled(false);
@@ -642,6 +693,21 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue]);
+
+  // Close dropdown menus when clicking outside them
+  useEffect(() => {
+    if (!groupSetMenuOpen && !albumSetMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      // Check if click was on a dropdown button or inside a dropdown menu
+      const isGroupDropdown = target.closest('[data-dropdown="group"]');
+      const isAlbumDropdown = target.closest('[data-dropdown="album"]');
+      if (!isGroupDropdown) setGroupSetMenuOpen(false);
+      if (!isAlbumDropdown) setAlbumSetMenuOpen(false);
+    };
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [groupSetMenuOpen, albumSetMenuOpen]);
 
   const saveKeys = async () => {
     await window.sq.setApiKeySecret(apiKey, apiSecret);
@@ -1261,6 +1327,188 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     await updateItems(changed);
   };
 
+  const persistSavedSets = async (kind: "group" | "album", sets: SavedIdSet[]) => {
+    const normalized = normalizeSavedIdSets(sets);
+    if (kind === "group") setSavedGroupSets(normalized);
+    else setSavedAlbumSets(normalized);
+    await window.sq.setSavedSets({ kind, sets: normalized });
+  };
+
+  const getCurrentSelectedIdsForSetSave = (kind: "group" | "album") => {
+    if (selectedIds.length > 1) {
+      const source = kind === "group" ? groups : albums;
+      return source
+        .map(x => String(x.id))
+        .filter(id => triState(kind, id) === "all");
+    }
+    if (!active) return [] as string[];
+    return (kind === "group" ? (active.groupIds || []) : (active.albumIds || [])).map(String);
+  };
+
+  const saveCurrentSelectionAsSet = async (kind: "group" | "album") => {
+    const ids = uniq(getCurrentSelectedIdsForSetSave(kind));
+    if (!ids.length) {
+      showToast(`No ${kind === "group" ? "groups" : "albums"} selected to save.`);
+      return;
+    }
+    const defaultName = `${kind === "group" ? "Group" : "Album"} set ${new Date().toISOString().slice(0, 10)}`;
+    setSaveSetNameInput(defaultName);
+    setSaveSetDialog({ kind, ids });
+  };
+
+  const saveSetDialogSubmit = async () => {
+    if (!saveSetDialog) return;
+    const { kind, ids } = saveSetDialog;
+    const name = saveSetNameInput.trim();
+    if (!name) return;
+    const existing = kind === "group" ? savedGroupSets : savedAlbumSets;
+    const next = [
+      ...existing.filter(s => s.name.toLowerCase() !== name.toLowerCase()),
+      { name, ids },
+    ];
+    await persistSavedSets(kind, next);
+    if (kind === "group") setActiveGroupSetName(name);
+    else setActiveAlbumSetName(name);
+    setSaveSetDialog(null);
+    setSaveSetNameInput("");
+    showToast(`Saved ${kind} set "${name}" (${ids.length} item(s)).`);
+  };
+
+  const deleteSavedSet = async (kind: "group" | "album", name: string) => {
+    const ok = window.confirm(
+      `Delete saved ${kind} set "${name}"?\n\nThis only deletes the saved set definition. Photos will remain assigned to their current ${kind === "group" ? "groups" : "albums"}.`
+    );
+    if (!ok) return;
+    const existing = kind === "group" ? savedGroupSets : savedAlbumSets;
+    const next = existing.filter(s => s.name !== name);
+    await persistSavedSets(kind, next);
+    if (kind === "group" && activeGroupSetName === name) setActiveGroupSetName("");
+    if (kind === "album" && activeAlbumSetName === name) setActiveAlbumSetName("");
+    showToast(`Deleted ${kind} set "${name}".`);
+  };
+
+  const renderSavedSetFilterControl = (kind: "group" | "album") => {
+    const savedSets = kind === "group" ? savedGroupSets : savedAlbumSets;
+    const activeName = kind === "group" ? activeGroupSetName : activeAlbumSetName;
+    const setActiveName = kind === "group" ? setActiveGroupSetName : setActiveAlbumSetName;
+    const menuOpen = kind === "group" ? groupSetMenuOpen : albumSetMenuOpen;
+    const setMenuOpen = kind === "group" ? setGroupSetMenuOpen : setAlbumSetMenuOpen;
+
+    return (
+      <div style={{ position: "relative" }} data-dropdown={kind}>
+        <button
+          className="btn"
+          style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+          onClick={(e) => {
+            if (kind === "group") setAlbumSetMenuOpen(false);
+            else setGroupSetMenuOpen(false);
+            setMenuOpen(!menuOpen);
+            e.stopPropagation();
+          }}
+        >
+          <span>{activeName || "(none)"}</span>
+          <span>▾</span>
+        </button>
+          {menuOpen && (
+            <>
+              <div
+                style={{ position: "fixed", inset: 0, zIndex: 29, pointerEvents: "none" }}
+              />
+              <div className="listbox" style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, maxHeight: 200, zIndex: 30 }} onClick={(e) => e.stopPropagation()}>
+                <div className="listrow" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <button className="btn" style={{ padding: "2px 8px" }} onClick={() => { setActiveName(""); setMenuOpen(false); }}>(none)</button>
+                  <span className="small"> </span>
+                </div>
+                {savedSets.map(s => (
+                  <div key={s.name} className="listrow" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <button className="btn" style={{ padding: "2px 8px", flex: 1, textAlign: "left" }} onClick={() => { setActiveName(s.name); setMenuOpen(false); }}>{s.name}</button>
+                    <button
+                      className="btn danger"
+                      style={{ padding: "2px 8px" }}
+                      title={`Delete saved ${kind} set`}
+                      onClick={() => { void deleteSavedSet(kind, s.name); }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {!savedSets.length && <div className="small">No saved sets yet.</div>}
+              </div>
+            </>
+          )}
+      </div>
+    );
+  };
+
+  const clearFilteredSelections = async (kind: "group" | "album") => {
+    const idsToRemove = new Set((kind === "group" ? sortedFilteredGroups : sortedFilteredAlbums).map(x => String(x.id)));
+    if (!idsToRemove.size) {
+      showToast(`No filtered ${kind === "group" ? "groups" : "albums"} to clear.`);
+      return;
+    }
+
+    if (selectedIds.length > 1) {
+      const selectedIdSet = new Set(selectedIds);
+      const changed: QueueItem[] = [];
+      for (const it of queue) {
+        if (!selectedIdSet.has(it.id)) continue;
+        if (kind === "group") {
+          let updated: QueueItem = { ...it, groupIds: (it.groupIds || []).filter(id => !idsToRemove.has(String(id))) };
+          for (const gid of idsToRemove) updated = removeGroupRetryAndSelection(updated, gid);
+          changed.push(updated);
+        } else {
+          changed.push({ ...it, albumIds: (it.albumIds || []).filter(id => !idsToRemove.has(String(id))) });
+        }
+      }
+      if (!changed.length) return;
+      setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+      await updateItems(changed);
+      showToast(`Cleared filtered ${kind === "group" ? "groups" : "albums"} for ${changed.length} item(s).`);
+      return;
+    }
+
+    if (!active) return;
+    if (kind === "group") {
+      let updated: QueueItem = { ...active, groupIds: (active.groupIds || []).filter(id => !idsToRemove.has(String(id))) };
+      for (const gid of idsToRemove) updated = removeGroupRetryAndSelection(updated, gid);
+      setQueue(prev => prev.map(it => (it.id === updated.id ? updated : it)));
+      await updateItems([updated]);
+    } else {
+      const updated: QueueItem = { ...active, albumIds: (active.albumIds || []).filter(id => !idsToRemove.has(String(id))) };
+      setQueue(prev => prev.map(it => (it.id === updated.id ? updated : it)));
+      await updateItems([updated]);
+    }
+    showToast(`Cleared filtered ${kind === "group" ? "groups" : "albums"}.`);
+  };
+
+  const selectAllFilteredForCurrentSelection = async (kind: "group" | "album") => {
+    const idsToAdd = (kind === "group" ? sortedFilteredGroups : sortedFilteredAlbums).map(x => String(x.id));
+    if (!idsToAdd.length) {
+      showToast(`No filtered ${kind === "group" ? "groups" : "albums"} to select.`);
+      return;
+    }
+
+    if (selectedIds.length > 1) {
+      const selectedIdSet = new Set(selectedIds);
+      const changed: QueueItem[] = [];
+      for (const it of queue) {
+        if (!selectedIdSet.has(it.id)) continue;
+        if (kind === "group") changed.push({ ...it, groupIds: uniq([...(it.groupIds || []), ...idsToAdd]) });
+        else changed.push({ ...it, albumIds: uniq([...(it.albumIds || []), ...idsToAdd]) });
+      }
+      if (!changed.length) return;
+      setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+      await updateItems(changed);
+      showToast(`Selected all filtered ${kind === "group" ? "groups" : "albums"} for ${changed.length} item(s).`);
+      return;
+    }
+
+    if (!active) return;
+    if (kind === "group") await updateActive({ groupIds: uniq([...(active.groupIds || []), ...idsToAdd]) });
+    else await updateActive({ albumIds: uniq([...(active.albumIds || []), ...idsToAdd]) });
+    showToast(`Selected all filtered ${kind === "group" ? "groups" : "albums"}.`);
+  };
+
   const scheduledMap = useMemo(() => {
     const out: Record<string, string> = {};
     if (!sched?.schedulerOn) return out;
@@ -1611,6 +1859,21 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 	                  const thumb = srcs.thumbSrc;
                   const isSelected = selectedSet.has(it.id);
                   const hasPendingGroupRetries = !!it.groupAddStates && Object.values(it.groupAddStates).some(st => st?.status === "retry");
+                  const itemNextRetryAt = (() => {
+                    if (!hasPendingGroupRetries) return null;
+                    let minTime = Number.POSITIVE_INFINITY;
+                    let minIso: string | null = null;
+                    for (const st of Object.values(it.groupAddStates || {})) {
+                      if (st?.status === "retry" && st.nextRetryAt) {
+                        const ts = new Date(st.nextRetryAt).getTime();
+                        if (Number.isFinite(ts) && ts < minTime) {
+                          minTime = ts;
+                          minIso = st.nextRetryAt;
+                        }
+                      }
+                    }
+                    return minIso;
+                  })();
                   const pendingGroupsTooltip = hasPendingGroupRetries
                     ? (
                         Object.entries(it.groupAddStates || {})
@@ -1700,7 +1963,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           {it.status === "done_warn" && !hasPendingGroupRetries && it.lastError ? (
                             <span className="badge warn" title={friendlyIdInMessage(it.lastError)}>warnings: see details</span>
                           ) : null}
-                          {it.uploadedAt ? <span className="badge">Uploaded: {formatLocal(it.uploadedAt)}</span> : null}
                           {hasPendingGroupRetries ? (
                             <span className="badge warn" title={pendingGroupsTooltip || ""}>Pending Group Additions</span>
                           ) : (
@@ -1708,8 +1970,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           )}
                         </div>
                         <div className="qmeta">
-                          {it.status === "pending" && it.scheduledUploadAt ? <span className="badge accent" style={{ cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); openScheduleDialogForItem(it.id); }}>Manual: {formatLocal(it.scheduledUploadAt)}</span> : null}
-                          {sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Queued: {scheduledMap[it.id] === "__current_batch__" ? "current batch" : formatLocal(scheduledMap[it.id])}</span> : null}
+                          {it.uploadedAt ? <span className="badge">Uploaded: {formatLocal(it.uploadedAt)}</span> : (hasPendingGroupRetries && itemNextRetryAt ? <span className="badge accent">Pending retry: {formatLocal(itemNextRetryAt)}</span> : (it.status === "pending" && it.scheduledUploadAt ? <span className="badge accent" style={{ cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); openScheduleDialogForItem(it.id); }}>Scheduled: {formatLocal(it.scheduledUploadAt)}</span> : (sched?.schedulerOn && scheduledMap[it.id] ? <span className="badge">Queued: {scheduledMap[it.id] === "__current_batch__" ? "current batch" : formatLocal(scheduledMap[it.id])}</span> : null)))}
                         </div>
                       </div>
                       <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -1903,10 +2164,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     </div>
                   </div>
 
-                  <div style={{ height: 10 }} />
-                  <label className="small">Create new albums (comma-separated titles)</label>
-                  <input className="input" value={batchCreateAlbums} onChange={(e) => setBatchCreateAlbums(e.target.value)} placeholder="e.g., Trip 2026, Portfolio" />
-
                   <div style={{ height: 12 }} />
                   <button className="btn primary" onClick={applyBatch}>Apply to selected</button>
 
@@ -1914,9 +2171,20 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="split">
                     <div>
-                      <div className="small">Groups</div>
-                      <input className="input" value={groupsFilter} onChange={(e) => setGroupsFilter(e.target.value)} placeholder="Filter groups..." />
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Groups</div>
+                      <div className="small" style={{ marginTop: 6 }}>Load saved group set</div>
+                      {renderSavedSetFilterControl("group")}
+                      <div style={{ height: 6 }} />
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input className="input" value={groupsFilter} onChange={(e) => setGroupsFilter(e.target.value)} placeholder="Filter groups..." style={{ flex: 1 }} />
+                        {groupsFilter && <button className="btn btn-sm" onClick={() => setGroupsFilter("")} title="Clear filter">×</button>}
+                      </div>
                       <div style={{ height: 8 }} />
+                      <div className="btncluster btncluster-secondary" style={{ justifySelf: "start", marginBottom: 8 }}>
+                        <span className="small">Filtered</span>
+                        <button className="btn btn-sm" onClick={() => selectAllFilteredForCurrentSelection("group")} disabled={!isGroupFilterActive}>Select Filtered</button>
+                        <button className="btn btn-sm" onClick={() => clearFilteredSelections("group")} disabled={!isGroupFilterActive}>Clear</button>
+                      </div>
                       <div className="listbox">
                         {sortedFilteredGroups.map(g => (
                           <label key={g.id} className="listrow trirow">
@@ -1927,11 +2195,24 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {!groups.length && <div className="small">Load groups in Setup tab.</div>}
                         {!!groups.length && !sortedFilteredGroups.length && <div className="small">No groups match this filter.</div>}
                       </div>
+                      <div style={{ height: 10 }} />
+                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("group")}>Save Selected As A Set</button>
                     </div>
                     <div>
-                      <div className="small">Albums</div>
-                      <input className="input" value={albumsFilter} onChange={(e) => setAlbumsFilter(e.target.value)} placeholder="Filter albums..." />
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Albums</div>
+                      <div className="small" style={{ marginTop: 6 }}>Load saved album set</div>
+                      {renderSavedSetFilterControl("album")}
+                      <div style={{ height: 6 }} />
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input className="input" value={albumsFilter} onChange={(e) => setAlbumsFilter(e.target.value)} placeholder="Filter albums..." style={{ flex: 1 }} />
+                        {albumsFilter && <button className="btn btn-sm" onClick={() => setAlbumsFilter("")} title="Clear filter">×</button>}
+                      </div>
                       <div style={{ height: 8 }} />
+                      <div className="btncluster btncluster-secondary" style={{ justifySelf: "start", marginBottom: 8 }}>
+                        <span className="small">Filtered</span>
+                        <button className="btn btn-sm" onClick={() => selectAllFilteredForCurrentSelection("album")} disabled={!isAlbumFilterActive}>Select Filtered</button>
+                        <button className="btn btn-sm" onClick={() => clearFilteredSelections("album")} disabled={!isAlbumFilterActive}>Clear</button>
+                      </div>
                       <div className="listbox">
                         {sortedFilteredAlbums.map(a => (
                           <label key={a.id} className="listrow trirow">
@@ -1942,6 +2223,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {!albums.length && <div className="small">Load albums in Setup tab.</div>}
                         {!!albums.length && !sortedFilteredAlbums.length && <div className="small">No albums match this filter.</div>}
                       </div>
+                      <div style={{ height: 10 }} />
+                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("album")}>Save Selected As A Set</button>
+                      <div style={{ height: 10 }} />
+                      <div className="small">Create new albums (comma-separated titles)</div>
+                      <input className="input" value={batchCreateAlbums} onChange={(e) => setBatchCreateAlbums(e.target.value)} placeholder="e.g., Trip 2026, Portfolio" />
                     </div>
                   </div>
                 </>
@@ -2013,9 +2299,20 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="split">
                     <div>
-                      <div className="small">Groups</div>
-                      <input className="input" value={groupsFilter} onChange={(e) => setGroupsFilter(e.target.value)} placeholder="Filter groups..." />
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Groups</div>
+                      <div className="small" style={{ marginTop: 6 }}>Load saved group set</div>
+                      {renderSavedSetFilterControl("group")}
+                      <div style={{ height: 6 }} />
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input className="input" value={groupsFilter} onChange={(e) => setGroupsFilter(e.target.value)} placeholder="Filter groups..." style={{ flex: 1 }} />
+                        {groupsFilter && <button className="btn btn-sm" onClick={() => setGroupsFilter("")} title="Clear filter">×</button>}
+                      </div>
                       <div style={{ height: 8 }} />
+                      <div className="btncluster btncluster-secondary" style={{ justifySelf: "start", marginBottom: 8 }}>
+                        <span className="small">Filtered</span>
+                        <button className="btn btn-sm" onClick={() => selectAllFilteredForCurrentSelection("group")} disabled={!isGroupFilterActive}>Select Filtered</button>
+                        <button className="btn btn-sm" onClick={() => clearFilteredSelections("group")} disabled={!isGroupFilterActive}>Clear</button>
+                      </div>
                       <div className="listbox">
                         {sortedFilteredGroups.map(g => (
                           <label key={g.id} className="listrow">
@@ -2042,11 +2339,24 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {!groups.length && <div className="small">Load groups in Setup tab.</div>}
                         {!!groups.length && !sortedFilteredGroups.length && <div className="small">No groups match this filter.</div>}
                       </div>
+                      <div style={{ height: 10 }} />
+                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("group")}>Save Selected As A Set</button>
                     </div>
                     <div>
-                      <div className="small">Albums</div>
-                      <input className="input" value={albumsFilter} onChange={(e) => setAlbumsFilter(e.target.value)} placeholder="Filter albums..." />
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Albums</div>
+                      <div className="small" style={{ marginTop: 6 }}>Load saved album set</div>
+                      {renderSavedSetFilterControl("album")}
+                      <div style={{ height: 6 }} />
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input className="input" value={albumsFilter} onChange={(e) => setAlbumsFilter(e.target.value)} placeholder="Filter albums..." style={{ flex: 1 }} />
+                        {albumsFilter && <button className="btn btn-sm" onClick={() => setAlbumsFilter("")} title="Clear filter">×</button>}
+                      </div>
                       <div style={{ height: 8 }} />
+                      <div className="btncluster btncluster-secondary" style={{ justifySelf: "start", marginBottom: 8 }}>
+                        <span className="small">Filtered</span>
+                        <button className="btn btn-sm" onClick={() => selectAllFilteredForCurrentSelection("album")} disabled={!isAlbumFilterActive}>Select Filtered</button>
+                        <button className="btn btn-sm" onClick={() => clearFilteredSelections("album")} disabled={!isAlbumFilterActive}>Clear</button>
+                      </div>
                       <div className="listbox">
                         {sortedFilteredAlbums.map(a => (
                           <label key={a.id} className="listrow">
@@ -2061,17 +2371,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {!albums.length && <div className="small">Load albums in Setup tab.</div>}
                         {!!albums.length && !sortedFilteredAlbums.length && <div className="small">No albums match this filter.</div>}
                       </div>
+                      <div style={{ height: 10 }} />
+                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("album")}>Save Selected As A Set</button>
+                      <div style={{ height: 10 }} />
+                      <div className="small">Create new albums (comma-separated titles)</div>
+                      <input
+                        className="input"
+                        value={(active.createAlbums || []).join(",")}
+                        onChange={(e) => updateActive({ createAlbums: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
+                        placeholder="e.g., Trip 2026, Portfolio"
+                      />
                     </div>
                   </div>
-
-                  <div style={{ height: 10 }} />
-                  <div className="small">Create new albums (comma-separated titles)</div>
-                  <input
-                    className="input"
-                    value={(active.createAlbums || []).join(",")}
-                    onChange={(e) => updateActive({ createAlbums: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
-                    placeholder="e.g., Trip 2026, Portfolio"
-                  />
 
                   <div style={{ height: 14 }} />
                   {active.lastError ? (() => {
@@ -2438,9 +2749,53 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.8.0"}</span>
+          <span className="mono">v{appVersion || "0.8.2-b1"}</span>
         </div>
       </div>
+
+      {saveSetDialog && (
+        <div className="schedule-dialog-backdrop" onClick={() => setSaveSetDialog(null)}>
+          <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 650, marginBottom: 8 }}>
+              Save Selected As A Set ({saveSetDialog.kind === "group" ? "Groups" : "Albums"})
+            </div>
+            <div className="small" style={{ marginBottom: 10 }}>
+              You can type a new set name or pick an existing set to overwrite.
+            </div>
+            <label className="small">Choose existing set (optional)</label>
+            <select
+              className="input"
+              style={{ marginTop: 6, marginBottom: 10 }}
+              value=""
+              onChange={(e) => {
+                const v = e.target.value;
+                if (!v) return;
+                setSaveSetNameInput(v);
+              }}
+            >
+              <option value="">(pick existing set)</option>
+              {(saveSetDialog.kind === "group" ? savedGroupSets : savedAlbumSets).map(s => (
+                <option key={s.name} value={s.name}>{s.name}</option>
+              ))}
+            </select>
+            <label className="small">Set name</label>
+            <input
+              className="input"
+              style={{ marginTop: 6 }}
+              value={saveSetNameInput}
+              onChange={(e) => setSaveSetNameInput(e.target.value)}
+              placeholder={`e.g., ${saveSetDialog.kind === "group" ? "Fujifilm groups" : "Black and white albums"}`}
+            />
+            <div className="small" style={{ marginTop: 8 }}>
+              Items in set: {saveSetDialog.ids.length}
+            </div>
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={() => setSaveSetDialog(null)}>Cancel</button>
+              <button className="btn primary" disabled={!saveSetNameInput.trim()} onClick={saveSetDialogSubmit}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {preview && (
               <div className="preview-overlay" onClick={() => setPreview(null)}>

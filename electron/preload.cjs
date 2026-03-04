@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("sq", {
   setApiKeySecret: (apiKey, apiSecret) => ipcRenderer.invoke("cfg:setKeys", { apiKey, apiSecret }),
   setUploadBatchSize: (uploadBatchSize) => ipcRenderer.invoke("cfg:setUploadBatchSize", { uploadBatchSize }),
   setSchedulerSettings: (payload) => ipcRenderer.invoke("cfg:setSchedulerSettings", payload),
+  setSavedSets: (options) => ipcRenderer.invoke("cfg:setSavedSets", options),
   startOAuth: () => ipcRenderer.invoke("oauth:start"),
   finishOAuth: (verifier) => ipcRenderer.invoke("oauth:finish", { verifier }),
   logout: () => ipcRenderer.invoke("oauth:logout"),
