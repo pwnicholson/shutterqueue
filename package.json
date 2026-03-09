@@ -1,6 +1,6 @@
 {
   "name": "shutterqueue",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
@@ -45,10 +45,94 @@
     },
     "asar": true,
     "win": {
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "fileAssociations": [
+        {
+          "ext": "jpg",
+          "name": "JPEG Image",
+          "mimeType": "image/jpeg"
+        },
+        {
+          "ext": "jpeg",
+          "name": "JPEG Image",
+          "mimeType": "image/jpeg"
+        },
+        {
+          "ext": "png",
+          "name": "PNG Image",
+          "mimeType": "image/png"
+        },
+        {
+          "ext": "webp",
+          "name": "WebP Image",
+          "mimeType": "image/webp"
+        },
+        {
+          "ext": "gif",
+          "name": "GIF Image",
+          "mimeType": "image/gif"
+        },
+        {
+          "ext": "tif",
+          "name": "TIFF Image",
+          "mimeType": "image/tiff"
+        },
+        {
+          "ext": "tiff",
+          "name": "TIFF Image",
+          "mimeType": "image/tiff"
+        },
+        {
+          "ext": "heic",
+          "name": "HEIC Image",
+          "mimeType": "image/heic"
+        }
+      ]
     },
     "mac": {
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "fileAssociations": [
+        {
+          "ext": "jpg",
+          "name": "JPEG Image",
+          "mimeType": "image/jpeg"
+        },
+        {
+          "ext": "jpeg",
+          "name": "JPEG Image",
+          "mimeType": "image/jpeg"
+        },
+        {
+          "ext": "png",
+          "name": "PNG Image",
+          "mimeType": "image/png"
+        },
+        {
+          "ext": "webp",
+          "name": "WebP Image",
+          "mimeType": "image/webp"
+        },
+        {
+          "ext": "gif",
+          "name": "GIF Image",
+          "mimeType": "image/gif"
+        },
+        {
+          "ext": "tif",
+          "name": "TIFF Image",
+          "mimeType": "image/tiff"
+        },
+        {
+          "ext": "tiff",
+          "name": "TIFF Image",
+          "mimeType": "image/tiff"
+        },
+        {
+          "ext": "heic",
+          "name": "HEIC Image",
+          "mimeType": "image/heic"
+        }
+      ]
     },
     "linux": {
       "icon": "assets/icon.png"

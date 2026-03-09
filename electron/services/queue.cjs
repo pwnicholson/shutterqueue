@@ -5,6 +5,7 @@ const crypto = require("crypto");
 
 const ROOT = path.join(os.homedir(), ".shutterqueue");
 const QUEUE_PATH = path.join(ROOT, "queue.json");
+const duplicateHashCacheByItemId = new Map();
 
 function ensureRoot() {
   if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT, { recursive: true });
@@ -98,6 +99,58 @@ function reorder(idsInOrder) {
   return saveQueue(out);
 }
 
+function getItemContentHash(item) {
+  const itemId = String(item?.id || "");
+  const photoPath = String(item?.photoPath || "");
+  if (!itemId || !photoPath) return null;
+  try {
+    const stat = fs.statSync(photoPath);
+    const key = `${Number(stat.size)}:${Number(stat.mtimeMs)}`;
+    const cached = duplicateHashCacheByItemId.get(itemId);
+    if (cached && cached.photoPath === photoPath && cached.key === key && cached.hash) {
+      return cached.hash;
+    }
+    const fileData = fs.readFileSync(photoPath);
+    const hash = crypto.createHash("sha256").update(fileData).digest("hex");
+    duplicateHashCacheByItemId.set(itemId, { photoPath, key, hash });
+    return hash;
+  } catch {
+    return null;
+  }
+}
+
+function findDuplicateGroups() {
+  const q = loadQueue();
+
+  // Purge cache entries for items no longer in queue
+  const activeIds = new Set(q.map((it) => String(it.id)));
+  for (const itemId of Array.from(duplicateHashCacheByItemId.keys())) {
+    if (!activeIds.has(itemId)) duplicateHashCacheByItemId.delete(itemId);
+  }
+
+  const byHash = new Map();
+  for (const it of q) {
+    const hash = getItemContentHash(it);
+    if (!hash) continue;
+    if (!byHash.has(hash)) byHash.set(hash, []);
+    byHash.get(hash).push(it);
+  }
+
+  const duplicates = [];
+  for (const [hash, items] of byHash.entries()) {
+    if (!Array.isArray(items) || items.length <= 1) continue;
+    const members = items.map((it) => ({
+      id: String(it.id || ""),
+      photoPath: String(it.photoPath || ""),
+      title: String(it.title || ""),
+    }));
+    const removeCandidateIds = members.slice(1).map((m) => m.id).filter(Boolean);
+    duplicates.push({ hash, members, removeCandidateIds });
+  }
+
+  return duplicates;
+}
+
 module.exports = { loadQueue, saveQueue, addPaths, removeIds, updateItems, reorder, QUEUE_PATH };
 
 
@@ -119,4 +172,5 @@ function clearUploaded() {
 }
 
 module.exports.clearUploaded = clearUploaded;
+module.exports.findDuplicateGroups = findDuplicateGroups;
 

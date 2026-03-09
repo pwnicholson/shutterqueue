@@ -66,6 +66,7 @@ let win = null;
 let tray = null;
 let isQuitting = false;
 let lastTraySchedulerState = null;
+let pendingFilesToOpen = []; // Files to open when the app is ready
 
 function getIconPath(active) {
   // Use a monochrome icon when scheduler is off OR there is no pending work.
@@ -619,6 +620,14 @@ function createWindow() {
       if (!tray) createTray();
     }
   });
+
+  // When the window finishes loading, send any pending files that were queued from command-line or "open with"
+  win.webContents.on("did-finish-load", () => {
+    // Small delay to ensure React app is mounted and listening for events
+    setTimeout(() => {
+      sendFilesToRenderer();
+    }, 500);
+  });
 }
 
 function createTray() {
@@ -755,6 +764,106 @@ ipcMain.handle("open-third-party-licenses", async () => {
   }
 });
 
+// Prevent multiple instances on Windows/Linux
+if (process.platform !== "darwin") {
+  const gotTheLock = app.requestSingleInstanceLock();
+  if (!gotTheLock) {
+    app.quit();
+    process.exit(0);
+  }
+}
+
+// Handle files opened via "open with" or command line (macOS)
+app.on("open-file", (event, filePath) => {
+  event.preventDefault();
+  if (filePath && typeof filePath === "string") {
+    pendingFilesToOpen.push(filePath);
+    // If window is already open, send the files immediately
+    if (win && !win.isDestroyed()) {
+      sendFilesToRenderer();
+    }
+  }
+});
+
+// Handle files opened via command line or second instance (Windows/Linux)
+app.on("second-instance", (event, commandLine, workingDirectory) => {
+  // commandLine includes the app path as first arg, so skip it
+  const filePaths = commandLine.slice(1).filter(arg => {
+    return arg && typeof arg === "string" && !arg.startsWith("-");
+  });
+  
+  if (filePaths.length > 0) {
+    pendingFilesToOpen.push(...filePaths);
+    if (win && !win.isDestroyed()) {
+      sendFilesToRenderer();
+    }
+  }
+  
+  // Bring existing window to front
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  }
+});
+
+// Handle command-line arguments on first instance (Windows/Linux)
+if (process.platform !== "darwin") {
+  const args = process.argv.slice(1);
+  for (const arg of args) {
+    if (!arg || typeof arg !== "string") continue;
+    // Skip flags (start with -)
+    if (arg.startsWith("-")) continue;
+    // Skip if it looks like an electron dev/build argument
+    if (arg.includes("=") || arg.includes("@")) continue;
+    // Skip the executable path itself
+    if (arg.endsWith(".exe") || arg.endsWith(".js") || arg.includes("electron")) continue;
+    // This should be a file path - add it
+    // We'll let the queue handler validate if it exists and is a valid image
+    pendingFilesToOpen.push(arg);
+    console.log("[main] Command-line file to open:", arg);
+  }
+  if (pendingFilesToOpen.length > 0) {
+    console.log("[main] Queued", pendingFilesToOpen.length, "file(s) from command line");
+  }
+}
+
+// Send pending files to renderer
+function sendFilesToRenderer() {
+  if (win && !win.isDestroyed() && pendingFilesToOpen.length > 0) {
+    const validFiles = [];
+    const imageExtensions = /\.(jpg|jpeg|png|webp|gif|tif|tiff|heic)$/i;
+    
+    console.log("[main] sendFilesToRenderer: Processing", pendingFilesToOpen.length, "pending files");
+    
+    for (const file of pendingFilesToOpen) {
+      // Validate file path
+      if (file && typeof file === "string" && !file.startsWith("-")) {
+        // Only accept if it looks like an image file
+        if (imageExtensions.test(file)) {
+          validFiles.push(file);
+          console.log("[main] Valid image file:", file);
+        } else {
+          console.log("[main] Skipping non-image file:", file);
+        }
+      }
+    }
+    
+    if (validFiles.length > 0) {
+      console.log("[main] Sending", validFiles.length, "file(s) to renderer");
+      win.webContents.send("app:open-files", { paths: validFiles });
+      pendingFilesToOpen = []; // Clear after sending
+    } else {
+      console.log("[main] No valid image files to send");
+    }
+  } else {
+    if (!win || win.isDestroyed()) {
+      console.log("[main] Cannot send files: window not ready");
+    } else if (pendingFilesToOpen.length === 0) {
+      console.log("[main] No pending files to send");
+    }
+  }
+}
+
 app.whenReady().then(() => {
   createWindow();
   
@@ -793,6 +902,8 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  // Clear global error on graceful exit (keeps errors only for crashes)
+  store.set("lastError", "");
 });
 
 ipcMain.handle("shell:openExternal", async (_e, { url }) => {
@@ -830,7 +941,8 @@ ipcMain.handle("cfg:get", async () => ({
   verboseLogging: Boolean(store.get("verboseLogging")),
   minimizeToTray: Boolean(store.get("minimizeToTray")),
   savedGroupSets: Array.isArray(store.get("savedGroupSets")) ? store.get("savedGroupSets") : [],
-  savedAlbumSets: Array.isArray(store.get("savedAlbumSets")) ? store.get("savedAlbumSets") : []
+  savedAlbumSets: Array.isArray(store.get("savedAlbumSets")) ? store.get("savedAlbumSets") : [],
+  savedTagSets: Array.isArray(store.get("savedTagSets")) ? store.get("savedTagSets") : []
 }));
 
 ipcMain.handle("cfg:setKeys", async (_e, { apiKey, apiSecret }) => {
@@ -929,8 +1041,8 @@ ipcMain.handle("cfg:setSchedulerSettings", async (_e, payload) => {
 });
 
 ipcMain.handle("cfg:setSavedSets", async (_e, payload) => {
-  const kind = payload?.kind === "album" ? "album" : "group";
-  const key = kind === "group" ? "savedGroupSets" : "savedAlbumSets";
+  const kind = ["album", "tag"].includes(payload?.kind) ? payload.kind : "group";
+  const key = kind === "group" ? "savedGroupSets" : kind === "album" ? "savedAlbumSets" : "savedTagSets";
   const incoming = Array.isArray(payload?.sets) ? payload.sets : [];
   const out = [];
   const seen = new Set();
@@ -1070,6 +1182,7 @@ ipcMain.handle("queue:remove", async (_e, { ids }) => queue.removeIds(ids || [])
 ipcMain.handle("queue:update", async (_e, { items }) => queue.updateItems(items || []));
 ipcMain.handle("queue:reorder", async (_e, { idsInOrder }) => queue.reorder(idsInOrder || []));
 ipcMain.handle("queue:clearUploaded", async () => queue.clearUploaded());
+ipcMain.handle("queue:findDuplicates", async () => queue.findDuplicateGroups());
 
 ipcMain.handle("log:get", async () => {
   try {

@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("sq", {
   getConfig: () => ipcRenderer.invoke("cfg:get"),
@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("sq", {
   queueUpdate: (items) => ipcRenderer.invoke("queue:update", { items }),
   queueReorder: (idsInOrder) => ipcRenderer.invoke("queue:reorder", { idsInOrder }),
   queueClearUploaded: () => ipcRenderer.invoke("queue:clearUploaded"),
+  queueFindDuplicates: () => ipcRenderer.invoke("queue:findDuplicates"),
 
   uploadNowOne: (options) => ipcRenderer.invoke("upload:nowOne", options),
   schedulerStart: (intervalHours, uploadImmediately, settings) =>
@@ -31,6 +32,15 @@ contextBridge.exposeInMainWorld("sq", {
 
   pickPhotos: () => ipcRenderer.invoke("ui:pickPhotos"),
   showStartSchedulerDialog: () => ipcRenderer.invoke("ui:show-start-scheduler-dialog"),
+  getPathForFile: (file) => {
+    // Use Electron's webUtils to safely get the file system path from a File object
+    try {
+      return webUtils.getPathForFile(file);
+    } catch (e) {
+      console.error("Failed to get path for file:", e);
+      return null;
+    }
+  },
   logGet: () => ipcRenderer.invoke("log:get"),
   logClear: () => ipcRenderer.invoke("log:clear"),
   setVerboseLogging: (enabled) => ipcRenderer.invoke("cfg:setVerboseLogging", { enabled }),
@@ -39,6 +49,11 @@ contextBridge.exposeInMainWorld("sq", {
   appVersion: () => ipcRenderer.invoke("app:version"),
   openExternal: (options) => ipcRenderer.invoke("shell:openExternal", options),
 
+});
+
+// Listen for files opened via command line or context menu
+ipcRenderer.on("app:open-files", (_e, { paths }) => {
+  window.dispatchEvent(new CustomEvent("sq-add-photos", { detail: { paths } }));
 });
 
 // re-dispatch upload progress events to the window so renderer can listen

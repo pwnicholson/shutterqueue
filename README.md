@@ -1,9 +1,25 @@
-# ShutterQueue — A paced uploader for Flickr (v0.8.1)
+# ShutterQueue — A paced uploader for Flickr (v0.9.1)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
 
 Note that this is purely vibe-coded using a combination of different AI tools. I am very open to suggestions, feedback, and help optimizing the tool or adding features.
+
+## New to 0.9.1
+
+- **Duplicate detection**: Content-based duplicate detection warns you when attempting to add the same file to the queue. Uses SHA-256 hashing to compare file contents (not filenames).
+  - Interactive modal shows all duplicate sets with file paths
+  - Choose to keep duplicates or remove all but the first instance
+  - Warnings can be dismissed and won't show again for the same set while items remain in queue
+
+## New to 0.9.0
+
+- **Saved tag sets**: Create and save sets of tags that can be quickly applied to photos in batches, just like the existing group/album saved sets feature.
+  - Dropdown menu for quick selection of saved tag sets
+  - Red × delete button with confirmation dialog
+  - Improved visual design with blue section dividers between edit sections
+- **Better field organization**: Single-item edit view now shows fields in logical order: Title → Description → Tags → Privacy → Groups/Albums
+- **Clearer save buttons**: Updated labels for all three saved set types for better clarity
 
 ## New to 0.8.1
 

@@ -9,7 +9,7 @@ declare global {
       setApiKeySecret: (apiKey: string, apiSecret: string) => Promise<any>;
       setUploadBatchSize: (uploadBatchSize: number) => Promise<any>;
       setSchedulerSettings: (payload: any) => Promise<any>;
-      setSavedSets: (options: { kind: "group" | "album"; sets: Array<{ name: string; ids: string[] }> }) => Promise<any>;
+      setSavedSets: (options: { kind: "group" | "album" | "tag"; sets: Array<{ name: string; ids: string[] }> }) => Promise<any>;
       startOAuth: () => Promise<any>;
       finishOAuth: (verifier: string) => Promise<any>;
       logout: () => Promise<any>;
@@ -25,6 +25,7 @@ declare global {
       queueUpdate: (items: QueueItem[]) => Promise<QueueItem[]>;
       queueReorder: (idsInOrder: string[]) => Promise<QueueItem[]>;
       queueClearUploaded: () => Promise<QueueItem[]>;
+      queueFindDuplicates: () => Promise<Array<{ hash: string; members: Array<{ id: string; photoPath: string; title?: string }>; removeCandidateIds: string[] }>>;
 
       uploadNowOne: (options?: { itemId?: string; reason?: string }) => Promise<any>;
       logGet: () => Promise<string[]>;
@@ -37,11 +38,16 @@ declare global {
       schedulerStatus: () => Promise<any>;
 
       pickPhotos: () => Promise<string[]>;
+      getPathForFile: (file: File) => string | null;
       openExternal: (options: { url: string }) => Promise<any>;
+      setVerboseLogging: (enabled: boolean) => Promise<any>;
+      setMinimizeToTray: (enabled: boolean) => Promise<any>;
+      logSave: () => Promise<any>;
     };
     // custom event emitted from preload when an upload is in progress
     interface WindowEventMap {
       "sq-upload-progress": CustomEvent<{loaded:number; total:number}>;
+      "sq-add-photos": CustomEvent<{paths:string[]}>;
     }
   }
 }

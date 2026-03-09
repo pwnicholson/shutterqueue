@@ -22,12 +22,14 @@
 * [X] Keep queued/scheduled time badges on their own line for consistent queue item layout
 * [X] Improve setup instructions in-app (clickable Flickr developer link, step-by-step guide)
 * [X] Saved "Sets" of groups/albums (user-defined)
+* [X] Create saved sets of tags that can be quickly/easily added to photos in batches (similar to how the group/album saved sets work now)
+* [X] Allow drag-and-drop of files into the app
+* [X] Allow "open with" feature to open image files straight into the queue
+* [X] Detect if duplicate items are in the queue at the same time and throw a warning (which can be dismissed by user)
 
 ## Soon
 
 * \[ ] Add geographic data after upload (country/region/city lookup; optional map pick)
-* \[ ] Allow drag-and-drop of files into the app
-* \[ ] Allow "open with" feature to open image files straight into the queue
 * \[ ] Fix bug that displays past times for group addition retry attempts and verify that they aren't getting stuck
 
 ## Nice-to-have

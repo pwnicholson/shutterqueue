@@ -3,6 +3,8 @@ import type { Album, Group, Privacy, QueueItem } from "../types";
 
 type Tab = "setup" | "queue" | "schedule" | "logs";
 type SavedIdSet = { name: string; ids: string[] };
+type DuplicateMember = { id: string; photoPath: string; title?: string };
+type DuplicateGroup = { hash: string; members: DuplicateMember[]; removeCandidateIds: string[] };
 
 const PRIVACY_LABEL: Record<Privacy, string> = {
   public: "Public",
@@ -169,11 +171,14 @@ export default function App() {
   const [albumsFilter, setAlbumsFilter] = useState("");
   const [savedGroupSets, setSavedGroupSets] = useState<SavedIdSet[]>([]);
   const [savedAlbumSets, setSavedAlbumSets] = useState<SavedIdSet[]>([]);
+  const [savedTagSets, setSavedTagSets] = useState<SavedIdSet[]>([]);
   const [activeGroupSetName, setActiveGroupSetName] = useState("");
   const [activeAlbumSetName, setActiveAlbumSetName] = useState("");
+  const [activeTagSetName, setActiveTagSetName] = useState("");
   const [groupSetMenuOpen, setGroupSetMenuOpen] = useState(false);
   const [albumSetMenuOpen, setAlbumSetMenuOpen] = useState(false);
-  const [saveSetDialog, setSaveSetDialog] = useState<{ kind: "group" | "album"; ids: string[] } | null>(null);
+  const [tagSetMenuOpen, setTagSetMenuOpen] = useState(false);
+  const [saveSetDialog, setSaveSetDialog] = useState<{ kind: "group" | "album" | "tag"; ids: string[] } | null>(null);
   const [saveSetNameInput, setSaveSetNameInput] = useState("");
 const groupNameById = useMemo(() => {
   const m = new Map<string, string>();
@@ -270,6 +275,11 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const [schedulingItemIds, setSchedulingItemIds] = useState<string[]>([]);
   const [pastTimeDialogOpen, setPastTimeDialogOpen] = useState(false);
   const [pastTimeValue, setPastTimeValue] = useState("");
+  const [schedulerWarningDialogOpen, setSchedulerWarningDialogOpen] = useState(false);
+  const [pendingPhotoPaths, setPendingPhotoPaths] = useState<string[]>([]);
+  const [duplicateDialogGroups, setDuplicateDialogGroups] = useState<DuplicateGroup[]>([]);
+  const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
+  const dismissedDuplicateKeysRef = useRef<Set<string>>(new Set());
 
   const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
 
@@ -536,10 +546,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setMinimizeToTray(Boolean(c.minimizeToTray));
     const nextSavedGroupSets = normalizeSavedIdSets((c as any).savedGroupSets);
     const nextSavedAlbumSets = normalizeSavedIdSets((c as any).savedAlbumSets);
+    const nextSavedTagSets = normalizeSavedIdSets((c as any).savedTagSets);
     setSavedGroupSets(nextSavedGroupSets);
     setSavedAlbumSets(nextSavedAlbumSets);
+    setSavedTagSets(nextSavedTagSets);
     if (activeGroupSetName && !nextSavedGroupSets.some(s => s.name === activeGroupSetName)) setActiveGroupSetName("");
     if (activeAlbumSetName && !nextSavedAlbumSets.some(s => s.name === activeAlbumSetName)) setActiveAlbumSetName("");
+    if (activeTagSetName && !nextSavedTagSets.some(s => s.name === activeTagSetName)) setActiveTagSetName("");
 
     // scheduler defaults (only set once if missing)
     if (typeof c.timeWindowEnabled !== "boolean") setTimeWindowEnabled(false);
@@ -696,18 +709,20 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   // Close dropdown menus when clicking outside them
   useEffect(() => {
-    if (!groupSetMenuOpen && !albumSetMenuOpen) return;
+    if (!groupSetMenuOpen && !albumSetMenuOpen && !tagSetMenuOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Check if click was on a dropdown button or inside a dropdown menu
       const isGroupDropdown = target.closest('[data-dropdown="group"]');
       const isAlbumDropdown = target.closest('[data-dropdown="album"]');
+      const isTagDropdown = target.closest('[data-dropdown="tag"]');
       if (!isGroupDropdown) setGroupSetMenuOpen(false);
       if (!isAlbumDropdown) setAlbumSetMenuOpen(false);
+      if (!isTagDropdown) setTagSetMenuOpen(false);
     };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
-  }, [groupSetMenuOpen, albumSetMenuOpen]);
+  }, [groupSetMenuOpen, albumSetMenuOpen, tagSetMenuOpen]);
 
   const saveKeys = async () => {
     await window.sq.setApiKeySecret(apiKey, apiSecret);
@@ -740,31 +755,103 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     showToast(`Loaded ${a.length} albums.`);
   };
 
-  const addPhotos = async () => {
-    const paths = await window.sq.pickPhotos();
+  const duplicateGroupKey = (group: DuplicateGroup) => {
+    const ids = (group.members || []).map((m) => String(m.id)).filter(Boolean).sort();
+    return `${String(group.hash || "")}|${ids.join("|")}`;
+  };
+
+  const evaluateDuplicatesAndPrompt = async () => {
+    const groups = await window.sq.queueFindDuplicates();
+    const normalized = (Array.isArray(groups) ? groups : [])
+      .map((g: any) => ({
+        hash: String(g?.hash || ""),
+        members: Array.isArray(g?.members) ? g.members.map((m: any) => ({
+          id: String(m?.id || ""),
+          photoPath: String(m?.photoPath || ""),
+          title: String(m?.title || ""),
+        })) : [],
+        removeCandidateIds: Array.isArray(g?.removeCandidateIds) ? g.removeCandidateIds.map((id: any) => String(id)).filter(Boolean) : [],
+      }))
+      .filter((g: DuplicateGroup) => g.members.length > 1);
+
+    const unsuppressed = normalized.filter((g) => !dismissedDuplicateKeysRef.current.has(duplicateGroupKey(g)));
+    if (!unsuppressed.length) return;
+    setDuplicateDialogGroups(unsuppressed);
+    setDuplicateDialogOpen(true);
+  };
+
+  const addPhotosFromPaths = async (paths: string[]) => {
     if (!paths.length) return;
-    const q = await window.sq.queueAdd(paths);
-    setQueue(q);
-    if (!activeId && q.length) setActiveId(q[0].id);
+
+    // Check if queue was empty and scheduler is on - if so, show warning
+    const wasQueueEmpty = queue.length === 0;
+    if (wasQueueEmpty && sched?.schedulerOn) {
+      // Store the paths and show the warning dialog
+      setPendingPhotoPaths(paths);
+      setSchedulerWarningDialogOpen(true);
+      return;
+    }
+
+    // Queue wasn't empty or scheduler is off, so proceed normally
+    await performAddPhotos(paths);
+  };
+
+  const performAddPhotos = async (paths: string[]) => {
+    let currentQueue = await window.sq.queueAdd(paths);
+    setQueue(currentQueue);
+    if (!activeId && currentQueue.length) setActiveId(currentQueue[0].id);
 
     // Set default titles for newly added photos that don't have a title yet
-    const newlyAdded = q.filter(it => paths.includes(it.photoPath) && !String(it.title || "").trim());
+    const newlyAdded = currentQueue.filter(it => paths.includes(it.photoPath) && !String(it.title || "").trim());
     if (newlyAdded.length) {
       const patched = newlyAdded.map(it => ({ ...it, title: deriveTitleFromPhotoPath(it.photoPath) }));
-      const q2 = await window.sq.queueUpdate(patched);
-      setQueue(q2);
-      if (!activeId && q2.length) setActiveId(q2[0].id);
+      currentQueue = await window.sq.queueUpdate(patched);
+      setQueue(currentQueue);
+      if (!activeId && currentQueue.length) setActiveId(currentQueue[0].id);
     }
 
     // Set default safety level (Safe) for newly added photos missing safetyLevel
-    const newlyAddedNeedsSafety = q.filter(it => paths.includes(it.photoPath) && (it as any).safetyLevel == null);
+    const newlyAddedNeedsSafety = currentQueue.filter(it => paths.includes(it.photoPath) && (it as any).safetyLevel == null);
     if (newlyAddedNeedsSafety.length) {
       const patched = newlyAddedNeedsSafety.map(it => ({ ...it, safetyLevel: 1 as any }));
-      const q2 = await window.sq.queueUpdate(patched);
-      setQueue(q2);
-      if (!activeId && q2.length) setActiveId(q2[0].id);
+      currentQueue = await window.sq.queueUpdate(patched);
+      setQueue(currentQueue);
+      if (!activeId && currentQueue.length) setActiveId(currentQueue[0].id);
     }
+
+    await evaluateDuplicatesAndPrompt();
     showToast(`Added ${paths.length} photo(s).`);
+  };
+
+  const keepDuplicates = () => {
+    for (const g of duplicateDialogGroups) {
+      dismissedDuplicateKeysRef.current.add(duplicateGroupKey(g));
+    }
+    setDuplicateDialogOpen(false);
+    setDuplicateDialogGroups([]);
+  };
+
+  const removeDuplicates = async () => {
+    const ids = uniq(duplicateDialogGroups.flatMap((g) => g.removeCandidateIds).filter(Boolean));
+    if (!ids.length) {
+      setDuplicateDialogOpen(false);
+      setDuplicateDialogGroups([]);
+      return;
+    }
+    const q = await window.sq.queueRemove(ids);
+    setQueue(q);
+    if (activeId && !q.some((it) => it.id === activeId)) {
+      setActiveId(q[0]?.id || null);
+    }
+    setDuplicateDialogOpen(false);
+    setDuplicateDialogGroups([]);
+    showToast(`Removed ${ids.length} duplicate photo(s).`);
+  };
+
+  const addPhotos = async () => {
+    const paths = await window.sq.pickPhotos();
+    if (!paths.length) return;
+    await addPhotosFromPaths(paths);
   };
 
   const selectAll = () => setSelectedIds(queue.map(q => q.id));
@@ -1212,6 +1299,21 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return () => window.removeEventListener('sq-upload-progress', cb as any);
   }, []);
 
+  // Listen for files opened via context menu / "open with" / drag-and-drop from external apps
+  useEffect(() => {
+    const handleAddPhotos = async (e: any) => {
+      const paths = e.detail?.paths || [];
+      if (Array.isArray(paths) && paths.length > 0) {
+        // Switch to queue tab to show the added photos
+        if (tab !== "queue") switchTab("queue");
+        // Add the photos
+        await addPhotosFromPaths(paths);
+      }
+    };
+    window.addEventListener('sq-add-photos', handleAddPhotos as any);
+    return () => window.removeEventListener('sq-add-photos', handleAddPhotos as any);
+  }, [addPhotosFromPaths, tab]);
+
   const batchProgressInfo = useMemo(() => {
     const isBatchActive = Boolean((sched as any)?.batchRunActive);
     if (!isBatchActive) return null as { progress: number; completed: number; batchSize: number } | null;
@@ -1290,6 +1392,37 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     showToast(`Removed tag “${tag}” from ${changed.length} item(s).`);
   };
 
+  const loadTagSet = async (setName: string) => {
+    if (!setName) return;
+    const set = savedTagSets.find(s => s.name === setName);
+    if (!set) return;
+    
+    if (selectedIds.length > 1) {
+      // Batch mode: add tags to all selected items
+      const byId = new Map(queue.map(it => [it.id, it]));
+      const changed: QueueItem[] = [];
+      for (const id of selectedIds) {
+        const it = byId.get(id);
+        if (!it) continue;
+        const existing = parseTagsCsv(it.tags);
+        const merged = formatTagsCsv(uniq([...existing, ...set.ids]));
+        const next: QueueItem = { ...it, tags: merged };
+        changed.push(next);
+      }
+      if (changed.length) {
+        setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+        await updateItems(changed);
+        showToast(`Applied tag set "${setName}" to ${changed.length} item(s).`);
+      }
+    } else if (active) {
+      // Single item mode: add tags to current item
+      const existing = parseTagsCsv(active.tags);
+      const merged = formatTagsCsv(uniq([...existing, ...set.ids]));
+      updateActive({ tags: merged });
+      showToast(`Applied tag set "${setName}".`);
+    }
+  };
+
 
   const toggleIds = (ids: string[], id: string, mode: "add" | "remove") => {
     const set = new Set(ids);
@@ -1327,14 +1460,21 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     await updateItems(changed);
   };
 
-  const persistSavedSets = async (kind: "group" | "album", sets: SavedIdSet[]) => {
+  const persistSavedSets = async (kind: "group" | "album" | "tag", sets: SavedIdSet[]) => {
     const normalized = normalizeSavedIdSets(sets);
     if (kind === "group") setSavedGroupSets(normalized);
-    else setSavedAlbumSets(normalized);
+    else if (kind === "album") setSavedAlbumSets(normalized);
+    else setSavedTagSets(normalized);
     await window.sq.setSavedSets({ kind, sets: normalized });
   };
 
-  const getCurrentSelectedIdsForSetSave = (kind: "group" | "album") => {
+  const getCurrentSelectedIdsForSetSave = (kind: "group" | "album" | "tag") => {
+    if (kind === "tag") {
+      // For tags, return tag strings from common tags
+      if (selectedIds.length > 1) return commonTags;
+      if (!active) return [] as string[];
+      return parseTagsCsv(active.tags);
+    }
     if (selectedIds.length > 1) {
       const source = kind === "group" ? groups : albums;
       return source
@@ -1345,13 +1485,14 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return (kind === "group" ? (active.groupIds || []) : (active.albumIds || [])).map(String);
   };
 
-  const saveCurrentSelectionAsSet = async (kind: "group" | "album") => {
+  const saveCurrentSelectionAsSet = async (kind: "group" | "album" | "tag") => {
     const ids = uniq(getCurrentSelectedIdsForSetSave(kind));
     if (!ids.length) {
-      showToast(`No ${kind === "group" ? "groups" : "albums"} selected to save.`);
+      const label = kind === "group" ? "groups" : kind === "album" ? "albums" : "tags";
+      showToast(`No ${label} selected to save.`);
       return;
     }
-    const defaultName = `${kind === "group" ? "Group" : "Album"} set ${new Date().toISOString().slice(0, 10)}`;
+    const defaultName = `${kind === "group" ? "Group" : kind === "album" ? "Album" : "Tag"} set ${new Date().toISOString().slice(0, 10)}`;
     setSaveSetNameInput(defaultName);
     setSaveSetDialog({ kind, ids });
   };
@@ -1361,47 +1502,61 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const { kind, ids } = saveSetDialog;
     const name = saveSetNameInput.trim();
     if (!name) return;
-    const existing = kind === "group" ? savedGroupSets : savedAlbumSets;
+    const existing = kind === "group" ? savedGroupSets : kind === "album" ? savedAlbumSets : savedTagSets;
     const next = [
       ...existing.filter(s => s.name.toLowerCase() !== name.toLowerCase()),
       { name, ids },
     ];
     await persistSavedSets(kind, next);
     if (kind === "group") setActiveGroupSetName(name);
-    else setActiveAlbumSetName(name);
+    else if (kind === "album") setActiveAlbumSetName(name);
+    else setActiveTagSetName(name);
     setSaveSetDialog(null);
     setSaveSetNameInput("");
     showToast(`Saved ${kind} set "${name}" (${ids.length} item(s)).`);
   };
 
-  const deleteSavedSet = async (kind: "group" | "album", name: string) => {
+  const deleteSavedSet = async (kind: "group" | "album" | "tag", name: string) => {
+    const label = kind === "group" ? "groups" : kind === "album" ? "albums" : "tags";
     const ok = window.confirm(
-      `Delete saved ${kind} set "${name}"?\n\nThis only deletes the saved set definition. Photos will remain assigned to their current ${kind === "group" ? "groups" : "albums"}.`
+      `Delete saved ${kind} set "${name}"?\n\nThis only deletes the saved set definition. Photos will remain assigned to their current ${label}.`
     );
     if (!ok) return;
-    const existing = kind === "group" ? savedGroupSets : savedAlbumSets;
+    const existing = kind === "group" ? savedGroupSets : kind === "album" ? savedAlbumSets : savedTagSets;
     const next = existing.filter(s => s.name !== name);
     await persistSavedSets(kind, next);
     if (kind === "group" && activeGroupSetName === name) setActiveGroupSetName("");
     if (kind === "album" && activeAlbumSetName === name) setActiveAlbumSetName("");
+    if (kind === "tag" && activeTagSetName === name) setActiveTagSetName("");
     showToast(`Deleted ${kind} set "${name}".`);
   };
 
-  const renderSavedSetFilterControl = (kind: "group" | "album") => {
-    const savedSets = kind === "group" ? savedGroupSets : savedAlbumSets;
-    const activeName = kind === "group" ? activeGroupSetName : activeAlbumSetName;
-    const setActiveName = kind === "group" ? setActiveGroupSetName : setActiveAlbumSetName;
-    const menuOpen = kind === "group" ? groupSetMenuOpen : albumSetMenuOpen;
-    const setMenuOpen = kind === "group" ? setGroupSetMenuOpen : setAlbumSetMenuOpen;
+  const renderSavedSetFilterControl = (kind: "group" | "album" | "tag", opts?: { disabled?: boolean }) => {
+    const disabled = Boolean(opts?.disabled);
+    const savedSets = kind === "group" ? savedGroupSets : kind === "album" ? savedAlbumSets : savedTagSets;
+    const activeName = kind === "group" ? activeGroupSetName : kind === "album" ? activeAlbumSetName : activeTagSetName;
+    const setActiveName = kind === "group" ? setActiveGroupSetName : kind === "album" ? setActiveAlbumSetName : setActiveTagSetName;
+    const menuOpen = kind === "group" ? groupSetMenuOpen : kind === "album" ? albumSetMenuOpen : tagSetMenuOpen;
+    const setMenuOpen = kind === "group" ? setGroupSetMenuOpen : kind === "album" ? setAlbumSetMenuOpen : setTagSetMenuOpen;
 
     return (
       <div style={{ position: "relative" }} data-dropdown={kind}>
         <button
           className="btn"
+          disabled={disabled}
           style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center" }}
           onClick={(e) => {
-            if (kind === "group") setAlbumSetMenuOpen(false);
-            else setGroupSetMenuOpen(false);
+            if (disabled) return;
+            if (kind === "group") {
+              setAlbumSetMenuOpen(false);
+              setTagSetMenuOpen(false);
+            } else if (kind === "album") {
+              setGroupSetMenuOpen(false);
+              setTagSetMenuOpen(false);
+            } else {
+              setGroupSetMenuOpen(false);
+              setAlbumSetMenuOpen(false);
+            }
             setMenuOpen(!menuOpen);
             e.stopPropagation();
           }}
@@ -1421,7 +1576,17 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 </div>
                 {savedSets.map(s => (
                   <div key={s.name} className="listrow" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                    <button className="btn" style={{ padding: "2px 8px", flex: 1, textAlign: "left" }} onClick={() => { setActiveName(s.name); setMenuOpen(false); }}>{s.name}</button>
+                    <button
+                      className="btn"
+                      style={{ padding: "2px 8px", flex: 1, textAlign: "left" }}
+                      onClick={() => {
+                        setActiveName(s.name);
+                        setMenuOpen(false);
+                        if (kind === "tag") void loadTagSet(s.name);
+                      }}
+                    >
+                      {s.name}
+                    </button>
                     <button
                       className="btn danger"
                       style={{ padding: "2px 8px" }}
@@ -1768,7 +1933,49 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       )}
 
       {displayTab === "queue" && (
-        <div className="grid">
+        <div 
+          className="grid"
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+          }}
+          onDrop={async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            if (!cfg?.authed) {
+              showToast("Please authorize first");
+              return;
+            }
+
+            // Extract file paths from drop event
+            const files = e.dataTransfer.files;
+            const paths: string[] = [];
+            
+            // FileList doesn't have array methods, so we need to iterate
+            for (let i = 0; i < files.length; i++) {
+              const file = files[i];
+              
+              // Check if file is an image by extension
+              const isImageByExtension = /\.(jpg|jpeg|png|webp|gif|tif|tiff|heic)$/i.test(file.name);
+              const isImageByMimeType = file.type && file.type.startsWith('image/');
+              
+              if (isImageByExtension || isImageByMimeType) {
+                // Use Electron's webUtils to safely get the file system path
+                const filePath = window.sq.getPathForFile(file);
+                if (filePath) {
+                  paths.push(filePath);
+                }
+              }
+            }
+
+            if (paths.length > 0) {
+              await addPhotosFromPaths(paths);
+            } else {
+              showToast("No image files found in drop");
+            }
+          }}
+        >
           <div className="card">
             <h2>Upload Queue (drag by handle ↕)</h2>
             <div className="content">
@@ -1848,6 +2055,45 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <button className="btn primary" style={{ width: "100%" }} onClick={uploadScheduledItemsNow}>Upload Now</button>
                       <button className="btn" style={{ width: "100%" }} onClick={() => { setPastTimeDialogOpen(false); }}>Edit Scheduled Time</button>
                       <button className="btn" style={{ width: "100%" }} onClick={() => { setPastTimeDialogOpen(false); setScheduleDialogOpen(false); }}>Cancel schedule and return to queue</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {schedulerWarningDialogOpen && (
+                <div className="schedule-dialog-backdrop" onClick={() => setSchedulerWarningDialogOpen(false)}>
+                  <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+                    <div style={{ fontWeight: 650, marginBottom: 8 }}>Scheduler is active</div>
+                    <div className="small" style={{ marginBottom: 12 }}>
+                      You've added photos to the queue with the scheduler turned on. The next upload will occur at:
+                      <div style={{ fontFamily: "ui-monospace", marginTop: 8, fontWeight: 600, color: "var(--accent)" }}>
+                        {sched?.nextRunAt ? formatLocal(sched.nextRunAt) : "—"}
+                      </div>
+                    </div>
+                    <div className="btnrow" style={{ flexDirection: "column", gap: 8 }}>
+                      <button 
+                        className="btn primary" 
+                        style={{ width: "100%" }} 
+                        onClick={async () => {
+                          setSchedulerWarningDialogOpen(false);
+                          await performAddPhotos(pendingPhotoPaths);
+                          setPendingPhotoPaths([]);
+                        }}
+                      >
+                        Keep Scheduler Active
+                      </button>
+                      <button 
+                        className="btn" 
+                        style={{ width: "100%" }} 
+                        onClick={async () => {
+                          setSchedulerWarningDialogOpen(false);
+                          await stopSched();
+                          await performAddPhotos(pendingPhotoPaths);
+                          setPendingPhotoPaths([]);
+                        }}
+                      >
+                        Disable Scheduler
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -2106,7 +2352,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <label className="small">Title</label>
                   <input className="input" value={batchTitle} onChange={(e) => setBatchTitle(e.target.value)} placeholder="Leave blank to keep existing" />
 
-                  <div style={{ height: 10 }} />
+                  <div className="section-divider" />
+                  <label className="small">Description</label>
+                  <textarea className="textarea" value={batchDescription} onChange={(e) => setBatchDescription(e.target.value)} placeholder="Leave blank to keep existing" />
+
+                  <div className="section-divider" />
                   <label className="small">Add tags (comma-separated)</label>
 
                   {commonTags.length > 0 && (
@@ -2134,10 +2384,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   </div>
 
                   <div style={{ height: 10 }} />
-                  <label className="small">Description</label>
-                  <textarea className="textarea" value={batchDescription} onChange={(e) => setBatchDescription(e.target.value)} placeholder="Leave blank to keep existing" />
-
+                  <div className="small">Load saved tag set</div>
+                  {renderSavedSetFilterControl("tag")}
                   <div style={{ height: 10 }} />
+                  <button className="btn" onClick={() => saveCurrentSelectionAsSet("tag")}>Save entered Tags as a set</button>
+
+                  <div className="section-divider" />
                   <div className="split">
                     <div>
                       <label className="small">Privacy</label>
@@ -2167,7 +2419,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div style={{ height: 12 }} />
                   <button className="btn primary" onClick={applyBatch}>Apply to selected</button>
 
-                  <div className="hr" />
+                  <div className="section-divider" />
 
                   <div className="split">
                     <div>
@@ -2196,7 +2448,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {!!groups.length && !sortedFilteredGroups.length && <div className="small">No groups match this filter.</div>}
                       </div>
                       <div style={{ height: 10 }} />
-                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("group")}>Save Selected As A Set</button>
+                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("group")}>Save selected Groups as a set</button>
                     </div>
                     <div>
                       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Albums</div>
@@ -2224,7 +2476,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {!!albums.length && !sortedFilteredAlbums.length && <div className="small">No albums match this filter.</div>}
                       </div>
                       <div style={{ height: 10 }} />
-                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("album")}>Save Selected As A Set</button>
+                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("album")}>Save selected Albums as a set</button>
                       <div style={{ height: 10 }} />
                       <div className="small">Create new albums (comma-separated titles)</div>
                       <input className="input" value={batchCreateAlbums} onChange={(e) => setBatchCreateAlbums(e.target.value)} placeholder="e.g., Trip 2026, Portfolio" />
@@ -2257,7 +2509,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <label className="small">Title</label>
                   <input className="input" disabled={isUploaded} value={active.title} onChange={(e) => updateActive({ title: e.target.value })} />
 
-                  <div style={{ height: 10 }} />
+                  <div className="section-divider" />
+                  <label className="small">Description</label>
+                  <textarea className="textarea" disabled={isUploaded} value={active.description} onChange={(e) => updateActive({ description: e.target.value })} />
+
+                  <div className="section-divider" />
                   <label className="small">Tags (comma-separated)</label>
                   <input className="input" disabled={isUploaded} value={active.tags} onChange={(e) => updateActive({ tags: e.target.value })} placeholder="e.g., travel, street photo, black and white" />
                   <div className="small" style={{ marginTop: 6 }}>
@@ -2265,10 +2521,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   </div>
 
                   <div style={{ height: 10 }} />
-                  <label className="small">Description</label>
-                  <textarea className="textarea" disabled={isUploaded} value={active.description} onChange={(e) => updateActive({ description: e.target.value })} />
-
+                  <div className="small">Load saved tag set</div>
+                  {renderSavedSetFilterControl("tag", { disabled: isUploaded })}
                   <div style={{ height: 10 }} />
+                  <button className="btn" disabled={isUploaded} onClick={() => saveCurrentSelectionAsSet("tag")}>Save entered Tags as a set</button>
+
+                  <div className="section-divider" />
                   <div className="split">
                     <div>
                       <label className="small">Privacy</label>
@@ -2295,7 +2553,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     </div>
                   </div>
 
-                  <div className="hr" />
+                  <div className="section-divider" />
 
                   <div className="split">
                     <div>
@@ -2340,7 +2598,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {!!groups.length && !sortedFilteredGroups.length && <div className="small">No groups match this filter.</div>}
                       </div>
                       <div style={{ height: 10 }} />
-                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("group")}>Save Selected As A Set</button>
+                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("group")}>Save selected Groups as a set</button>
                     </div>
                     <div>
                       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Albums</div>
@@ -2372,7 +2630,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {!!albums.length && !sortedFilteredAlbums.length && <div className="small">No albums match this filter.</div>}
                       </div>
                       <div style={{ height: 10 }} />
-                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("album")}>Save Selected As A Set</button>
+                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("album")}>Save selected Albums as a set</button>
                       <div style={{ height: 10 }} />
                       <div className="small">Create new albums (comma-separated titles)</div>
                       <input
@@ -2753,11 +3011,42 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
       </div>
 
+      {duplicateDialogOpen && (
+        <div className="schedule-dialog-backdrop" onClick={() => setDuplicateDialogOpen(false)}>
+          <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 650, marginBottom: 8 }}>
+              It looks like you’ve added the same photo twice. Do you want to remove duplicates?
+            </div>
+            <div className="small" style={{ marginBottom: 10 }}>
+              Duplicate matches are based on file content (byte-for-byte hash), not filename or folder.
+            </div>
+            <div className="listbox" style={{ maxHeight: 260, marginBottom: 10 }}>
+              {duplicateDialogGroups.map((group, idx) => (
+                <div key={`${group.hash}-${idx}`} style={{ marginBottom: idx === duplicateDialogGroups.length - 1 ? 0 : 10 }}>
+                  <div className="small" style={{ marginBottom: 6, fontWeight: 650 }}>
+                    Duplicate set {idx + 1}
+                  </div>
+                  {group.members.map((m) => (
+                    <div key={m.id} className="small" style={{ marginBottom: 4 }}>
+                      {fileNameFromPath(m.photoPath)} — {m.photoPath}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={keepDuplicates}>No, keep duplicates</button>
+              <button className="btn danger" onClick={removeDuplicates}>Yes, remove duplicates</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {saveSetDialog && (
         <div className="schedule-dialog-backdrop" onClick={() => setSaveSetDialog(null)}>
           <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
             <div style={{ fontWeight: 650, marginBottom: 8 }}>
-              Save Selected As A Set ({saveSetDialog.kind === "group" ? "Groups" : "Albums"})
+              Save Selected As A Set ({saveSetDialog.kind === "group" ? "Groups" : saveSetDialog.kind === "album" ? "Albums" : "Tags"})
             </div>
             <div className="small" style={{ marginBottom: 10 }}>
               You can type a new set name or pick an existing set to overwrite.
@@ -2774,7 +3063,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               }}
             >
               <option value="">(pick existing set)</option>
-              {(saveSetDialog.kind === "group" ? savedGroupSets : savedAlbumSets).map(s => (
+              {(saveSetDialog.kind === "group" ? savedGroupSets : saveSetDialog.kind === "album" ? savedAlbumSets : savedTagSets).map(s => (
                 <option key={s.name} value={s.name}>{s.name}</option>
               ))}
             </select>
@@ -2784,7 +3073,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               style={{ marginTop: 6 }}
               value={saveSetNameInput}
               onChange={(e) => setSaveSetNameInput(e.target.value)}
-              placeholder={`e.g., ${saveSetDialog.kind === "group" ? "Fujifilm groups" : "Black and white albums"}`}
+              placeholder={`e.g., ${saveSetDialog.kind === "group" ? "Fujifilm groups" : saveSetDialog.kind === "album" ? "Black and white albums" : "Street night tags"}`}
             />
             <div className="small" style={{ marginTop: 8 }}>
               Items in set: {saveSetDialog.ids.length}
