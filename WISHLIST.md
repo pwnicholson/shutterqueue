@@ -26,10 +26,10 @@
 * [X] Allow drag-and-drop of files into the app
 * [X] Allow "open with" feature to open image files straight into the queue
 * [X] Detect if duplicate items are in the queue at the same time and throw a warning (which can be dismissed by user)
+* [X] Add geographic data at upload (country/region/city lookup)
 
 ## Soon
 
-* \[ ] Add geographic data after upload (country/region/city lookup; optional map pick)
 * \[ ] Fix bug that displays past times for group addition retry attempts and verify that they aren't getting stuck
 
 ## Nice-to-have
