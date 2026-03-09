@@ -335,6 +335,76 @@ async function getPhotoUrls({ apiKey, apiSecret, token, tokenSecret, photoId }) 
   };
 }
 
+/**
+ * Convert geo privacy to Flickr permission flags
+ * Flickr geo permissions: is_public, is_contact, is_friend, is_family
+ */
+function geoPrivacyToPerms(geoPrivacy) {
+  // Default: private (all 0)
+  const out = { is_public: "0", is_contact: "0", is_friend: "0", is_family: "0" };
+  
+  if (geoPrivacy === "public") {
+    out.is_public = "1";
+  } else if (geoPrivacy === "contacts") {
+    out.is_contact = "1";
+  } else if (geoPrivacy === "friends") {
+    out.is_friend = "1";
+  } else if (geoPrivacy === "family") {
+    out.is_family = "1";
+  } else if (geoPrivacy === "friends_family") {
+    out.is_friend = "1";
+    out.is_family = "1";
+  }
+  // else: private (all 0)
+  
+  return out;
+}
+
+/**
+ * Set geographic location for a photo
+ * @param {Object} params
+ * @param {string} params.photoId - Flickr photo ID
+ * @param {number} params.latitude - Latitude (-90 to 90)
+ * @param {number} params.longitude - Longitude (-180 to 180)
+ * @param {number} params.accuracy - Accuracy level 1-16 (1=world, 16=street)
+ * @param {string} params.geoPrivacy - Who can see location (public, contacts, friends, family, friends_family, private)
+ */
+async function setPhotoLocation({ apiKey, apiSecret, token, tokenSecret, photoId, latitude, longitude, accuracy, geoPrivacy }) {
+  // Set the location
+  await flickrRestCall({
+    apiKey,
+    apiSecret,
+    token,
+    tokenSecret,
+    methodName: "flickr.photos.geo.setLocation",
+    params: {
+      photo_id: photoId,
+      lat: String(latitude),
+      lon: String(longitude),
+      accuracy: String(accuracy || 16)
+    }
+  });
+  
+  // Set location privacy if specified
+  if (geoPrivacy) {
+    const perms = geoPrivacyToPerms(geoPrivacy);
+    await flickrRestCall({
+      apiKey,
+      apiSecret,
+      token,
+      tokenSecret,
+      methodName: "flickr.photos.geo.setPerms",
+      params: {
+        photo_id: photoId,
+        is_public: perms.is_public,
+        is_contact: perms.is_contact,
+        is_friend: perms.is_friend,
+        is_family: perms.is_family
+      }
+    });
+  }
+}
+
 
 module.exports = {
   getRequestToken,
@@ -345,6 +415,7 @@ module.exports = {
   addPhotoToGroup,
   listGroups,
   listAlbums,
-  getPhotoUrls
+  getPhotoUrls,
+  setPhotoLocation
 };
 

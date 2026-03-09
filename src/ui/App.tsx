@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
-import type { Album, Group, Privacy, QueueItem } from "../types";
+import type { Album, GeoPrivacy, Group, Privacy, QueueItem } from "../types";
 
 type Tab = "setup" | "queue" | "schedule" | "logs";
 type SavedIdSet = { name: string; ids: string[] };
@@ -18,6 +18,15 @@ const SAFETY_LABEL: Record<1 | 2 | 3, string> = {
   1: "Safe",
   2: "Moderate",
   3: "Restricted",
+};
+
+const GEO_PRIVACY_LABEL: Record<GeoPrivacy, string> = {
+  public: "Public",
+  contacts: "Contacts",
+  friends: "Friends only",
+  family: "Family only",
+  friends_family: "Friends & Family",
+  private: "Private",
 };
 
 function pad2(n: number) {
@@ -180,6 +189,18 @@ export default function App() {
   const [tagSetMenuOpen, setTagSetMenuOpen] = useState(false);
   const [saveSetDialog, setSaveSetDialog] = useState<{ kind: "group" | "album" | "tag"; ids: string[] } | null>(null);
   const [saveSetNameInput, setSaveSetNameInput] = useState("");
+  
+  // Location search state
+  const [locationSearchQuery, setLocationSearchQuery] = useState("");
+  const [locationSearchResults, setLocationSearchResults] = useState<Array<{
+    displayName: string;
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+    type: string;
+  }>>([]);
+  const [locationSearching, setLocationSearching] = useState(false);
+  
 const groupNameById = useMemo(() => {
   const m = new Map<string, string>();
   for (const g of groups) m.set(String(g.id), String(g.name));
@@ -504,6 +525,44 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     }
     return union.size > commonTags.length;
   }, [selectedItems, commonTags]);
+
+  const batchLocationState = useMemo(() => {
+    if (selectedItems.length < 2) return { mode: "none" as const, displayName: "", geoPrivacy: "private" as GeoPrivacy };
+
+    const withGeo = selectedItems.filter(
+      (it) => typeof it.latitude === "number" && typeof it.longitude === "number"
+    );
+
+    if (withGeo.length === 0) return { mode: "none" as const, displayName: "", geoPrivacy: "private" as GeoPrivacy };
+    if (withGeo.length !== selectedItems.length) return { mode: "mixed" as const, displayName: "", geoPrivacy: "private" as GeoPrivacy };
+
+    const keyOf = (it: QueueItem) => [
+      String(it.latitude),
+      String(it.longitude),
+      String(it.accuracy || ""),
+      String(it.locationDisplayName || ""),
+    ].join("|");
+
+    const first = withGeo[0];
+    const firstKey = keyOf(first);
+    const allSame = withGeo.every((it) => keyOf(it) === firstKey);
+    const firstGeoPrivacy = (first.geoPrivacy || "private") as GeoPrivacy;
+    const allSameGeoPrivacy = withGeo.every((it) => (it.geoPrivacy || "private") === firstGeoPrivacy);
+
+    if (!allSame) {
+      return {
+        mode: "mixed" as const,
+        displayName: "",
+        geoPrivacy: allSameGeoPrivacy ? firstGeoPrivacy : ("private" as GeoPrivacy),
+      };
+    }
+
+    return {
+      mode: "same" as const,
+      displayName: String(first.locationDisplayName || "Location selected"),
+      geoPrivacy: allSameGeoPrivacy ? firstGeoPrivacy : ("private" as GeoPrivacy),
+    };
+  }, [selectedItems]);
 
 
 
@@ -1118,6 +1177,146 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setQueue(q);
   };
 
+  const searchLocation = async () => {
+    const query = locationSearchQuery.trim();
+    if (!query) {
+      setLocationSearchResults([]);
+      return;
+    }
+    
+    setLocationSearching(true);
+    try {
+      const result = await window.sq.geoSearch(query);
+      if (result.ok && result.results) {
+        setLocationSearchResults(result.results);
+      } else {
+        alert(`Location search failed: ${result.error || "Unknown error"}`);
+        setLocationSearchResults([]);
+      }
+    } catch (err: any) {
+      alert(`Location search failed: ${err.message || String(err)}`);
+      setLocationSearchResults([]);
+    } finally {
+      setLocationSearching(false);
+    }
+  };
+
+  const selectLocation = (result: { displayName: string; latitude: number; longitude: number; accuracy: number }) => {
+    if (!active) return;
+    const updated: QueueItem = {
+      ...active,
+      latitude: result.latitude,
+      longitude: result.longitude,
+      accuracy: result.accuracy,
+      locationDisplayName: result.displayName
+    };
+    setQueue(prev => prev.map(it => it.id === updated.id ? updated : it));
+    updateItems([updated]);
+    setLocationSearchResults([]);
+    setLocationSearchQuery("");
+  };
+
+  const clearLocation = () => {
+    if (!active) return;
+    const updated: QueueItem = {
+      ...active,
+      latitude: undefined,
+      longitude: undefined,
+      accuracy: undefined,
+      locationDisplayName: undefined,
+      geoPrivacy: undefined
+    };
+    setQueue(prev => prev.map(it => it.id === updated.id ? updated : it));
+    updateItems([updated]);
+  };
+
+  const searchBatchLocation = async () => {
+    const query = batchLocationQuery.trim();
+    if (!query) {
+      setBatchLocationResults([]);
+      return;
+    }
+    
+    setBatchLocationSearching(true);
+    try {
+      const result = await window.sq.geoSearch(query);
+      if (result.ok && result.results) {
+        setBatchLocationResults(result.results);
+      } else {
+        alert(`Location search failed: ${result.error || "Unknown error"}`);
+        setBatchLocationResults([]);
+      }
+    } catch (err: any) {
+      alert(`Location search failed: ${err.message || String(err)}`);
+      setBatchLocationResults([]);
+    } finally {
+      setBatchLocationSearching(false);
+    }
+  };
+
+  const selectBatchLocation = (result: { displayName: string; latitude: number; longitude: number; accuracy: number }) => {
+    if (!selectedIds.length) return;
+    const byId = new Map(queue.map(it => [it.id, it]));
+    const changed: QueueItem[] = [];
+    for (const id of selectedIds) {
+      const it = byId.get(id);
+      if (!it) continue;
+      const next: QueueItem = {
+        ...it,
+        latitude: result.latitude,
+        longitude: result.longitude,
+        accuracy: result.accuracy,
+        locationDisplayName: result.displayName
+      };
+      changed.push(next);
+    }
+    if (!changed.length) return;
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    updateItems(changed);
+    setBatchLocationResults([]);
+    setBatchLocationQuery("");
+    showToast(`Set location on ${changed.length} item(s).`);
+  };
+
+  const clearBatchLocation = () => {
+    if (!selectedIds.length) return;
+    const byId = new Map(queue.map(it => [it.id, it]));
+    const changed: QueueItem[] = [];
+    for (const id of selectedIds) {
+      const it = byId.get(id);
+      if (!it) continue;
+      const next: QueueItem = {
+        ...it,
+        latitude: undefined,
+        longitude: undefined,
+        accuracy: undefined,
+        locationDisplayName: undefined,
+        geoPrivacy: undefined
+      };
+      changed.push(next);
+    }
+    if (!changed.length) return;
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    updateItems(changed);
+    showToast(`Cleared location from ${changed.length} item(s).`);
+  };
+
+  const setBatchLocationPrivacy = async (geoPrivacy: GeoPrivacy) => {
+    if (!selectedIds.length) return;
+    const byId = new Map(queue.map(it => [it.id, it]));
+    const changed: QueueItem[] = [];
+    for (const id of selectedIds) {
+      const it = byId.get(id);
+      if (!it) continue;
+      if (typeof it.latitude !== "number" || typeof it.longitude !== "number") continue;
+      changed.push({ ...it, geoPrivacy });
+    }
+    if (!changed.length) return;
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    await updateItems(changed);
+    showToast(`Set location privacy on ${changed.length} item(s).`);
+  };
+
   const updateActive = async (patch: Partial<QueueItem>) => {
     if (!active) return;
     const updated: QueueItem = { ...active, ...patch };
@@ -1344,6 +1543,17 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [batchPrivacy, setBatchPrivacy] = useState<Privacy | "">( "" );
   const [batchSafety, setBatchSafety] = useState<"" | 1 | 2 | 3>("");
   const [batchCreateAlbums, setBatchCreateAlbums] = useState("");
+  
+  // Batch location state
+  const [batchLocationQuery, setBatchLocationQuery] = useState("");
+  const [batchLocationResults, setBatchLocationResults] = useState<Array<{
+    displayName: string;
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+    type: string;
+  }>>([]);
+  const [batchLocationSearching, setBatchLocationSearching] = useState(false);
 
   const applyBatch = async () => {
     if (!selectedIds.length) return;
@@ -2417,6 +2627,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   </div>
 
                   <div style={{ height: 12 }} />
+
                   <button className="btn primary" onClick={applyBatch}>Apply to selected</button>
 
                   <div className="section-divider" />
@@ -2481,6 +2692,106 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <div className="small">Create new albums (comma-separated titles)</div>
                       <input className="input" value={batchCreateAlbums} onChange={(e) => setBatchCreateAlbums(e.target.value)} placeholder="e.g., Trip 2026, Portfolio" />
                     </div>
+                  </div>
+
+                  <div className="section-divider" />
+
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Location</div>
+
+                    {batchLocationState.mode === "same" && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div className="small" style={{ marginBottom: 4, fontWeight: 500 }}>Selected Location</div>
+                        <div style={{ padding: "8px 12px", background: "rgba(139,211,255,0.15)", borderRadius: 4 }}>
+                          <span className="small">{batchLocationState.displayName}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {batchLocationState.mode === "mixed" && (
+                      <div className="small" style={{ marginBottom: 8, color: "var(--text-dim)" }}>
+                        Selected items currently have different locations. Leave blank to keep existing values.
+                      </div>
+                    )}
+
+                    {batchLocationState.mode !== "none" && (
+                      <>
+                        <label className="small">Location Privacy</label>
+                        <select
+                          className="input"
+                          value={batchLocationState.geoPrivacy}
+                          onChange={(e) => {
+                            const next = e.target.value as GeoPrivacy;
+                            void setBatchLocationPrivacy(next);
+                          }}
+                          style={{ marginBottom: 8 }}
+                        >
+                          <option value="public">Public - Visible to everyone</option>
+                          <option value="contacts">Contacts - Visible to your contacts</option>
+                          <option value="friends">Friends - Visible to friends only</option>
+                          <option value="family">Family - Visible to family only</option>
+                          <option value="friends_family">Friends & Family</option>
+                          <option value="private">Private - Only visible to you</option>
+                        </select>
+                        {batchLocationState.mode === "same" && (
+                          <div className="small" style={{ marginTop: -4, marginBottom: 8, color: "var(--text-dim)" }}>
+                            Current location privacy: {GEO_PRIVACY_LABEL[batchLocationState.geoPrivacy]}
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    <label className="small">Search for location</label>
+                    <div className="small" style={{ color: "var(--text-dim)", marginTop: 2, marginBottom: 6 }}>
+                      Enter an address, city, postal code, country, or lat/long coordinates
+                    </div>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                      <input
+                        className="input"
+                        value={batchLocationQuery}
+                        onChange={(e) => setBatchLocationQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") searchBatchLocation();
+                        }}
+                        placeholder={batchLocationState.mode === "same" ? batchLocationState.displayName : "e.g., Paris, France or 48.8566, 2.3522"}
+                        disabled={batchLocationSearching}
+                        style={{ flex: 1 }}
+                      />
+                      <button
+                        className="btn"
+                        onClick={searchBatchLocation}
+                        disabled={batchLocationSearching || !batchLocationQuery.trim()}
+                      >
+                        {batchLocationSearching ? "Searching..." : "Search"}
+                      </button>
+                    </div>
+
+                    {batchLocationResults.length > 0 && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div className="small" style={{ marginBottom: 4, fontWeight: 500 }}>Search Results:</div>
+                        <div className="listbox" style={{ maxHeight: 150 }}>
+                          {batchLocationResults.map((result, idx) => (
+                            <div
+                              key={idx}
+                              className="listrow"
+                              style={{ cursor: "pointer", padding: "6px 8px" }}
+                              onClick={() => selectBatchLocation(result)}
+                            >
+                              <span className="small">{result.displayName}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <button
+                      className="btn btn-sm"
+                      onClick={clearBatchLocation}
+                      title="Clear location from all selected items"
+                      style={{ background: "var(--bad)", color: "white" }}
+                    >
+                      Clear Location from Selected
+                    </button>
                   </div>
                 </>
               )}
@@ -2640,6 +2951,105 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         placeholder="e.g., Trip 2026, Portfolio"
                       />
                     </div>
+                  </div>
+
+                  <div className="section-divider" />
+
+                  {/* Location Section - Full Width */}
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Location</div>
+                    
+                    {active.locationDisplayName ? (
+                      // Show selected location
+                      <div style={{ marginBottom: 12 }}>
+                        <div className="small" style={{ marginBottom: 4, fontWeight: 500 }}>Selected Location:</div>
+                        <div style={{ 
+                          padding: "8px 12px", 
+                          background: "rgba(139,211,255,0.15)", 
+                          borderRadius: 4,
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center"
+                        }}>
+                          <span className="small">{active.locationDisplayName}</span>
+                          <button 
+                            className="btn btn-sm" 
+                            onClick={clearLocation}
+                            disabled={isUploaded}
+                            title="Clear location"
+                            style={{ background: "var(--bad)", color: "white" }}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      // Show search interface
+                      <div style={{ marginBottom: 12 }}>
+                        <label className="small">Search for location</label>
+                        <div className="small" style={{ color: "var(--text-dim)", marginTop: 2, marginBottom: 6 }}>
+                          Enter an address, city, postal code, country, or lat/long coordinates (e.g., "40.7128, -74.0060")
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                          <input 
+                            className="input" 
+                            value={locationSearchQuery}
+                            onChange={(e) => setLocationSearchQuery(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") searchLocation();
+                            }}
+                            placeholder="e.g., Paris, France or 48.8566, 2.3522"
+                            disabled={isUploaded || locationSearching}
+                            style={{ flex: 1 }}
+                          />
+                          <button 
+                            className="btn" 
+                            onClick={searchLocation}
+                            disabled={isUploaded || locationSearching || !locationSearchQuery.trim()}
+                          >
+                            {locationSearching ? "Searching..." : "Search"}
+                          </button>
+                        </div>
+                        
+                        {locationSearchResults.length > 0 && (
+                          <div>
+                            <div className="small" style={{ marginBottom: 4, fontWeight: 500 }}>Search Results:</div>
+                            <div className="listbox" style={{ maxHeight: 200 }}>
+                              {locationSearchResults.map((result, idx) => (
+                                <div 
+                                  key={idx}
+                                  className="listrow"
+                                  style={{ cursor: "pointer", padding: "6px 8px" }}
+                                  onClick={() => selectLocation(result)}
+                                >
+                                  <span className="small">{result.displayName}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    
+                    {/* Location Privacy */}
+                    {active.locationDisplayName && (
+                      <div>
+                        <label className="small">Location Privacy</label>
+                        <select 
+                          className="input" 
+                          disabled={isUploaded}
+                          value={active.geoPrivacy || "private"}
+                          onChange={(e) => updateActive({ geoPrivacy: e.target.value as any })}
+                        >
+                          <option value="public">Public - Visible to everyone</option>
+                          <option value="contacts">Contacts - Visible to your contacts</option>
+                          <option value="friends">Friends - Visible to friends only</option>
+                          <option value="family">Family - Visible to family only</option>
+                          <option value="friends_family">Friends & Family</option>
+                          <option value="private">Private - Only visible to you</option>
+                        </select>
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ height: 14 }} />

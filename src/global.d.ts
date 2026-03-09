@@ -27,6 +27,19 @@ declare global {
       queueClearUploaded: () => Promise<QueueItem[]>;
       queueFindDuplicates: () => Promise<Array<{ hash: string; members: Array<{ id: string; photoPath: string; title?: string }>; removeCandidateIds: string[] }>>;
 
+      geoSearch: (query: string) => Promise<{ 
+        ok: boolean; 
+        results?: Array<{
+          displayName: string;
+          latitude: number;
+          longitude: number;
+          accuracy: number;
+          type: string;
+          address?: any;
+        }>;
+        error?: string;
+      }>;
+
       uploadNowOne: (options?: { itemId?: string; reason?: string }) => Promise<any>;
       logGet: () => Promise<string[]>;
       logClear: () => Promise<any>;

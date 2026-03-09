@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld("sq", {
   queueClearUploaded: () => ipcRenderer.invoke("queue:clearUploaded"),
   queueFindDuplicates: () => ipcRenderer.invoke("queue:findDuplicates"),
 
+  geoSearch: (query) => ipcRenderer.invoke("geo:search", { query }),
+
   uploadNowOne: (options) => ipcRenderer.invoke("upload:nowOne", options),
   schedulerStart: (intervalHours, uploadImmediately, settings) =>
     ipcRenderer.invoke("sched:start", { intervalHours, uploadImmediately, settings }),

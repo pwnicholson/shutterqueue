@@ -1,5 +1,7 @@
 export type Privacy = "public" | "friends" | "family" | "friends_family" | "private";
 
+export type GeoPrivacy = "public" | "contacts" | "friends" | "family" | "friends_family" | "private";
+
 export type QueueStatus = "pending" | "uploading" | "done" | "done_warn" | "failed";
 
 export type ScheduleSettings = {
@@ -31,6 +33,12 @@ export type QueueItem = {
   createAlbums: string[];
   privacy: Privacy;
   safetyLevel: 1 | 2 | 3; // Flickr safety_level: 1=safe,2=moderate,3=restricted
+  // Geo location data
+  latitude?: number;
+  longitude?: number;
+  accuracy?: number; // Flickr accuracy 1-16 (1=world, 16=street)
+  geoPrivacy?: GeoPrivacy;
+  locationDisplayName?: string;
   status: QueueStatus;
   lastError?: string;
   photoId?: string;

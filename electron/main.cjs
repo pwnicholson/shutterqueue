@@ -61,6 +61,7 @@ function logApiCallVerbose(methodName, params, result, error) {
 
 const queue = require("./services/queue.cjs");
 const flickr = require("./services/flickr.cjs");
+const geo = require("./services/geocoding.cjs");
 
 let win = null;
 let tray = null;
@@ -1184,6 +1185,39 @@ ipcMain.handle("queue:reorder", async (_e, { idsInOrder }) => queue.reorder(idsI
 ipcMain.handle("queue:clearUploaded", async () => queue.clearUploaded());
 ipcMain.handle("queue:findDuplicates", async () => queue.findDuplicateGroups());
 
+ipcMain.handle("geo:search", async (_e, { query }) => {
+  try {
+    if (!query || typeof query !== "string") {
+      return { ok: false, error: "Invalid search query" };
+    }
+    
+    // Check if it's a direct lat/long input
+    const latLong = geo.parseLatLong(query);
+    if (latLong) {
+      // Get display name via reverse geocoding
+      const displayName = await geo.reverseGeocode(latLong.latitude, latLong.longitude);
+      return {
+        ok: true,
+        results: [{
+          displayName: displayName,
+          latitude: latLong.latitude,
+          longitude: latLong.longitude,
+          accuracy: 16, // Exact coordinates
+          type: "coordinates"
+        }]
+      };
+    }
+    
+    // Otherwise, search via Nominatim
+    const results = await geo.searchLocation(query);
+    return { ok: true, results };
+  } catch (err) {
+    const msg = err?.message ? String(err.message) : String(err);
+    logEvent("ERROR", "Geocoding search failed", { query, error: msg });
+    return { ok: false, error: msg };
+  }
+});
+
 ipcMain.handle("log:get", async () => {
   try {
     ensureRootDir();
@@ -1354,6 +1388,32 @@ async function uploadNowOneInternal(options = {}) {
     queue.saveQueue(q);
 
     logEvent("INFO", "Uploaded photo", { id: next.id, photoId });
+
+    // Set geographic location if provided
+    if (next.latitude != null && next.longitude != null) {
+      try {
+        await flickr.setPhotoLocation({
+          apiKey: auth.apiKey,
+          apiSecret: auth.apiSecret,
+          token: auth.token,
+          tokenSecret: auth.tokenSecret,
+          photoId,
+          latitude: next.latitude,
+          longitude: next.longitude,
+          accuracy: next.accuracy || 16,
+          geoPrivacy: next.geoPrivacy || "private"
+        });
+        logEvent("INFO", "Set photo location", { 
+          id: next.id, 
+          photoId, 
+          location: next.locationDisplayName || `${next.latitude}, ${next.longitude}` 
+        });
+      } catch (e) {
+        const msg = e?.message ? String(e.message) : String(e);
+        logEvent("WARN", "Failed to set photo location", { id: next.id, photoId, error: msg });
+        // Don't fail the whole upload if geo tagging fails - just log it
+      }
+    }
 
     const warnings = [];
     const albumParts = [];
