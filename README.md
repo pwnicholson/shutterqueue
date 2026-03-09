@@ -11,15 +11,17 @@ Note that this is purely vibe-coded using a combination of different AI tools. I
   - Interactive modal shows all duplicate sets with file paths
   - Choose to keep duplicates or remove all but the first instance
   - Warnings can be dismissed and won't show again for the same set while items remain in queue
+- **Saved sets for Tags**: Similar to saved sets for Groups and Albums, but for tags.
+- **Misc other improvements**
+  - Improved visual design with blue section dividers between edit sections
+  - Better field organization: Single-item edit view now shows fields in logical order: Title → Description → Tags → Privacy → Groups/Albums
+  - Clearer save buttons: Updated labels for all three saved set types for better clarity
 
 ## New to 0.9.0
 
-- **Saved tag sets**: Create and save sets of tags that can be quickly applied to photos in batches, just like the existing group/album saved sets feature.
-  - Dropdown menu for quick selection of saved tag sets
-  - Red × delete button with confirmation dialog
-  - Improved visual design with blue section dividers between edit sections
-- **Better field organization**: Single-item edit view now shows fields in logical order: Title → Description → Tags → Privacy → Groups/Albums
-- **Clearer save buttons**: Updated labels for all three saved set types for better clarity
+- **Saved sets for Groups & Albums**: Create and save sets of albums and groups that can be quickly applied to photos in batches.
+  - Dropdown menu for quick selection of saved sets
+  - Red '×' delete button with confirmation dialog
 
 ## New to 0.8.1
 
