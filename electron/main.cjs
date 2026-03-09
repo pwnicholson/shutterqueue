@@ -439,6 +439,38 @@ async function processDueGroupRetries({ apiKey, apiSecret, token, tokenSecret, m
   let attempts = 0;
   let changed = false;
 
+  // First pass: bump any stale overdue retry times to ensure they're never shown in the past.
+  // This handles cases where the retry time was scheduled for a past date (e.g., after app restart).
+  const groupsWithOverdueRetries = new Map(); // groupId -> overdue item count
+  for (const it of q) {
+    if (!it?.photoId || !it.groupAddStates) continue;
+    for (const [gid, st] of Object.entries(it.groupAddStates)) {
+      if (!st || st.status !== "retry") continue;
+      const due = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : 0;
+      if (due && due > now) continue; // Not overdue
+      // This retry is overdue (or has no valid date); track which groups have this
+      if (!groupsWithOverdueRetries.has(gid)) {
+        groupsWithOverdueRetries.set(gid, 0);
+      }
+      groupsWithOverdueRetries.set(gid, groupsWithOverdueRetries.get(gid) + 1);
+    }
+  }
+
+  // For each group with overdue retries, bump all their retry times forward to avoid showing past dates
+  if (groupsWithOverdueRetries.size > 0) {
+    const futureTime = new Date(now + 60 * 60 * 1000).toISOString(); // now + 1 hour
+    for (const [gid, count] of groupsWithOverdueRetries) {
+      for (const it of q) {
+        const st = it.groupAddStates?.[gid];
+        if (!st || st.status !== "retry") continue;
+        const due = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : 0;
+        if (due && due > now) continue; // Keep future times as-is
+        st.nextRetryAt = futureTime;
+        changed = true;
+      }
+    }
+  }
+
   // Group-level scheduling: one retry attempt per group per cycle.
   // Candidate within each group is selected by retryPriority, then queue order.
   const dueByGroup = new Map();
