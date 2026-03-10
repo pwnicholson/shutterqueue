@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, Tray, nativeImage } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const https = require("https");
 const Store = require("electron-store");
 
 
@@ -29,6 +30,11 @@ function decryptCredential(encrypted) {
 
 const ROOT_DIR = path.join(os.homedir(), ".shutterqueue");
 const LOG_PATH = path.join(ROOT_DIR, "activity.log");
+const GITHUB_REPO = "pwnicholson/shutterqueue";
+const GITHUB_REPO_URL = `https://github.com/${GITHUB_REPO}`;
+const GITHUB_LATEST_RELEASE_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const UPDATE_CHECK_CACHE_MS = 24 * 60 * 60 * 1000;
+const GROUP_COUNT_REFRESH_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 function ensureRootDir() {
   if (!fs.existsSync(ROOT_DIR)) fs.mkdirSync(ROOT_DIR, { recursive: true });
@@ -57,6 +63,100 @@ function logApiCallVerbose(methodName, params, result, error) {
     ...(error ? { error: String(error) } : { result: typeof result === "object" ? "received object" : String(result) })
   };
   logLine(`${ts} [API ${status}] ${methodName} - ${JSON.stringify(details)}`);
+}
+
+function parseSemverLoose(v) {
+  const s = String(v || "").trim();
+  const m = s.match(/^v?(\d+(?:\.\d+){0,3})(?:[-+].*)?$/i);
+  if (!m) return null;
+  const parts = m[1].split(".").map((x) => Number(x));
+  if (parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
+  while (parts.length < 4) parts.push(0);
+  return parts;
+}
+
+function compareSemverLoose(a, b) {
+  const pa = parseSemverLoose(a);
+  const pb = parseSemverLoose(b);
+  if (!pa || !pb) return 0;
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const av = pa[i] || 0;
+    const bv = pb[i] || 0;
+    if (av > bv) return 1;
+    if (av < bv) return -1;
+  }
+  return 0;
+}
+
+function fetchLatestReleaseFromGitHub() {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      GITHUB_LATEST_RELEASE_API,
+      {
+        method: "GET",
+        headers: {
+          "User-Agent": "ShutterQueue",
+          "Accept": "application/vnd.github+json"
+        }
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk) => {
+          body += String(chunk || "");
+        });
+        res.on("end", () => {
+          const status = Number(res.statusCode || 0);
+          if (status < 200 || status >= 300) {
+            reject(new Error(`GitHub API HTTP ${status}`));
+            return;
+          }
+          try {
+            const json = JSON.parse(body || "{}");
+            resolve({
+              tagName: String(json.tag_name || ""),
+              htmlUrl: String(json.html_url || `${GITHUB_REPO_URL}/releases/latest`),
+              name: String(json.name || ""),
+              publishedAt: String(json.published_at || ""),
+            });
+          } catch (e) {
+            reject(new Error(`Failed to parse GitHub release response: ${String(e)}`));
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function checkForAppUpdates({ force = false } = {}) {
+  const now = Date.now();
+  const currentVersion = app.getVersion();
+  const cached = store.get("updateCheckCache") || null;
+  if (!force && cached && Number(cached.checkedAt || 0) > 0 && (now - Number(cached.checkedAt)) < UPDATE_CHECK_CACHE_MS) {
+    return { ...cached, cacheHit: true };
+  }
+
+  const latest = await fetchLatestReleaseFromGitHub();
+  const latestVersion = String(latest.tagName || "").replace(/^v/i, "");
+  const cmp = compareSemverLoose(currentVersion, latestVersion);
+  const isUpdateAvailable = cmp < 0;
+
+  const result = {
+    ok: true,
+    checkedAt: now,
+    currentVersion,
+    latestVersion,
+    latestTag: latest.tagName,
+    updateAvailable: isUpdateAvailable,
+    releaseUrl: latest.htmlUrl || `${GITHUB_REPO_URL}/releases/latest`,
+    releaseName: latest.name || latest.tagName || latestVersion,
+    publishedAt: latest.publishedAt || "",
+    cacheHit: false,
+    repoUrl: GITHUB_REPO_URL,
+  };
+  store.set("updateCheckCache", result);
+  return result;
 }
 
 const queue = require("./services/queue.cjs");
@@ -162,7 +262,9 @@ const store = new Store({
     allowedDays: [1,2,3,4,5],
     resumeOnLaunch: false,
     verboseLogging: false,
-    minimizeToTray: false
+    minimizeToTray: false,
+    checkUpdatesOnLaunch: true,
+    updateCheckCache: null
   }
 });
 
@@ -180,7 +282,7 @@ function getFlickrAuth() {
   };
 }
 
-const GROUP_COUNTS_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const GROUP_COUNTS_REFRESH_INTERVAL_MS = GROUP_COUNT_REFRESH_MAX_AGE_MS;
 const GROUP_COUNTS_REFRESH_DELAY_MS = 900;
 let groupCountsRefreshPromise = null;
 let groupCountsRefreshState = {
@@ -235,6 +337,12 @@ function normalizeGroupNames(groups) {
   }));
 }
 
+function hasGroupCountValue(group) {
+  const members = Number(group?.memberCount || 0);
+  const photos = Number(group?.photoCount || 0);
+  return members > 0 || photos > 0;
+}
+
 function mergeGroupCounts(baseGroups, cachedGroups) {
   const cachedById = new Map((Array.isArray(cachedGroups) ? cachedGroups : []).map((g) => [String(g.id), g]));
   return (Array.isArray(baseGroups) ? baseGroups : []).map((g) => {
@@ -253,6 +361,23 @@ function startGroupCountsRefreshInBackground(groups) {
   const list = Array.isArray(groups) ? groups : [];
   if (!list.length) return;
 
+  const perGroupFetchedAt = store.get("groupCountFetchedAtById") || {};
+  const fallbackFetchedAt = Number(store.get("groupsCountsFetchedAt") || 0);
+  const now = Date.now();
+
+  const needsRefresh = list.some((group) => {
+    const gid = String(group?.id || "");
+    if (!gid) return false;
+    const countExists = hasGroupCountValue(group);
+    if (!countExists) return true;
+    const fetchedAt = Number(perGroupFetchedAt[gid] || fallbackFetchedAt || 0);
+    if (!fetchedAt) return true;
+    return (now - fetchedAt) > GROUP_COUNT_REFRESH_MAX_AGE_MS;
+  });
+  if (!needsRefresh) return;
+
+  logEvent("INFO", "Refreshing group sizes", { totalGroups: list.length, cacheMaxAgeDays: 14 });
+
   groupCountsRefreshState = {
     inProgress: true,
     total: list.length,
@@ -264,9 +389,27 @@ function startGroupCountsRefreshInBackground(groups) {
     try {
       const auth = getFlickrAuth();
       const updated = [];
+      const fetchedAtById = { ...(store.get("groupCountFetchedAtById") || {}) };
+      let refreshedCount = 0;
+      let skippedFreshCount = 0;
       for (let i = 0; i < list.length; i++) {
         const group = list[i];
-        let info = { memberCount: 0, photoCount: 0 };
+        const gid = String(group?.id || "");
+        const countExists = hasGroupCountValue(group);
+        const fetchedAt = Number(fetchedAtById[gid] || store.get("groupsCountsFetchedAt") || 0);
+        const isFresh = countExists && fetchedAt > 0 && (Date.now() - fetchedAt) <= GROUP_COUNT_REFRESH_MAX_AGE_MS;
+
+        if (isFresh) {
+          updated.push({ ...group });
+          groupCountsRefreshState.completed = i + 1;
+          skippedFreshCount++;
+          continue;
+        }
+
+        let info = {
+          memberCount: Number(group?.memberCount || 0),
+          photoCount: Number(group?.photoCount || 0),
+        };
         try {
           info = await flickr.getGroupInfo({
             apiKey: auth.apiKey,
@@ -275,6 +418,8 @@ function startGroupCountsRefreshInBackground(groups) {
             tokenSecret: auth.tokenSecret,
             groupId: group.id,
           });
+          fetchedAtById[gid] = Date.now();
+          refreshedCount++;
         } catch (_) {
           // ignore per-group failures
         }
@@ -289,6 +434,7 @@ function startGroupCountsRefreshInBackground(groups) {
         // Persist progress periodically so UI polls can pick up partial updates.
         if (i % 10 === 0 || i === list.length - 1) {
           store.set("groupsCache", updated.concat(list.slice(i + 1)));
+          store.set("groupCountFetchedAtById", fetchedAtById);
         }
 
         if (i < list.length - 1) {
@@ -296,7 +442,13 @@ function startGroupCountsRefreshInBackground(groups) {
         }
       }
       store.set("groupsCache", updated);
+      store.set("groupCountFetchedAtById", fetchedAtById);
       store.set("groupsCountsFetchedAt", Date.now());
+      logEvent("INFO", "Group size refresh complete", {
+        totalGroups: list.length,
+        refreshedGroups: refreshedCount,
+        skippedFreshGroups: skippedFreshCount,
+      });
     } catch (e) {
       logEvent("WARN", "Background group counts refresh failed", { error: String(e) });
     } finally {
@@ -1050,6 +1202,32 @@ ipcMain.handle("shell:openExternal", async (_e, { url }) => {
 ipcMain.handle("app:version", async () => {
   return app.getVersion();
 });
+
+ipcMain.handle("app:checkForUpdates", async (_e, { force } = {}) => {
+  try {
+    const result = await checkForAppUpdates({ force: Boolean(force) });
+    logEvent("INFO", "Checked for app updates", {
+      force: Boolean(force),
+      currentVersion: result.currentVersion,
+      latestVersion: result.latestVersion,
+      updateAvailable: Boolean(result.updateAvailable),
+      cacheHit: Boolean(result.cacheHit),
+    });
+    return result;
+  } catch (e) {
+    logEvent("WARN", "App update check failed", { force: Boolean(force), error: String(e?.message || e) });
+    return {
+      ok: false,
+      checkedAt: Date.now(),
+      currentVersion: app.getVersion(),
+      updateAvailable: false,
+      error: String(e?.message || e),
+      releaseUrl: `${GITHUB_REPO_URL}/releases/latest`,
+      repoUrl: GITHUB_REPO_URL,
+      cacheHit: false,
+    };
+  }
+});
 ipcMain.handle("cfg:get", async () => ({
   apiKey: store.get("apiKey"),
   hasApiSecret: Boolean(store.get("hasApiSecret")),
@@ -1071,6 +1249,7 @@ ipcMain.handle("cfg:get", async () => ({
   uploadBatchSize: Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1)))),
   verboseLogging: Boolean(store.get("verboseLogging")),
   minimizeToTray: Boolean(store.get("minimizeToTray")),
+  checkUpdatesOnLaunch: Boolean(store.get("checkUpdatesOnLaunch")),
   savedGroupSets: Array.isArray(store.get("savedGroupSets")) ? store.get("savedGroupSets") : [],
   savedAlbumSets: Array.isArray(store.get("savedAlbumSets")) ? store.get("savedAlbumSets") : [],
   savedTagSets: Array.isArray(store.get("savedTagSets")) ? store.get("savedTagSets") : []
@@ -1271,9 +1450,11 @@ ipcMain.handle("flickr:groups", async (_e, opts = {}) => {
     startGroupCountsRefreshInBackground(merged);
 
     logApiCallVerbose("flickr.groups.pools.getGroups", { cache: false }, merged);
+    logEvent("INFO", "Loaded groups list", { source: "flickr", count: merged.length, forceRefresh: force });
     return merged;
   } catch (e) {
     logApiCallVerbose("flickr.groups.pools.getGroups", { cache: false }, null, e);
+    logEvent("WARN", "Failed to load groups list", { forceRefresh: force, error: String(e?.message || e) });
     throw e;
   }
 });
@@ -1299,9 +1480,11 @@ ipcMain.handle("flickr:albums", async () => {
       userNsid: store.get("userNsid"),
     });
     logApiCallVerbose("flickr.photosets.getList", {}, result);
+    logEvent("INFO", "Loaded albums list", { count: Array.isArray(result) ? result.length : 0 });
     return result;
   } catch (e) {
     logApiCallVerbose("flickr.photosets.getList", {}, null, e);
+    logEvent("WARN", "Failed to load albums list", { error: String(e?.message || e) });
     throw e;
   }
 });
@@ -1341,11 +1524,33 @@ ipcMain.handle("thumb:getDataUrl", async (_e, { photoPath }) => {
 });
 
 ipcMain.handle("queue:get", async () => queue.loadQueue());
-ipcMain.handle("queue:add", async (_e, { paths }) => queue.addPaths(paths || []));
-ipcMain.handle("queue:remove", async (_e, { ids }) => queue.removeIds(ids || []));
+ipcMain.handle("queue:add", async (_e, { paths }) => {
+  const list = Array.isArray(paths) ? paths : [];
+  const out = await queue.addPaths(list);
+  logEvent("INFO", "Added items to queue", { requested: list.length, queueSize: Array.isArray(out) ? out.length : 0 });
+  return out;
+});
+ipcMain.handle("queue:remove", async (_e, { ids }) => {
+  const list = Array.isArray(ids) ? ids : [];
+  const out = await queue.removeIds(list);
+  logEvent("INFO", "Removed items from queue", { removed: list.length, queueSize: Array.isArray(out) ? out.length : 0 });
+  return out;
+});
 ipcMain.handle("queue:update", async (_e, { items }) => queue.updateItems(items || []));
-ipcMain.handle("queue:reorder", async (_e, { idsInOrder }) => queue.reorder(idsInOrder || []));
-ipcMain.handle("queue:clearUploaded", async () => queue.clearUploaded());
+ipcMain.handle("queue:reorder", async (_e, { idsInOrder }) => {
+  const list = Array.isArray(idsInOrder) ? idsInOrder : [];
+  const out = await queue.reorder(list);
+  logEvent("INFO", "Reordered queue", { itemCount: list.length });
+  return out;
+});
+ipcMain.handle("queue:clearUploaded", async () => {
+  const before = queue.loadQueue();
+  const out = await queue.clearUploaded();
+  const beforeCount = Array.isArray(before) ? before.length : 0;
+  const afterCount = Array.isArray(out) ? out.length : 0;
+  logEvent("INFO", "Cleared uploaded items from queue", { removed: Math.max(0, beforeCount - afterCount), queueSize: afterCount });
+  return out;
+});
 ipcMain.handle("queue:findDuplicates", async () => queue.findDuplicateGroups());
 
 ipcMain.handle("geo:search", async (_e, { query }) => {
@@ -1414,6 +1619,11 @@ ipcMain.handle("cfg:setMinimizeToTray", async (_e, { enabled }) => {
     tray = null;
   }
   return { ok: true };
+});
+
+ipcMain.handle("cfg:setCheckUpdatesOnLaunch", async (_e, { enabled }) => {
+  store.set("checkUpdatesOnLaunch", Boolean(enabled));
+  return { ok: true, checkUpdatesOnLaunch: Boolean(enabled) };
 });
 
 ipcMain.handle("log:save", async () => {
@@ -1736,6 +1946,12 @@ ipcMain.handle("sched:start", async (_e, { intervalHours, uploadImmediately, set
   if (schedTimer) clearInterval(schedTimer);
   schedTimer = setInterval(() => tickScheduler().catch(() => {}), 1000);
   updateTrayIcon();
+  logEvent("INFO", "Scheduler started", {
+    intervalHours: h,
+    uploadImmediately: Boolean(uploadImmediately),
+    uploadBatchSize: Number(store.get("uploadBatchSize") || 1),
+    resumeOnLaunch: Boolean(store.get("resumeOnLaunch")),
+  });
   return { ok: true };
 });
 
@@ -1744,6 +1960,7 @@ ipcMain.handle("sched:stop", async () => {
   if (schedTimer) clearInterval(schedTimer);
   schedTimer = null;
   updateTrayIcon();
+  logEvent("INFO", "Scheduler stopped", {});
   return { ok: true };
 });
 

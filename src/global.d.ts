@@ -56,6 +56,21 @@ declare global {
       openExternal: (options: { url: string }) => Promise<any>;
       setVerboseLogging: (enabled: boolean) => Promise<any>;
       setMinimizeToTray: (enabled: boolean) => Promise<any>;
+      setCheckUpdatesOnLaunch: (enabled: boolean) => Promise<any>;
+      checkForUpdates: (options?: { force?: boolean }) => Promise<{
+        ok: boolean;
+        checkedAt: number;
+        currentVersion: string;
+        latestVersion?: string;
+        latestTag?: string;
+        updateAvailable: boolean;
+        releaseUrl?: string;
+        releaseName?: string;
+        publishedAt?: string;
+        error?: string;
+        cacheHit?: boolean;
+        repoUrl?: string;
+      }>;
       logSave: () => Promise<any>;
     };
     // custom event emitted from preload when an upload is in progress

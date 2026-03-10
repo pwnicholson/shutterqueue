@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld("sq", {
   logClear: () => ipcRenderer.invoke("log:clear"),
   setVerboseLogging: (enabled) => ipcRenderer.invoke("cfg:setVerboseLogging", { enabled }),
   setMinimizeToTray: (enabled) => ipcRenderer.invoke("cfg:setMinimizeToTray", { enabled }),
+  setCheckUpdatesOnLaunch: (enabled) => ipcRenderer.invoke("cfg:setCheckUpdatesOnLaunch", { enabled }),
+  checkForUpdates: (options) => ipcRenderer.invoke("app:checkForUpdates", options || {}),
   logSave: () => ipcRenderer.invoke("log:save"),
   appVersion: () => ipcRenderer.invoke("app:version"),
   openExternal: (options) => ipcRenderer.invoke("shell:openExternal", options),

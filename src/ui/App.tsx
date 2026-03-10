@@ -5,6 +5,7 @@ type Tab = "setup" | "queue" | "schedule" | "logs";
 type SavedIdSet = { name: string; ids: string[] };
 type DuplicateMember = { id: string; photoPath: string; title?: string };
 type DuplicateGroup = { hash: string; members: DuplicateMember[]; removeCandidateIds: string[] };
+type LogFilterMode = "all" | "activity" | "warn_error" | "api";
 
 const PRIVACY_LABEL: Record<Privacy, string> = {
   public: "Public",
@@ -312,6 +313,16 @@ const categorizeMessage = (msg: string): "success" | "waiting" | "error" => {
   return "error";
 };
 
+const matchesLogFilter = (line: string, mode: LogFilterMode) => {
+  const text = String(line || "");
+  const isApi = /\[API\s+(OK|ERROR)\]/i.test(text);
+  const isWarnOrError = /\[(WARN|ERROR)\]/i.test(text);
+  if (mode === "all") return true;
+  if (mode === "api") return isApi;
+  if (mode === "warn_error") return isWarnOrError;
+  return !isApi;
+};
+
 
   const [didAutoLoadGroups, setDidAutoLoadGroups] = useState(false);
   const [didAutoLoadAlbums, setDidAutoLoadAlbums] = useState(false);
@@ -612,10 +623,19 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const [toast, setToast] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
+  const [logFilterMode, setLogFilterMode] = useState<LogFilterMode>("all");
   const [verboseLogging, setVerboseLogging] = useState(false);
   const [minimizeToTray, setMinimizeToTray] = useState(false);
+  const [checkUpdatesOnLaunch, setCheckUpdatesOnLaunch] = useState(true);
+  const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
+  const [updateCheckStatus, setUpdateCheckStatus] = useState("");
+  const [didAutoCheckUpdates, setDidAutoCheckUpdates] = useState(false);
 
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
+
+  const filteredLogLines = useMemo(() => {
+    return logs.slice().reverse().filter((line) => matchesLogFilter(line, logFilterMode));
+  }, [logs, logFilterMode]);
 
   // refresh only the configuration settings that back the form fields
   const refreshConfig = async () => {
@@ -636,6 +656,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setUploadBatchSize(Math.max(1, Math.min(999, Math.round(Number((c as any).uploadBatchSize || 1)))));
     setVerboseLogging(Boolean(c.verboseLogging));
     setMinimizeToTray(Boolean(c.minimizeToTray));
+    setCheckUpdatesOnLaunch(Boolean((c as any).checkUpdatesOnLaunch));
     const nextSavedGroupSets = normalizeSavedIdSets((c as any).savedGroupSets);
     const nextSavedAlbumSets = normalizeSavedIdSets((c as any).savedAlbumSets);
     const nextSavedTagSets = normalizeSavedIdSets((c as any).savedTagSets);
@@ -746,6 +767,47 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   }, []);
   useEffect(() => { refreshAll(); }, []);
 
+  const performUpdateCheck = async (force = false, userInitiated = false) => {
+    if (updateCheckBusy) return;
+    setUpdateCheckBusy(true);
+    if (userInitiated) setUpdateCheckStatus("Checking for updates...");
+    try {
+      const result = await window.sq.checkForUpdates({ force });
+      if (!result?.ok) {
+        const msg = result?.error ? `Update check failed: ${result.error}` : "Update check failed.";
+        if (userInitiated) showToast(msg);
+        setUpdateCheckStatus(msg);
+        return;
+      }
+      if (result.updateAvailable) {
+        const msg = `Update available: v${result.latestVersion} (current v${result.currentVersion})`;
+        showToast(msg);
+        setUpdateCheckStatus(msg);
+      } else {
+        const suffix = result.cacheHit ? " (cached)" : "";
+        const msg = `You're up to date (v${result.currentVersion})${suffix}.`;
+        if (userInitiated) showToast(msg);
+        setUpdateCheckStatus(msg);
+      }
+    } catch (e: any) {
+      const msg = `Update check failed: ${String(e?.message || e)}`;
+      if (userInitiated) showToast(msg);
+      setUpdateCheckStatus(msg);
+    } finally {
+      setUpdateCheckBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!cfg) return;
+    if (didAutoCheckUpdates) return;
+    setDidAutoCheckUpdates(true);
+    if (checkUpdatesOnLaunch) {
+      void performUpdateCheck(false, false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cfg, checkUpdatesOnLaunch, didAutoCheckUpdates]);
+
   // Background work can update app state without user interaction (especially in packaged builds).
   // Poll lightly to keep UI consistent; only refresh the dynamic data, not the form config.
   const refreshDynamicRef = useRef(refreshDynamic);
@@ -790,7 +852,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   }, [cfg?.authed, didAutoLoadGroups, didAutoLoadAlbums]);
 
   // Group member counts are refreshed in the main process background.
-  // Poll cached groups briefly after startup so counts appear progressively.
+  // Only poll cached groups while that background refresh is actively running.
   useEffect(() => {
     if (!cfg?.authed) return;
     let cancelled = false;
@@ -804,17 +866,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       }
     };
 
-    const initial = window.setTimeout(() => { void refreshGroupsFromCache(); }, 4000);
-    const interval = window.setInterval(() => { void refreshGroupsFromCache(); }, 15000);
-    const stop = window.setTimeout(() => window.clearInterval(interval), 5 * 60 * 1000);
+    if (groupRefreshStatus.inProgress) {
+      void refreshGroupsFromCache();
+    }
+    const interval = groupRefreshStatus.inProgress
+      ? window.setInterval(() => { void refreshGroupsFromCache(); }, 15000)
+      : null;
 
     return () => {
       cancelled = true;
-      window.clearTimeout(initial);
-      window.clearInterval(interval);
-      window.clearTimeout(stop);
+      if (interval) window.clearInterval(interval);
     };
-  }, [cfg?.authed]);
+  }, [cfg?.authed, groupRefreshStatus.inProgress]);
 
   // Poll explicit background refresh status from the main process.
   useEffect(() => {
@@ -2158,17 +2221,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   </>
 )}
               <div className="hr" />
-
-              <div className="row">
-                <button className="btn" onClick={refreshGroups} disabled={!cfg?.authed}>Refresh Groups</button>
-                <button className="btn" onClick={refreshAlbums} disabled={!cfg?.authed}>Refresh Albums</button>
-            <button className="btn" onClick={async () => { await (window as any).api.openThirdPartyLicenses?.(); }}>View Third-Party Licenses</button>
-
-              </div>
-
-              <div className="small" style={{ marginTop: 10 }}>
-                Groups loaded: {groups.length} • Albums loaded: {albums.length}
-              </div>
               {showGroupCountsUpdating && (
                 <div className="small" style={{ marginTop: 6 }}>
                   Updating group counts in background… {Math.min(groupRefreshStatus.completed, groupRefreshStatus.total)}/{groupRefreshStatus.total || groups.length} ready.
@@ -2194,6 +2246,31 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     : 'Minimize to system tray when closing the app'}
                 </span>
               </label>
+              <div style={{ height: 8 }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={checkUpdatesOnLaunch} onChange={(e) => {
+                  const next = e.target.checked;
+                  setCheckUpdatesOnLaunch(next);
+                  window.sq.setCheckUpdatesOnLaunch(next).catch(console.error);
+                }} />
+                <span className="small">Check for new version on launch</span>
+              </label>
+              <div style={{ height: 8 }} />
+              <div className="row">
+                <button className="btn" onClick={() => void performUpdateCheck(true, true)} disabled={updateCheckBusy}>
+                  {updateCheckBusy ? "Checking..." : "Check for new version now"}
+                </button>
+                <button className="btn" onClick={() => window.sq.openExternal({ url: "https://github.com/pwnicholson/shutterqueue" })}>
+                  Open GitHub repo
+                </button>
+              </div>
+              {!!updateCheckStatus && (
+                <div className="small" style={{ marginTop: 8 }}>{updateCheckStatus}</div>
+              )}
+              <div style={{ height: 8 }} />
+              <button className="btn" onClick={async () => { await (window as any).api.openThirdPartyLicenses?.(); }}>
+                View Third-Party Licenses
+              </button>
             </div>
           </div>
 
@@ -2202,6 +2279,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             <div className="content">
               <div className="split">
                 <div>
+                  <div className="row" style={{ marginBottom: 8, justifyContent: "space-between" }}>
+                    <button className="btn" onClick={refreshGroups} disabled={!cfg?.authed}>Refresh Groups</button>
+                    <div className="small">Groups loaded: {groups.length}</div>
+                  </div>
                   <div className="small">Groups filter</div>
                   <input className="input" value={groupsFilter} onChange={(e) => setGroupsFilter(e.target.value)} placeholder="search..." />
                   <div style={{ height: 8 }} />
@@ -2216,6 +2297,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   </div>
                 </div>
                 <div>
+                  <div className="row" style={{ marginBottom: 8, justifyContent: "space-between" }}>
+                    <button className="btn" onClick={refreshAlbums} disabled={!cfg?.authed}>Refresh Albums</button>
+                    <div className="small">Albums loaded: {albums.length}</div>
+                  </div>
                   <div className="small">Albums filter</div>
                   <input className="input" value={albumsFilter} onChange={(e) => setAlbumsFilter(e.target.value)} placeholder="search..." />
                   <div style={{ height: 8 }} />
@@ -3499,13 +3584,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           }} />
           <span className="small">Enable verbose API and activity logging</span>
         </label>
+        <div style={{ height: 8 }} />
+        <div className="row" style={{ marginBottom: 8 }}>
+          <label className="small" htmlFor="logs-filter" style={{ minWidth: 88 }}>Log filter</label>
+          <select
+            id="logs-filter"
+            className="input"
+            style={{ maxWidth: 260 }}
+            value={logFilterMode}
+            onChange={(e) => setLogFilterMode(e.target.value as LogFilterMode)}
+          >
+            <option value="all">All</option>
+            <option value="activity">Activity</option>
+            <option value="warn_error">Warnings + Errors</option>
+            <option value="api">API</option>
+          </select>
+          <span className="small">Showing {filteredLogLines.length} of {logs.length}</span>
+        </div>
         <div className="listbox" style={{ maxHeight: 520 }}>
-          {logs.slice().reverse().map((line, i) => (
+          {filteredLogLines.map((line, i) => (
             <div key={i} className="listrow" style={{ alignItems: "flex-start" }}>
               <div className="small" style={{ fontFamily: "ui-monospace", whiteSpace: "pre-wrap" }}>{line}</div>
             </div>
           ))}
-          {!logs.length && <div className="small">No log entries yet.</div>}
+          {!filteredLogLines.length && <div className="small">No log entries for this filter.</div>}
         </div>
         <div className="small" style={{ marginTop: 10 }}>
           Tip: if a group rejects a post, the upload will still be marked “done (warnings)” so it won’t re-upload the photo.

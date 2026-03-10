@@ -2,6 +2,33 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
+## [0.9.2] - 2026-03-09
+
+### Added
+- **Geotagging support (OpenStreetMap/Nominatim + Flickr geo APIs)**
+  - Location search for single-item edit
+  - Batch location set/clear for multi-selection
+  - Geo privacy controls for both single-item and batch flows
+  - Automatic Flickr geo accuracy mapping and upload integration
+- **Group scale indicators**
+  - Group lists now include size context in labels (e.g. `Group Name (115k)`)
+  - Member/photo count metadata retrieved via Flickr group info APIs
+- **Check for new version feature**
+  - Can be disabled or manually run on the Setup tab
+
+
+### Changed
+- **Faster startup list loading**
+  - Group list now returns quickly, with counts refreshed in the background
+  - Albums and groups auto-load independently on app launch so one does not block the other
+- **Improved scrolling comfort in Queue tab**
+  - Added extra bottom space to queue/edit areas so bottom controls remain fully visible after scrolling
+
+### Fixed
+- **Group/album display text normalization**
+  - Decode HTML entity-encoded names/titles from Flickr (e.g. `&amp;` → `&`)
+  - Added resilient handling for double-encoded entities and cached group name normalization
+
 ## [0.9.1] - 2026-03-09
 
 ### Added

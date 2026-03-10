@@ -28,6 +28,7 @@
 * [X] Detect if duplicate items are in the queue at the same time and throw a warning (which can be dismissed by user)
 * [X] Add geographic data at upload (country/region/city lookup)
 * [X] Pull in basic info about groups size
+* [X] Added a "check for new version" feature
 
 ## Soon
 
@@ -35,6 +36,7 @@
 
 ## Nice-to-have
 
+* \[ ] Implement dark mode/light mode switch for app UI
 * \[ ] Spellcheck for title/description/tags (free/open-source)
 * \[ ] Per-group throttling (freq + quantity), link to group rules
 * \[ ] Improve progress bar on uploads (just flashes now, doesn't show actual progress of the individual item, only the batch that is it in)
