@@ -14,7 +14,8 @@ declare global {
       finishOAuth: (verifier: string) => Promise<any>;
       logout: () => Promise<any>;
 
-      fetchGroups: () => Promise<Group[]>;
+      fetchGroups: (options?: { force?: boolean }) => Promise<Group[]>;
+      fetchGroupRefreshStatus: () => Promise<{ inProgress: boolean; total: number; completed: number; startedAt: number }>;
       fetchAlbums: () => Promise<Album[]>;
 
       getThumbDataUrl: (photoPath: string) => Promise<string | null>;

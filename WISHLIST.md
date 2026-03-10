@@ -27,6 +27,7 @@
 * [X] Allow "open with" feature to open image files straight into the queue
 * [X] Detect if duplicate items are in the queue at the same time and throw a warning (which can be dismissed by user)
 * [X] Add geographic data at upload (country/region/city lookup)
+* [X] Pull in basic info about groups size
 
 ## Soon
 
@@ -35,6 +36,5 @@
 ## Nice-to-have
 
 * \[ ] Spellcheck for title/description/tags (free/open-source)
-* \[ ] Pull in basic info about groups (size, etc)
 * \[ ] Per-group throttling (freq + quantity), link to group rules
 * \[ ] Improve progress bar on uploads (just flashes now, doesn't show actual progress of the individual item, only the batch that is it in)

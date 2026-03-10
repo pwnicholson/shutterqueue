@@ -180,6 +180,136 @@ function getFlickrAuth() {
   };
 }
 
+const GROUP_COUNTS_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const GROUP_COUNTS_REFRESH_DELAY_MS = 900;
+let groupCountsRefreshPromise = null;
+let groupCountsRefreshState = {
+  inProgress: false,
+  total: 0,
+  completed: 0,
+  startedAt: 0,
+};
+
+function decodeHtmlEntities(input) {
+  let text = String(input == null ? "" : input);
+  if (!text.includes("&")) return text;
+
+  const named = {
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: '"',
+    apos: "'",
+    nbsp: " ",
+  };
+
+  for (let pass = 0; pass < 3; pass++) {
+    const next = text.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (m, code) => {
+      if (!code) return m;
+      if (code[0] === "#") {
+        const isHex = code[1]?.toLowerCase() === "x";
+        const raw = isHex ? code.slice(2) : code.slice(1);
+        const value = parseInt(raw, isHex ? 16 : 10);
+        if (!Number.isFinite(value) || value < 0 || value > 0x10ffff) return m;
+        try {
+          return String.fromCodePoint(value);
+        } catch {
+          return m;
+        }
+      }
+      const lower = String(code).toLowerCase();
+      return Object.prototype.hasOwnProperty.call(named, lower) ? named[lower] : m;
+    });
+    if (next === text) break;
+    text = next;
+    if (!text.includes("&")) break;
+  }
+
+  return text;
+}
+
+function normalizeGroupNames(groups) {
+  return (Array.isArray(groups) ? groups : []).map((g) => ({
+    ...g,
+    name: decodeHtmlEntities(g?.name || ""),
+  }));
+}
+
+function mergeGroupCounts(baseGroups, cachedGroups) {
+  const cachedById = new Map((Array.isArray(cachedGroups) ? cachedGroups : []).map((g) => [String(g.id), g]));
+  return (Array.isArray(baseGroups) ? baseGroups : []).map((g) => {
+    const cached = cachedById.get(String(g.id));
+    if (!cached) return g;
+    return {
+      ...g,
+      ...(Number.isFinite(Number(cached.memberCount)) ? { memberCount: Number(cached.memberCount) } : {}),
+      ...(Number.isFinite(Number(cached.photoCount)) ? { photoCount: Number(cached.photoCount) } : {}),
+    };
+  });
+}
+
+function startGroupCountsRefreshInBackground(groups) {
+  if (groupCountsRefreshPromise) return;
+  const list = Array.isArray(groups) ? groups : [];
+  if (!list.length) return;
+
+  groupCountsRefreshState = {
+    inProgress: true,
+    total: list.length,
+    completed: 0,
+    startedAt: Date.now(),
+  };
+
+  groupCountsRefreshPromise = (async () => {
+    try {
+      const auth = getFlickrAuth();
+      const updated = [];
+      for (let i = 0; i < list.length; i++) {
+        const group = list[i];
+        let info = { memberCount: 0, photoCount: 0 };
+        try {
+          info = await flickr.getGroupInfo({
+            apiKey: auth.apiKey,
+            apiSecret: auth.apiSecret,
+            token: auth.token,
+            tokenSecret: auth.tokenSecret,
+            groupId: group.id,
+          });
+        } catch (_) {
+          // ignore per-group failures
+        }
+
+        updated.push({
+          ...group,
+          ...(Number.isFinite(Number(info.memberCount)) ? { memberCount: Number(info.memberCount) } : {}),
+          ...(Number.isFinite(Number(info.photoCount)) ? { photoCount: Number(info.photoCount) } : {}),
+        });
+        groupCountsRefreshState.completed = i + 1;
+
+        // Persist progress periodically so UI polls can pick up partial updates.
+        if (i % 10 === 0 || i === list.length - 1) {
+          store.set("groupsCache", updated.concat(list.slice(i + 1)));
+        }
+
+        if (i < list.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, GROUP_COUNTS_REFRESH_DELAY_MS));
+        }
+      }
+      store.set("groupsCache", updated);
+      store.set("groupsCountsFetchedAt", Date.now());
+    } catch (e) {
+      logEvent("WARN", "Background group counts refresh failed", { error: String(e) });
+    } finally {
+      groupCountsRefreshState = {
+        ...groupCountsRefreshState,
+        inProgress: false,
+        completed: Math.max(groupCountsRefreshState.completed, groupCountsRefreshState.total),
+      };
+      groupCountsRefreshPromise = null;
+    }
+  })();
+}
+
 function parseHHMM(s) {
   const m = String(s || "").match(/^(\d\d):(\d\d)$/);
   if (!m) return { h: 0, min: 0 };
@@ -1106,22 +1236,55 @@ ipcMain.handle("oauth:logout", async () => {
   return { ok: true };
 });
 
-ipcMain.handle("flickr:groups", async () => {
+ipcMain.handle("flickr:groups", async (_e, opts = {}) => {
   if (!isAuthed()) throw new Error("Not authorized");
   const auth = getFlickrAuth();
+  const force = Boolean(opts && opts.force);
   try {
-    const result = await flickr.listGroups({
+    const cachedGroupsRaw = store.get("groupsCache") || [];
+    const cachedGroups = normalizeGroupNames(cachedGroupsRaw);
+    if (JSON.stringify(cachedGroupsRaw) !== JSON.stringify(cachedGroups)) {
+      store.set("groupsCache", cachedGroups);
+    }
+    const countsFetchedAt = Number(store.get("groupsCountsFetchedAt") || 0);
+    const countsStale = !countsFetchedAt || (Date.now() - countsFetchedAt) > GROUP_COUNTS_REFRESH_INTERVAL_MS;
+
+    if (!force && Array.isArray(cachedGroups) && cachedGroups.length) {
+      if (countsStale) {
+        startGroupCountsRefreshInBackground(cachedGroups);
+      }
+      logApiCallVerbose("flickr.groups.pools.getGroups", { cache: true }, cachedGroups);
+      return cachedGroups;
+    }
+
+    const baseGroups = await flickr.listGroups({
       apiKey: auth.apiKey,
       apiSecret: auth.apiSecret,
       token: auth.token,
       tokenSecret: auth.tokenSecret,
     });
-    logApiCallVerbose("flickr.groups.getInfo", {}, result);
-    return result;
+
+    const merged = normalizeGroupNames(mergeGroupCounts(baseGroups, cachedGroups));
+    store.set("groupsCache", merged);
+    store.set("groupsListFetchedAt", Date.now());
+
+    startGroupCountsRefreshInBackground(merged);
+
+    logApiCallVerbose("flickr.groups.pools.getGroups", { cache: false }, merged);
+    return merged;
   } catch (e) {
-    logApiCallVerbose("flickr.groups.getInfo", {}, null, e);
+    logApiCallVerbose("flickr.groups.pools.getGroups", { cache: false }, null, e);
     throw e;
   }
+});
+
+ipcMain.handle("flickr:groupsRefreshStatus", async () => {
+  return {
+    inProgress: Boolean(groupCountsRefreshState.inProgress),
+    total: Number(groupCountsRefreshState.total || 0),
+    completed: Number(groupCountsRefreshState.completed || 0),
+    startedAt: Number(groupCountsRefreshState.startedAt || 0),
+  };
 });
 
 ipcMain.handle("flickr:albums", async () => {

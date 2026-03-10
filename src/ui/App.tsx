@@ -99,6 +99,25 @@ function deriveTitleFromPhotoPath(photoPath: string): string {
   return noExt || base || "";
 }
 
+function formatCompactCount(count: number): string {
+  if (count >= 1000000) {
+    return `${(count / 1000000).toFixed(1).replace(/\.0+$/, "")}M`;
+  }
+  if (count >= 1000) {
+    const k = (count / 1000).toFixed(1).replace(/\.0+$/, "");
+    return `${k}k`;
+  }
+  return String(count);
+}
+
+function formatGroupName(group: Group): string {
+  const memberCount = Number(group.memberCount || 0);
+  const photoCount = Number(group.photoCount || 0);
+  if (memberCount > 0) return `${group.name} (${formatCompactCount(memberCount)})`;
+  if (photoCount > 0) return `${group.name} (${formatCompactCount(photoCount)} photos)`;
+  return group.name;
+}
+
 function normalizeSavedIdSets(input: any): SavedIdSet[] {
   if (!Array.isArray(input)) return [];
   const out: SavedIdSet[] = [];
@@ -176,6 +195,12 @@ export default function App() {
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
+  const [groupRefreshStatus, setGroupRefreshStatus] = useState<{ inProgress: boolean; total: number; completed: number; startedAt: number }>({
+    inProgress: false,
+    total: 0,
+    completed: 0,
+    startedAt: 0,
+  });
   const [groupsFilter, setGroupsFilter] = useState("");
   const [albumsFilter, setAlbumsFilter] = useState("");
   const [savedGroupSets, setSavedGroupSets] = useState<SavedIdSet[]>([]);
@@ -241,6 +266,13 @@ const filteredAlbums = useMemo(() => {
   });
 }, [albums, albumsFilter, activeAlbumSetIdSet]);
 
+const groupsWithCounts = useMemo(() => {
+  return groups.filter((g) => Number(g.memberCount || 0) > 0 || Number(g.photoCount || 0) > 0).length;
+}, [groups]);
+
+const groupsMissingCounts = Math.max(0, groups.length - groupsWithCounts);
+const showGroupCountsUpdating = Boolean(groupRefreshStatus.inProgress);
+
 const isGroupFilterActive = Boolean(groupsFilter.trim() || activeGroupSetName);
 const isAlbumFilterActive = Boolean(albumsFilter.trim() || activeAlbumSetName);
 
@@ -281,7 +313,8 @@ const categorizeMessage = (msg: string): "success" | "waiting" | "error" => {
 };
 
 
-  const [didAutoLoadLists, setDidAutoLoadLists] = useState(false);
+  const [didAutoLoadGroups, setDidAutoLoadGroups] = useState(false);
+  const [didAutoLoadAlbums, setDidAutoLoadAlbums] = useState(false);
 
   const [appVersion, setAppVersion] = useState<string>("");
   const [isUploadingNow, setIsUploadingNow] = useState(false);
@@ -728,19 +761,83 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   useEffect(() => {
     if (!cfg?.authed) return;
-    if (didAutoLoadLists) return;
-    (async () => {
+
+    if (!didAutoLoadGroups) {
+      (async () => {
+        try {
+          const g = await window.sq.fetchGroups();
+          setGroups(g);
+        } catch {
+          // ignore
+        } finally {
+          setDidAutoLoadGroups(true);
+        }
+      })();
+    }
+
+    if (!didAutoLoadAlbums) {
+      (async () => {
+        try {
+          const a = await window.sq.fetchAlbums();
+          setAlbums(a);
+        } catch {
+          // ignore
+        } finally {
+          setDidAutoLoadAlbums(true);
+        }
+      })();
+    }
+  }, [cfg?.authed, didAutoLoadGroups, didAutoLoadAlbums]);
+
+  // Group member counts are refreshed in the main process background.
+  // Poll cached groups briefly after startup so counts appear progressively.
+  useEffect(() => {
+    if (!cfg?.authed) return;
+    let cancelled = false;
+
+    const refreshGroupsFromCache = async () => {
       try {
-        const [g, a] = await Promise.all([window.sq.fetchGroups(), window.sq.fetchAlbums()]);
-        setGroups(g);
-        setAlbums(a);
+        const g = await window.sq.fetchGroups();
+        if (!cancelled) setGroups(g);
       } catch {
         // ignore
-      } finally {
-        setDidAutoLoadLists(true);
       }
-    })();
-  }, [cfg?.authed, didAutoLoadLists]);
+    };
+
+    const initial = window.setTimeout(() => { void refreshGroupsFromCache(); }, 4000);
+    const interval = window.setInterval(() => { void refreshGroupsFromCache(); }, 15000);
+    const stop = window.setTimeout(() => window.clearInterval(interval), 5 * 60 * 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+      window.clearTimeout(stop);
+    };
+  }, [cfg?.authed]);
+
+  // Poll explicit background refresh status from the main process.
+  useEffect(() => {
+    if (!cfg?.authed) return;
+    let cancelled = false;
+
+    const loadStatus = async () => {
+      try {
+        const status = await window.sq.fetchGroupRefreshStatus();
+        if (!cancelled) setGroupRefreshStatus(status);
+      } catch {
+        // ignore
+      }
+    };
+
+    void loadStatus();
+    const interval = window.setInterval(() => { void loadStatus(); }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [cfg?.authed]);
 
   useEffect(() => {
     (async () => {
@@ -803,7 +900,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   };
 
   const refreshGroups = async () => {
-    const g = await window.sq.fetchGroups();
+    const g = await window.sq.fetchGroups({ force: true });
     setGroups(g);
     showToast(`Loaded ${g.length} groups.`);
   };
@@ -2072,6 +2169,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               <div className="small" style={{ marginTop: 10 }}>
                 Groups loaded: {groups.length} • Albums loaded: {albums.length}
               </div>
+              {showGroupCountsUpdating && (
+                <div className="small" style={{ marginTop: 6 }}>
+                  Updating group counts in background… {Math.min(groupRefreshStatus.completed, groupRefreshStatus.total)}/{groupRefreshStatus.total || groups.length} ready.
+                </div>
+              )}
               <div style={{ height: 12 }} />
               <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <input type="checkbox" checked={verboseLogging} onChange={(e) => {
@@ -2106,7 +2208,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div className="listbox">
                     {filteredGroups.slice(0, 200).map(g => (
                       <div key={g.id} className="listrow">
-                        <div className="small">{g.name}</div>
+                        <div className="small">{formatGroupName(g)}</div>
                       </div>
                     ))}
                     {!groups.length && <div className="small">Not loaded yet.</div>}
@@ -2473,6 +2575,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               <div className="small" style={{ marginTop: 10 }}>
                 Selection: click • shift-click (range) • cmd/ctrl-click (toggle) • right-click (menu)
               </div>
+              <div style={{ height: 180 }} />
             </div>
           </div>
 
@@ -2652,7 +2755,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {sortedFilteredGroups.map(g => (
                           <label key={g.id} className="listrow trirow">
                             <TriCheck state={triState("group", g.id)} onToggle={(next) => setForSelected("group", g.id, next)} />
-                            <span className="small">{g.name}</span>
+                            <span className="small">{formatGroupName(g)}</span>
                           </label>
                         ))}
                         {!groups.length && <div className="small">Load groups in Setup tab.</div>}
@@ -2900,7 +3003,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                               }}
                             />
                             <span className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              <span>{g.name}</span>
+                              <span>{formatGroupName(g)}</span>
                               {active.groupAddStates?.[g.id]?.status === "retry" ? <span className="badge warn">Pending Retry</span> : null}
                             </span>
                           </label>
@@ -3093,6 +3196,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   })() : null}
                 </>
               )}
+              <div style={{ height: 180 }} />
             </div>
           </div>
 

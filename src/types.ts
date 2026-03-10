@@ -57,5 +57,5 @@ export type QueueItem = {
   }>;
 };
 
-export type Group = { id: string; name: string };
+export type Group = { id: string; name: string; memberCount?: number; photoCount?: number };
 export type Album = { id: string; title: string };

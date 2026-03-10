@@ -12,6 +12,44 @@ function sha1base64(text) {
   return crypto.createHash("sha1").update(text).digest("base64");
 }
 
+function decodeHtmlEntities(input) {
+  let text = String(input == null ? "" : input);
+  if (!text.includes("&")) return text;
+
+  const named = {
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: '"',
+    apos: "'",
+    nbsp: " ",
+  };
+
+  for (let pass = 0; pass < 3; pass++) {
+    const next = text.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (m, code) => {
+      if (!code) return m;
+      if (code[0] === "#") {
+        const isHex = code[1]?.toLowerCase() === "x";
+        const raw = isHex ? code.slice(2) : code.slice(1);
+        const value = parseInt(raw, isHex ? 16 : 10);
+        if (!Number.isFinite(value) || value < 0 || value > 0x10ffff) return m;
+        try {
+          return String.fromCodePoint(value);
+        } catch {
+          return m;
+        }
+      }
+      const lower = String(code).toLowerCase();
+      return Object.prototype.hasOwnProperty.call(named, lower) ? named[lower] : m;
+    });
+    if (next === text) break;
+    text = next;
+    if (!text.includes("&")) break;
+  }
+
+  return text;
+}
+
 function makeOAuth(consumerKey, consumerSecret) {
   return OAuth({
     consumer: { key: consumerKey, secret: consumerSecret },
@@ -228,6 +266,37 @@ async function addPhotoToGroup({ apiKey, apiSecret, token, tokenSecret, photoId,
   });
 }
 
+function parseFlickrCount(value) {
+  if (value == null) return 0;
+  const raw = typeof value === "object"
+    ? (value._content ?? value.content ?? value.value ?? "")
+    : value;
+  const normalized = String(raw).replace(/[,_\s]/g, "").trim();
+  if (!normalized) return 0;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function getGroupInfo({ apiKey, apiSecret, token, tokenSecret, groupId }) {
+  try {
+    const j = await flickrRestCall({
+      apiKey, apiSecret, token, tokenSecret,
+      methodName: "flickr.groups.getInfo",
+      params: { group_id: groupId }
+    });
+    
+    if (j.group) {
+      return {
+        memberCount: parseFlickrCount(j.group.members),
+        photoCount: parseFlickrCount(j.group.photos)
+      };
+    }
+  } catch (e) {
+    console.warn(`[Flickr] Failed to fetch info for group ${groupId}:`, e.message);
+  }
+  return { memberCount: 0, photoCount: 0 };
+}
+
 async function listGroups({ apiKey, apiSecret, token, tokenSecret }) {
   let allGroups = [];
   let page = 1;
@@ -244,7 +313,7 @@ async function listGroups({ apiKey, apiSecret, token, tokenSecret }) {
     if (j.groups) {
       pages = Number(j.groups.pages || 1);
       const list = j.groups.group ? (Array.isArray(j.groups.group) ? j.groups.group : [j.groups.group]) : [];
-      allGroups = allGroups.concat(list.map(g => ({ id: g.nsid, name: g.name })));
+      allGroups = allGroups.concat(list.map(g => ({ id: g.nsid, name: decodeHtmlEntities(g.name) })));
       
       if (pages > 1) {
         console.log(`[Flickr] Fetched groups page ${page}/${pages} (${allGroups.length} groups so far)`);
@@ -253,7 +322,6 @@ async function listGroups({ apiKey, apiSecret, token, tokenSecret }) {
     
     page++;
   }
-  
   return allGroups;
 }
 
@@ -273,7 +341,7 @@ async function listAlbums({ apiKey, apiSecret, token, tokenSecret, userNsid }) {
     if (j.photosets) {
       pages = Number(j.photosets.pages || 1);
       const list = j.photosets.photoset ? (Array.isArray(j.photosets.photoset) ? j.photosets.photoset : [j.photosets.photoset]) : [];
-      allAlbums = allAlbums.concat(list.map(a => ({ id: a.id, title: a.title?._content || a.title || "" })));
+      allAlbums = allAlbums.concat(list.map(a => ({ id: a.id, title: decodeHtmlEntities(a.title?._content || a.title || "") })));
       
       if (pages > 1) {
         console.log(`[Flickr] Fetched albums page ${page}/${pages} (${allAlbums.length} albums so far)`);
@@ -414,6 +482,7 @@ module.exports = {
   addPhotoToAlbum,
   addPhotoToGroup,
   listGroups,
+  getGroupInfo,
   listAlbums,
   getPhotoUrls,
   setPhotoLocation

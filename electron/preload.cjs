@@ -10,7 +10,8 @@ contextBridge.exposeInMainWorld("sq", {
   finishOAuth: (verifier) => ipcRenderer.invoke("oauth:finish", { verifier }),
   logout: () => ipcRenderer.invoke("oauth:logout"),
 
-  fetchGroups: () => ipcRenderer.invoke("flickr:groups"),
+  fetchGroups: (options) => ipcRenderer.invoke("flickr:groups", options || {}),
+  fetchGroupRefreshStatus: () => ipcRenderer.invoke("flickr:groupsRefreshStatus"),
   fetchAlbums: () => ipcRenderer.invoke("flickr:albums"),
   getFlickrPhotoUrls: (photoId) => ipcRenderer.invoke("flickr:photoUrls", { photoId }),
 
