@@ -347,6 +347,10 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const dismissedDuplicateKeysRef = useRef<Set<string>>(new Set());
 
   const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
+  const thumbsRef = useRef<Record<string, string | null>>({});
+  const flickrUrlsRef = useRef<Record<string, { thumbUrl: string; previewUrl: string } | undefined>>({});
+  const thumbLoadsInFlightRef = useRef<Set<string>>(new Set());
+  const flickrLoadsInFlightRef = useRef<Set<string>>(new Set());
 
   // Remote (Flickr) URLs used when the local file is missing.
   const [flickrUrls, setFlickrUrls] = useState<Record<string, { thumbUrl: string; previewUrl: string }>>({});
@@ -682,8 +686,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   // refresh data that may change without user interaction
   const refreshDynamic = async () => {
     const q = await window.sq.queueGet();
-    setQueue(q);
-    if (!activeId && q.length) setActiveId(q[0].id);
+    startTransition(() => {
+      setQueue(q);
+      if (!activeId && q.length) setActiveId(q[0].id);
+    });
 
     // Ensure default titles (filename without extension) for items missing a title
     try {
@@ -691,8 +697,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       if (needsTitle.length) {
         const patched = needsTitle.map(it => ({ ...it, title: deriveTitleFromPhotoPath(it.photoPath) }));
         const q2 = await window.sq.queueUpdate(patched);
-        setQueue(q2);
-        if (!activeId && q2.length) setActiveId(q2[0].id);
+        startTransition(() => {
+          setQueue(q2);
+          if (!activeId && q2.length) setActiveId(q2[0].id);
+        });
       }
     } catch {
       // ignore
@@ -814,12 +822,17 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   useEffect(() => {
     refreshDynamicRef.current = refreshDynamic;
   });
+  const hasBackgroundQueueActivity = useMemo(() => {
+    if (sched?.schedulerOn) return true;
+    return queue.some(it => it.status === "uploading");
+  }, [queue, sched?.schedulerOn]);
+
   useEffect(() => {
     const t = window.setInterval(() => {
       void refreshDynamicRef.current?.();
-    }, 1500);
+    }, hasBackgroundQueueActivity ? 4000 : 10000);
     return () => window.clearInterval(t);
-  }, []);
+  }, [hasBackgroundQueueActivity]);
 
   useEffect(() => {
     if (!cfg?.authed) return;
@@ -903,28 +916,102 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   }, [cfg?.authed]);
 
   useEffect(() => {
-    (async () => {
-      for (const it of queue.slice(0, 120)) {
-        // Try to load local thumbnail if we haven't cached it yet
-        let dataUrl = thumbs[it.photoPath];
-        if (dataUrl === undefined) {
-          dataUrl = await window.sq.getThumbDataUrl(it.photoPath);
-          setThumbs(t => ({ ...t, [it.photoPath]: dataUrl }));
+    thumbsRef.current = thumbs;
+  }, [thumbs]);
+
+  useEffect(() => {
+    flickrUrlsRef.current = flickrUrls;
+  }, [flickrUrls]);
+
+  useEffect(() => {
+    if (displayTab !== "queue" || !queue.length) return;
+    let cancelled = false;
+
+    const yieldToBrowser = () => new Promise<void>(resolve => window.setTimeout(resolve, 0));
+
+    const loadThumbBatch = async (paths: string[]) => {
+      const batch = paths.filter(photoPath => {
+        if (!photoPath) return false;
+        if (thumbsRef.current[photoPath] !== undefined) return false;
+        if (thumbLoadsInFlightRef.current.has(photoPath)) return false;
+        return true;
+      });
+      if (!batch.length) return;
+
+      batch.forEach(photoPath => thumbLoadsInFlightRef.current.add(photoPath));
+      const results = await Promise.all(batch.map(async (photoPath) => {
+        try {
+          return [photoPath, await window.sq.getThumbDataUrl(photoPath)] as const;
+        } finally {
+          thumbLoadsInFlightRef.current.delete(photoPath);
         }
-        // If local thumbnail is missing and item has a photoId, try fetching from Flickr
-        if (!dataUrl && it.photoId && flickrUrls[it.photoId] === undefined) {
-          try {
-            // @ts-ignore - dynamic typing for sq API
-            const u = await window.sq.getFlickrPhotoUrls(it.photoId);
-            setFlickrUrls(m => ({ ...m, [it.photoId as any]: u }));
-          } catch {
-            // ignore
-          }
+      }));
+
+      if (cancelled) return;
+      const nextEntries = results.filter((entry): entry is readonly [string, string | null] => !!entry[0]);
+      if (nextEntries.length) {
+        setThumbs(prev => ({
+          ...prev,
+          ...Object.fromEntries(nextEntries),
+        }));
+      }
+      await yieldToBrowser();
+    };
+
+    const loadFlickrBatch = async (items: QueueItem[]) => {
+      const batch = items.filter(it => {
+        if (!it.photoId) return false;
+        if (thumbsRef.current[it.photoPath]) return false;
+        if (flickrUrlsRef.current[it.photoId] !== undefined) return false;
+        if (flickrLoadsInFlightRef.current.has(it.photoId)) return false;
+        return true;
+      });
+      if (!batch.length) return;
+
+      batch.forEach(it => {
+        if (it.photoId) flickrLoadsInFlightRef.current.add(it.photoId);
+      });
+      const results = await Promise.all(batch.map(async (it) => {
+        try {
+          // @ts-ignore - dynamic typing for sq API
+          const urls = await window.sq.getFlickrPhotoUrls(it.photoId);
+          return [it.photoId as string, urls] as const;
+        } catch {
+          return [it.photoId as string, null] as const;
+        } finally {
+          if (it.photoId) flickrLoadsInFlightRef.current.delete(it.photoId);
         }
+      }));
+
+      if (cancelled) return;
+      const nextEntries = results.filter((entry): entry is readonly [string, { thumbUrl: string; previewUrl: string }] => !!entry[0] && !!entry[1]);
+      if (nextEntries.length) {
+        setFlickrUrls(prev => ({
+          ...prev,
+          ...Object.fromEntries(nextEntries),
+        }));
+      }
+      await yieldToBrowser();
+    };
+
+    void (async () => {
+      const firstPassThumbs = queue.slice(0, 24).map(it => it.photoPath);
+      await loadThumbBatch(firstPassThumbs);
+
+      for (let start = 24; start < queue.length && !cancelled; start += 12) {
+        await loadThumbBatch(queue.slice(start, start + 12).map(it => it.photoPath));
+      }
+
+      await loadFlickrBatch(queue.slice(0, 24));
+      for (let start = 24; start < queue.length && !cancelled; start += 8) {
+        await loadFlickrBatch(queue.slice(start, start + 8));
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queue]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [queue, displayTab]);
 
   // Close dropdown menus when clicking outside them
   useEffect(() => {
@@ -1079,6 +1166,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     () => queue.filter(it => it.status === "pending" && !!it.scheduledUploadAt).length,
     [queue]
   );
+  const hasSelectedManualSchedule = useMemo(
+    () => selectedIds.some(id => {
+      const it = queue.find(q => q.id === id);
+      return !!(it && it.status === "pending" && it.scheduledUploadAt);
+    }),
+    [selectedIds, queue]
+  );
 
   const hasPendingSelected = useMemo(
     () => selectedIds.some(id => {
@@ -1110,11 +1204,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   };
 
   const reorderPendingForManualSchedule = (sourceQueue: QueueItem[]): QueueItem[] => {
-    // Separate items: non-pending stay at original positions, 
-    // manually scheduled items go before unscheduled pending items (sorted by time)
+    // Keep immediate pending items first; future scheduled pending items are ordered by time.
     const nonPending: QueueItem[] = [];
-    const scheduled: QueueItem[] = [];
     const unscheduled: QueueItem[] = [];
+    const scheduled: QueueItem[] = [];
 
     for (const it of sourceQueue) {
       if (it.status !== "pending") {
@@ -1129,11 +1222,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     // Sort scheduled by time
     scheduled.sort((a, b) => Date.parse(a.scheduledUploadAt || "") - Date.parse(b.scheduledUploadAt || ""));
 
-    // Rebuild: non-pending first, then scheduled (sorted), then unscheduled
+    // Rebuild: non-pending first, then unscheduled pending, then scheduled pending by time.
     const result: QueueItem[] = [];
     result.push(...nonPending);
-    result.push(...scheduled);
     result.push(...unscheduled);
+    result.push(...scheduled);
 
     return result;
   };
@@ -1211,13 +1304,14 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   };
 
   const clearManualSchedule = async () => {
+    if (!selectedIds.length) return;
     const changed = queue
-      .filter(it => it.status === "pending" && !!it.scheduledUploadAt)
+      .filter(it => selectedIds.includes(it.id) && it.status === "pending" && !!it.scheduledUploadAt)
       .map(it => ({ ...it, scheduledUploadAt: "" }));
     if (!changed.length) return;
     setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
     await updateItems(changed);
-    showToast(`Cleared manual schedule on ${changed.length} item(s).`);
+    showToast(`Cleared manual schedule on ${changed.length} selected item(s).`);
   };
 
   const handleContextMenu = useCallback((e: React.MouseEvent, itemId: string) => {
@@ -1330,6 +1424,156 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setQueue(q);
     setSelectedIds([]);
     setActiveId(q[0]?.id || null);
+  };
+
+  const applySortToQueueItems = (itemsToSort: QueueItem[], sortFn: (a: QueueItem, b: QueueItem) => number): QueueItem[] => {
+    // Separate scheduled and unscheduled items
+    const scheduled = itemsToSort.filter(it => it.scheduledUploadAt);
+    const unscheduled = itemsToSort.filter(it => !it.scheduledUploadAt);
+
+    // Sort unscheduled items
+    unscheduled.sort(sortFn);
+
+    // Merge back: immediate (unscheduled) first, then scheduled by time.
+    scheduled.sort((a, b) => Date.parse(a.scheduledUploadAt || "") - Date.parse(b.scheduledUploadAt || ""));
+    return [...unscheduled, ...scheduled];
+  };
+
+  const shuffleQueueItems = (itemsToShuffle: QueueItem[]): QueueItem[] => {
+    const scheduled = itemsToShuffle.filter(it => it.scheduledUploadAt);
+    const unscheduled = itemsToShuffle.filter(it => !it.scheduledUploadAt);
+
+    // Fisher-Yates shuffle for an unbiased random order.
+    for (let i = unscheduled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [unscheduled[i], unscheduled[j]] = [unscheduled[j], unscheduled[i]];
+    }
+
+    scheduled.sort((a, b) => Date.parse(a.scheduledUploadAt || "") - Date.parse(b.scheduledUploadAt || ""));
+    return [...unscheduled, ...scheduled];
+  };
+
+  const sortQueueByFilename = async (reverse: boolean = false) => {
+    if (selectedIds.length > 1) {
+      // Get indices and items of selected items
+      const selectedIndices: number[] = [];
+      const selectedItems: QueueItem[] = [];
+      queue.forEach((item, index) => {
+        if (selectedIds.includes(item.id)) {
+          selectedIndices.push(index);
+          selectedItems.push(item);
+        }
+      });
+
+      // Sort selected items
+      const sorted = applySortToQueueItems(selectedItems, (a, b) => {
+        const pathA = (a.photoPath || "").toLowerCase();
+        const pathB = (b.photoPath || "").toLowerCase();
+        return reverse ? pathB.localeCompare(pathA) : pathA.localeCompare(pathB);
+      });
+
+      // Place sorted items back at original indices
+      const result = [...queue];
+      selectedIndices.forEach((index, i) => {
+        result[index] = sorted[i];
+      });
+
+      setQueue(result);
+      await window.sq.queueReorder(result.map(it => it.id));
+      const direction = reverse ? "Z to A" : "A to Z";
+      showToast(`Sorted selected items by filename (${direction}).`);
+    } else {
+      // Sort entire queue
+      const sorted = applySortToQueueItems(queue, (a, b) => {
+        const pathA = (a.photoPath || "").toLowerCase();
+        const pathB = (b.photoPath || "").toLowerCase();
+        return reverse ? pathB.localeCompare(pathA) : pathA.localeCompare(pathB);
+      });
+
+      setQueue(sorted);
+      await window.sq.queueReorder(sorted.map(it => it.id));
+      const direction = reverse ? "Z to A" : "A to Z";
+      showToast(`Sorted queue by filename (${direction}).`);
+    }
+  };
+
+  const sortQueueByTitle = async (reverse: boolean = false) => {
+    if (selectedIds.length > 1) {
+      // Get indices and items of selected items
+      const selectedIndices: number[] = [];
+      const selectedItems: QueueItem[] = [];
+      queue.forEach((item, index) => {
+        if (selectedIds.includes(item.id)) {
+          selectedIndices.push(index);
+          selectedItems.push(item);
+        }
+      });
+
+      // Sort selected items
+      const sorted = applySortToQueueItems(selectedItems, (a, b) => {
+        const titleA = (a.title || deriveTitleFromPhotoPath(a.photoPath || "")).toLowerCase();
+        const titleB = (b.title || deriveTitleFromPhotoPath(b.photoPath || "")).toLowerCase();
+        return reverse ? titleB.localeCompare(titleA) : titleA.localeCompare(titleB);
+      });
+
+      // Place sorted items back at original indices
+      const result = [...queue];
+      selectedIndices.forEach((index, i) => {
+        result[index] = sorted[i];
+      });
+
+      setQueue(result);
+      await window.sq.queueReorder(result.map(it => it.id));
+      const direction = reverse ? "Z to A" : "A to Z";
+      showToast(`Sorted selected items by title (${direction}).`);
+    } else {
+      // Sort entire queue
+      const sorted = applySortToQueueItems(queue, (a, b) => {
+        const titleA = (a.title || deriveTitleFromPhotoPath(a.photoPath || "")).toLowerCase();
+        const titleB = (b.title || deriveTitleFromPhotoPath(b.photoPath || "")).toLowerCase();
+        return reverse ? titleB.localeCompare(titleA) : titleA.localeCompare(titleB);
+      });
+
+      setQueue(sorted);
+      await window.sq.queueReorder(sorted.map(it => it.id));
+      const direction = reverse ? "Z to A" : "A to Z";
+      showToast(`Sorted queue by title (${direction}).`);
+    }
+  };
+
+  const shuffleQueue = async () => {
+    const result = [...queue];
+    
+    if (selectedIds.length > 1) {
+      // Get indices and items of selected items
+      const selectedIndices: number[] = [];
+      const selectedItems: QueueItem[] = [];
+      queue.forEach((item, index) => {
+        if (selectedIds.includes(item.id)) {
+          selectedIndices.push(index);
+          selectedItems.push(item);
+        }
+      });
+
+      // Shuffle selected items
+      const shuffled = shuffleQueueItems(selectedItems);
+
+      // Place shuffled items back at original indices
+      selectedIndices.forEach((index, i) => {
+        result[index] = shuffled[i];
+      });
+    } else {
+      // Shuffle entire queue
+      const shuffled = shuffleQueueItems(queue);
+      setQueue(shuffled);
+      await window.sq.queueReorder(shuffled.map(it => it.id));
+      showToast("Shuffled queue.");
+      return;
+    }
+
+    setQueue(result);
+    await window.sq.queueReorder(result.map(it => it.id));
+    showToast("Shuffled selected items.");
   };
 
   const updateItems = async (items: QueueItem[]) => {
@@ -2386,8 +2630,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <button className="btn" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
                   <button className="btn" onClick={openScheduleSelectedDialog} disabled={!hasPendingSelected}>Schedule Selected</button>
                   {manuallyScheduledCount > 0 ? (
-                    <button className="btn" onClick={clearManualSchedule}>Clear Manual Schedule</button>
+                    <button className="btn" onClick={clearManualSchedule} disabled={!hasSelectedManualSchedule}>Clear Selected Manual Schedule</button>
                   ) : null}
+                </div>
+                <div className="btncluster btncluster-secondary" style={{ justifySelf: "start" }}>
+                  <span className="small">{selectedIds.length > 1 ? "Sort Selected" : "Sort Queue"}</span>
+                  <button className="btn btn-sm" onClick={shuffleQueue} disabled={queue.length === 0}>Shuffle</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByFilename(false)} disabled={queue.length === 0}>Filename A-Z</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByFilename(true)} disabled={queue.length === 0}>Filename Z-A</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByTitle(false)} disabled={queue.length === 0}>Title A-Z</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByTitle(true)} disabled={queue.length === 0}>Title Z-A</button>
                 </div>
                 <div className="btncluster btncluster-secondary" style={{ justifySelf: "start" }}>
                   <span className="small">Selection</span>

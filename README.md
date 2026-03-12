@@ -1,4 +1,4 @@
-# ShutterQueue — A paced uploader for Flickr (v0.9.2)
+# ShutterQueue — A paced uploader for Flickr (v0.9.3)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
@@ -70,6 +70,22 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 
 
 
+
+## New to 0.9.3 (since 0.9.2)
+
+- **Major queue performance improvements**
+  - Large queues are dramatically more responsive during startup and while the Queue tab is open
+  - Thumbnail work is now deferred and loaded in batches so the app stays usable while images populate in
+  - The app now generates real resized thumbnails instead of loading full image files into the queue UI
+  - Queue row rendering is lighter overall, which helps a lot once queue sizes get into the hundreds
+- **Queue sorting controls**
+  - Shuffle the queue or the selected items
+  - Sort by filename/path A-Z or Z-A
+  - Sort by title A-Z or Z-A with filename fallback when no custom title is set
+- **Manual schedule and queue behavior fixes**
+  - Scheduled items keep their intended chronological placement
+  - Clear Selected Manual Schedule only acts on selected scheduled items
+  - Single-item selection now behaves correctly for queue-wide sort/shuffle actions
 
 ## New to 0.9.2 (since 0.9.1)
 

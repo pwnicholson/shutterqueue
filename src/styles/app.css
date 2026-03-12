@@ -58,6 +58,8 @@ body{
 .tab:hover{
   border-color: rgba(139,211,255,0.35);
 }
+.tab:focus{outline:none}
+.tab:focus-visible{box-shadow: inset 0 0 0 2px rgba(255,211,107,0.45)}
 .tab.selected{
   background: var(--bg);
   border-bottom: none;
@@ -241,6 +243,8 @@ body{
   padding:10px 12px;
   background: rgba(255,255,255,0.02);
   user-select:none;
+  content-visibility:auto;
+  contain-intrinsic-size: 88px;
 }
 .qitem.selected { border-color: rgba(139,211,255,0.55); box-shadow: 0 0 0 2px rgba(139,211,255,0.18) inset; }
 

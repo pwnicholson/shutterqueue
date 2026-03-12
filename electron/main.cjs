@@ -1514,10 +1514,10 @@ ipcMain.handle("flickr:photoUrls", async (_e, { photoId }) => {
 
 ipcMain.handle("thumb:getDataUrl", async (_e, { photoPath }) => {
   try {
-    const data = fs.readFileSync(photoPath);
-    const ext = String(path.extname(photoPath)).toLowerCase();
-    const mime = ext === ".png" ? "image/png" : (ext === ".webp" ? "image/webp" : "image/jpeg");
-    return `data:${mime};base64,${data.toString("base64")}`;
+    const image = nativeImage.createFromPath(photoPath);
+    if (!image || image.isEmpty()) return null;
+    const thumb = image.resize({ width: 96, height: 96, quality: "good" });
+    return thumb.toDataURL();
   } catch {
     return null;
   }

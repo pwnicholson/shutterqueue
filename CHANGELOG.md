@@ -2,6 +2,32 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
+## [0.9.3] - 2026-03-12
+
+### Added
+- **Queue sorting controls**
+  - Shuffle the full queue or just the current multi-selection
+  - Sort by full filename/path in either direction
+  - Sort by title in either direction, with filename fallback when no title is set
+
+### Changed
+- **Major queue performance improvements**
+  - Queue tab stays responsive with much larger queues
+  - Thumbnail loading now happens in deferred batches instead of blocking the renderer
+  - Actual resized thumbnails are generated instead of embedding full source images as preview data
+  - Background queue refresh polling is less aggressive when the app is idle
+- **Better large-queue rendering behavior**
+  - Queue rows are cheaper to render and stay more responsive while thumbnails continue loading
+  - Startup and queue-tab open behavior are noticeably smoother, especially with hundreds of queued photos
+
+### Fixed
+- **Queue sorting and scheduling behavior**
+  - Single-item selection now behaves like full-queue sort/shuffle as intended
+  - Manual schedules return items to the correct chronological place in the queue
+  - Clear manual schedule only enables for selected scheduled items and only clears those selected items
+- **Queue tab startup interaction glitch**
+  - Reduced the odd first-open queue tab focus/interaction issue seen immediately after app launch
+
 ## [0.9.2] - 2026-03-09
 
 ### Added

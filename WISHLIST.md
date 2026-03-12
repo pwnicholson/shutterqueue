@@ -29,6 +29,7 @@
 * [X] Add geographic data at upload (country/region/city lookup)
 * [X] Pull in basic info about groups size
 * [X] Added a "check for new version" feature
+* [X] Add sorting options for the queue: sort by original file name (A-Z or Z-A), sort by Title (A-Z or Z-A), or shuffle the queue
 
 ## Soon
 
