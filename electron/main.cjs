@@ -1766,6 +1766,99 @@ ipcMain.handle("queue:clearUploaded", async () => {
   return out;
 });
 ipcMain.handle("queue:findDuplicates", async () => queue.findDuplicateGroups());
+ipcMain.handle("queue:exportToFile", async () => {
+  try {
+    const q = queue.loadQueue();
+    const now = new Date();
+    const dateStr = now.getFullYear().toString() +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      String(now.getDate()).padStart(2, "0");
+    const timeStr = String(now.getHours()).padStart(2, "0") +
+      String(now.getMinutes()).padStart(2, "0");
+    const defaultFileName = `ShutterQueue Queue ${dateStr} ${timeStr}.json`;
+
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: path.join(os.homedir(), "Downloads", defaultFileName),
+      filters: [{ name: "JSON Files", extensions: ["json"] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+
+    const payload = {
+      app: "ShutterQueue",
+      format: "queue-backup",
+      version: app.getVersion(),
+      exportedAt: new Date().toISOString(),
+      queue: q,
+    };
+    fs.writeFileSync(result.filePath, JSON.stringify(payload, null, 2), "utf-8");
+    logEvent("INFO", "Exported queue to file", { filePath: result.filePath, itemCount: q.length });
+    return { ok: true, filePath: result.filePath, itemCount: q.length };
+  } catch (e) {
+    logEvent("ERROR", "Failed to export queue", { error: String(e) });
+    return { ok: false, error: String(e) };
+  }
+});
+ipcMain.handle("queue:importFromFile", async (_e, { mode } = {}) => {
+  try {
+    const result = await dialog.showOpenDialog(win, {
+      title: "Import queue backup",
+      properties: ["openFile"],
+      filters: [{ name: "JSON Files", extensions: ["json"] }],
+    });
+    if (result.canceled || !result.filePaths?.[0]) return { ok: false, canceled: true };
+
+    const filePath = result.filePaths[0];
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    const { items, skipped } = queue.normalizeImportedQueue(raw);
+    const before = queue.loadQueue();
+    const importMode = mode === "append" ? "append" : "replace";
+    let out;
+    if (importMode === "append") {
+      const usedIds = new Set((Array.isArray(before) ? before : []).map((it) => String(it?.id || "")).filter(Boolean));
+      const appended = items.map((it) => {
+        let id = String(it?.id || "").trim() || crypto.randomBytes(8).toString("hex");
+        while (usedIds.has(id)) id = crypto.randomBytes(8).toString("hex");
+        usedIds.add(id);
+        return id === it.id ? it : { ...it, id };
+      });
+      out = queue.saveQueue([...(Array.isArray(before) ? before : []), ...appended]);
+    } else {
+      out = queue.saveQueue(items);
+    }
+    pruneImageCacheForRemovedItems(before, out);
+
+    const missingPaths = out.filter((it) => {
+      try {
+        return !fs.existsSync(String(it?.photoPath || ""));
+      } catch {
+        return true;
+      }
+    }).length;
+
+    logEvent("INFO", "Imported queue from file", {
+      filePath,
+      mode: importMode,
+      itemCount: out.length,
+      importedCount: items.length,
+      skipped,
+      missingPaths,
+    });
+    return {
+      ok: true,
+      queue: out,
+      filePath,
+      mode: importMode,
+      previousCount: Array.isArray(before) ? before.length : 0,
+      importedCount: items.length,
+      itemCount: out.length,
+      skipped,
+      missingPaths,
+    };
+  } catch (e) {
+    logEvent("ERROR", "Failed to import queue", { error: String(e) });
+    return { ok: false, error: String(e) };
+  }
+});
 
 ipcMain.handle("geo:search", async (_e, { query }) => {
   try {
@@ -1901,6 +1994,27 @@ ipcMain.handle("ui:show-start-scheduler-dialog", async () => {
       return "now";
     case 1:
       return "delay";
+    default:
+      return "cancel";
+  }
+});
+
+ipcMain.handle("ui:show-queue-import-mode-dialog", async () => {
+  const res = await dialog.showMessageBox(win, {
+    type: "question",
+    buttons: ["Replace the current queue", "Add to the current queue", "Cancel Import"],
+    defaultId: 0,
+    cancelId: 2,
+    title: "Import queue backup",
+    message: "How do you want to handle the imported items?",
+    noLink: true,
+  });
+
+  switch (res.response) {
+    case 0:
+      return "replace";
+    case 1:
+      return "append";
     default:
       return "cancel";
   }

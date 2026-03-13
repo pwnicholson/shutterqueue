@@ -2,22 +2,36 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
-## [0.9.3a] - 2026-03-13
+## [0.9.3b] - 2026-03-13
+
+### Added
+- **Queue backup import/export**
+  - Added JSON export/import for the full queue so you can save a backup and restore it later when files are still available at the same paths
+  - Import now prompts whether to append to the existing queue or replace it, then runs duplicate detection so new duplicate collisions are flagged immediately
 
 ### Changed
 - **Local image and preview performance enhancements**
   - Local queue images now use cached protocol-backed sources instead of heavy inline image payloads
   - Thumbnail and preview generation/use was optimized for faster open and smoother scrolling in larger queues
   - Added automatic image-cache pruning when queue items are removed or cleared to prevent stale cache growth
+- **Queue tab split-pane scrolling**
+  - Queue controls now stay fixed at the top of the queue pane while the queue list scrolls independently
+  - The edit panel now has its own independent scroll area so queue navigation and metadata editing no longer fight for one page scroll
 
 ### Fixed
 - **Batch metadata consistency and selection-state correctness**
   - Fixed mixed/single selection mismatch where title/description fields could appear inconsistent across selection modes
   - Multi-select title/description/privacy/safety editing now behaves consistently and applies correctly to the selected cohort
+  - Fixed saved tag sets in multi-select so choosing a set loads its tags into the batch add-tags field, and saving a tag set now uses the tags currently entered there
+- **Queue backup import and thumbnail recovery**
+  - Imported queue backups now let you choose whether to replace the current queue or add to it, with duplicate detection running immediately afterward
+  - Thumbnail state is now refreshed after queue clear/import flows so missing or broken local thumbs regenerate correctly
 - **Create-album workflow and upload behavior**
   - Fixed missing visibility for queued new-album creation in the Albums editor list
   - New album rows now appear with a distinct red `New` indicator and are fully selectable in edit flows
   - New albums are now actually created during upload when referenced, and are not created when no queued photos reference them
+- **Saved tag-set dialog naming input**
+  - Fixed the save-set name field to reliably take focus and accept typing when creating or overwriting a saved tag set
 
 ### UI
 - **Batch edit experience improvements**

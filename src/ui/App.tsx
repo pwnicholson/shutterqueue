@@ -254,6 +254,7 @@ export default function App() {
   const [tagSetMenuOpen, setTagSetMenuOpen] = useState(false);
   const [saveSetDialog, setSaveSetDialog] = useState<{ kind: "group" | "album" | "tag"; ids: string[] } | null>(null);
   const [saveSetNameInput, setSaveSetNameInput] = useState("");
+  const saveSetNameInputRef = useRef<HTMLInputElement | null>(null);
   
   // Location search state
   const [locationSearchQuery, setLocationSearchQuery] = useState("");
@@ -1003,6 +1004,31 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     thumbsRef.current = thumbs;
   }, [thumbs]);
 
+  const refreshThumbForPath = useCallback(async (photoPath: string) => {
+    if (!photoPath) return;
+    if (thumbLoadsInFlightRef.current.has(photoPath)) return;
+    thumbLoadsInFlightRef.current.add(photoPath);
+    try {
+      const nextSrc = await window.sq.getThumbSrc(photoPath);
+      setThumbs((prev) => ({ ...prev, [photoPath]: nextSrc }));
+    } finally {
+      thumbLoadsInFlightRef.current.delete(photoPath);
+    }
+  }, []);
+
+  useEffect(() => {
+    const activePaths = new Set(queue.map((it) => String(it.photoPath || "")).filter(Boolean));
+    setThumbs((prev) => {
+      const next = Object.fromEntries(Object.entries(prev).filter(([photoPath]) => activePaths.has(photoPath)));
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+    setFlickrUrls((prev) => {
+      const activePhotoIds = new Set(queue.map((it) => String(it.photoId || "")).filter(Boolean));
+      const next = Object.fromEntries(Object.entries(prev).filter(([photoId]) => activePhotoIds.has(photoId)));
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [queue]);
+
   useEffect(() => {
     flickrUrlsRef.current = flickrUrls;
   }, [flickrUrls]);
@@ -1267,6 +1293,41 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const paths = await window.sq.pickPhotos();
     if (!paths.length) return;
     await addPhotosFromPaths(paths);
+  };
+
+  const exportQueueToFile = async () => {
+    const result = await window.sq.queueExportToFile();
+    if (result?.canceled) return;
+    if (!result?.ok) {
+      showToast(`Failed to export queue${result?.error ? `: ${result.error}` : "."}`);
+      return;
+    }
+    showToast(`Saved queue backup (${result.itemCount || 0} item(s)).`);
+  };
+
+  const importQueueFromFile = async () => {
+    const modeChoice = await window.sq.showQueueImportModeDialog();
+    if (modeChoice === "cancel") return;
+    const mode: "append" | "replace" = modeChoice;
+    const result = await window.sq.queueImportFromFile(mode);
+    if (result?.canceled) return;
+    if (!result?.ok || !Array.isArray(result.queue)) {
+      showToast(`Failed to import queue${result?.error ? `: ${result.error}` : "."}`);
+      return;
+    }
+
+    setQueue(result.queue);
+    setSelectedIds([]);
+    setContextMenu(null);
+    setActiveId(result.queue[0]?.id || null);
+
+    await evaluateDuplicatesAndPrompt();
+
+    let message = `${mode === "append" ? "Added" : "Imported"} queue backup (${result.itemCount || result.queue.length} item(s) total).`;
+    if (typeof result.importedCount === "number") message += ` Imported ${result.importedCount} item(s).`;
+    if (result.skipped) message += ` Skipped ${result.skipped} invalid entr${result.skipped === 1 ? "y" : "ies"}.`;
+    if (result.missingPaths) message += ` ${result.missingPaths} file path${result.missingPaths === 1 ? " is" : "s are"} currently missing on disk.`;
+    showToast(message);
   };
 
   const selectAll = () => setSelectedIds(queue.map(q => q.id));
@@ -2100,6 +2161,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     if (selectedIds.length >= 2) setBatchTags("");
   }, [selectedIds.join("|")]);
 
+  useEffect(() => {
+    if (!saveSetDialog) return;
+    const timer = window.setTimeout(() => {
+      saveSetNameInputRef.current?.focus();
+      saveSetNameInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [saveSetDialog]);
+
   const [batchDescription, setBatchDescription] = useState("");
   const [batchPrivacy, setBatchPrivacy] = useState<Privacy | "">( "" );
   const [batchSafety, setBatchSafety] = useState<"" | 1 | 2 | 3>("");
@@ -2299,22 +2369,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     if (!set) return;
     
     if (selectedIds.length > 1) {
-      // Batch mode: add tags to all selected items
-      const byId = new Map(queue.map(it => [it.id, it]));
-      const changed: QueueItem[] = [];
-      for (const id of selectedIds) {
-        const it = byId.get(id);
-        if (!it) continue;
-        const existing = parseTagsCsv(it.tags);
-        const merged = formatTagsCsv(uniq([...existing, ...set.ids]));
-        const next: QueueItem = { ...it, tags: merged };
-        changed.push(next);
-      }
-      if (changed.length) {
-        setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
-        await updateItems(changed);
-        showToast(`Applied tag set "${setName}" to ${changed.length} item(s).`);
-      }
+      setBatchTags(formatTagsCsv(set.ids));
+      showToast(`Loaded tag set "${setName}" into the Add tags field.`);
     } else if (active) {
       // Single item mode: add tags to current item
       const existing = parseTagsCsv(active.tags);
@@ -2383,8 +2439,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const getCurrentSelectedIdsForSetSave = (kind: "group" | "album" | "tag") => {
     if (kind === "tag") {
-      // For tags, return tag strings from common tags
-      if (selectedIds.length > 1) return commonTags;
+      if (selectedIds.length > 1) return parseTagsCsv(batchTags);
       if (!active) return [] as string[];
       return parseTagsCsv(active.tags);
     }
@@ -2901,7 +2956,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
       {displayTab === "queue" && (
         <div 
-          className="grid"
+          className="grid queue-tab-grid"
           onDragOver={(e) => {
             e.preventDefault();
             e.dataTransfer.dropEffect = "copy";
@@ -2943,10 +2998,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             }
           }}
         >
-          <div className="card">
+          <div className="card queue-pane">
             <h2>Upload Queue (drag by handle ↕)</h2>
-            <div className="content">
-              <div style={{ marginBottom: 10, display: "grid", gap: 8 }}>
+            <div className="content queue-pane-content">
+              <div className="queue-toolbar">
                 <div className="btnrow">
                   <button className="btn primary" onClick={addPhotos} disabled={!cfg?.authed}>Add Photos</button>
                   <button className="btn danger" onClick={removeSelected} disabled={!selectedIds.length}>Remove Selected</button>
@@ -2967,10 +3022,17 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <button className="btn btn-sm" onClick={() => sortQueueByTitle(false)} disabled={queue.length === 0}>Title A-Z</button>
                   <button className="btn btn-sm" onClick={() => sortQueueByTitle(true)} disabled={queue.length === 0}>Title Z-A</button>
                 </div>
-                <div className="btncluster btncluster-secondary" style={{ justifySelf: "start" }}>
-                  <span className="small">Selection</span>
-                  <button className="btn btn-sm" onClick={selectAll} disabled={!queue.length}>Select all</button>
-                  <button className="btn btn-sm" onClick={clearSelection} disabled={!selectedIds.length}>Clear ({selectedIds.length})</button>
+                <div className="queue-toolbar-row-spread">
+                  <div className="btncluster btncluster-secondary" style={{ justifySelf: "start" }}>
+                    <span className="small">Selection</span>
+                    <button className="btn btn-sm" onClick={selectAll} disabled={!queue.length}>Select all</button>
+                    <button className="btn btn-sm" onClick={clearSelection} disabled={!selectedIds.length}>Clear ({selectedIds.length})</button>
+                  </div>
+                  <div className="btncluster btncluster-secondary queue-backup-actions" style={{ justifySelf: "end" }}>
+                    <span className="small">Queue backup</span>
+                    <button className="btn btn-sm" onClick={exportQueueToFile} disabled={!queue.length}>Export</button>
+                    <button className="btn btn-sm" onClick={importQueueFromFile}>Import</button>
+                  </div>
                 </div>
               </div>
 
@@ -3074,8 +3136,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 </div>
               )}
 
-              <div className="queue">
-	                {queue.map((it) => {
+              <div className="queue-scroll-area">
+                <div className="queue">
+                  {queue.map((it) => {
 	                  const srcs = resolveThumbSrc(it, thumbs, flickrUrls);
 	                  const thumb = srcs.thumbSrc;
                   const isSelected = selectedSet.has(it.id);
@@ -3156,6 +3219,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         className={`thumb ${thumb ? "" : "empty"}`}
                         src={thumb || ""}
                         alt=""
+                        onError={() => { void refreshThumbForPath(it.photoPath); }}
                         onClick={(e) => {
                           // Prevent row-click selection toggle when opening preview.
                           e.stopPropagation();
@@ -3229,12 +3293,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     </div>
                   );
                 })}
+                </div>
+                {!queue.length && <div className="small">Queue is empty. Click “Add Photos”.</div>}
+                <div className="small queue-scroll-footnote">
+                  Selection: click • shift-click (range) • cmd/ctrl-click (toggle) • right-click (menu)
+                </div>
               </div>
-              {!queue.length && <div className="small">Queue is empty. Click “Add Photos”.</div>}
-              <div className="small" style={{ marginTop: 10 }}>
-                Selection: click • shift-click (range) • cmd/ctrl-click (toggle) • right-click (menu)
-              </div>
-              <div style={{ height: 180 }} />
             </div>
           </div>
 
@@ -3314,9 +3378,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             </>
           )}
 
-          <div className="card">
+          <div className="card queue-pane">
             <h2>Edit</h2>
-            <div className="content">
+            <div className="content queue-pane-content">
+              <div className="editor-scroll-area">
               {selectedIds.length > 1 && (
                 <>
                   <div className="small" style={{ marginBottom: 12 }}>Batch edit: {selectedIds.length} selected items</div>
@@ -3905,7 +3970,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   })() : null}
                 </>
               )}
-              <div style={{ height: 180 }} />
+              </div>
             </div>
           </div>
 
@@ -4142,6 +4207,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                                     src={srcs.thumbSrc || ""}
                                     alt=""
                                     style={{ width: 34, height: 34, cursor: (fullItem.photoPath || srcs.previewSrc) ? "pointer" : "default" }}
+                                    onError={() => { void refreshThumbForPath(fullItem.photoPath); }}
                                     onClick={() => { void openPreviewForItem(fullItem, srcs.thumbSrc || undefined, srcs.previewSrc || undefined); }}
                                   />
                                   <div>
@@ -4309,10 +4375,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             </select>
             <label className="small">Set name</label>
             <input
+              ref={saveSetNameInputRef}
               className="input"
               style={{ marginTop: 6 }}
               value={saveSetNameInput}
               onChange={(e) => setSaveSetNameInput(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
               placeholder={`e.g., ${saveSetDialog.kind === "group" ? "Fujifilm groups" : saveSetDialog.kind === "album" ? "Black and white albums" : "Street night tags"}`}
             />
             <div className="small" style={{ marginTop: 8 }}>

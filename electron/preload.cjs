@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld("sq", {
   queueReorder: (idsInOrder) => ipcRenderer.invoke("queue:reorder", { idsInOrder }),
   queueClearUploaded: () => ipcRenderer.invoke("queue:clearUploaded"),
   queueFindDuplicates: () => ipcRenderer.invoke("queue:findDuplicates"),
+  queueExportToFile: () => ipcRenderer.invoke("queue:exportToFile"),
+  queueImportFromFile: (mode) => ipcRenderer.invoke("queue:importFromFile", { mode }),
 
   geoSearch: (query) => ipcRenderer.invoke("geo:search", { query }),
 
@@ -36,6 +38,7 @@ contextBridge.exposeInMainWorld("sq", {
 
   pickPhotos: () => ipcRenderer.invoke("ui:pickPhotos"),
   showStartSchedulerDialog: () => ipcRenderer.invoke("ui:show-start-scheduler-dialog"),
+  showQueueImportModeDialog: () => ipcRenderer.invoke("ui:show-queue-import-mode-dialog"),
   getPathForFile: (file) => {
     // Use Electron's webUtils to safely get the file system path from a File object
     try {

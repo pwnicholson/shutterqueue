@@ -1,4 +1,4 @@
-# ShutterQueue — A paced uploader for Flickr (v0.9.3a)
+# ShutterQueue — A paced uploader for Flickr (v0.9.3b)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
@@ -70,6 +70,21 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 
 
 
+
+## New to 0.9.3b (since 0.9.3a)
+
+- **Queue backup and restore**
+  - Export the full queue to JSON and import it later
+  - Choose whether imports replace the current queue or add to it
+  - Duplicate detection runs right after import so collisions are flagged immediately
+- **Queue tab layout improvements**
+  - Queue controls stay fixed while the queue list scrolls in its own pane
+  - The edit panel now scrolls independently from the queue list
+- **Batch tag workflow fixes**
+  - Saved tag sets now load into the batch add-tags field as expected
+  - Saving a tag set in multi-select now uses the tags currently typed into that field
+- **Thumbnail recovery after import**
+  - Clearing the queue and importing a backup now correctly regenerates missing or broken thumbnails
 
 ## New to 0.9.3a (since 0.9.3)
 

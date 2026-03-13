@@ -28,6 +28,8 @@ declare global {
       queueReorder: (idsInOrder: string[]) => Promise<QueueItem[]>;
       queueClearUploaded: () => Promise<QueueItem[]>;
       queueFindDuplicates: () => Promise<Array<{ hash: string; members: Array<{ id: string; photoPath: string; title?: string }>; removeCandidateIds: string[] }>>;
+      queueExportToFile: () => Promise<{ ok: boolean; canceled?: boolean; error?: string; filePath?: string; itemCount?: number }>;
+      queueImportFromFile: (mode: "append" | "replace") => Promise<{ ok: boolean; canceled?: boolean; error?: string; filePath?: string; itemCount?: number; skipped?: number; missingPaths?: number; previousCount?: number; importedCount?: number; mode?: "append" | "replace"; queue?: QueueItem[] }>;
 
       geoSearch: (query: string) => Promise<{ 
         ok: boolean; 
@@ -47,6 +49,7 @@ declare global {
       logClear: () => Promise<any>;
       schedulerStart: (intervalHours: number, uploadImmediately: boolean, settings: any) => Promise<any>;
       showStartSchedulerDialog: () => Promise<"now" | "delay" | "cancel">;
+      showQueueImportModeDialog: () => Promise<"replace" | "append" | "cancel">;
       appVersion: () => Promise<string>;
       getFlickrPhotoUrls: (photoId: string) => Promise<{thumbUrl: string; previewUrl: string;}>
       schedulerStop: () => Promise<any>;

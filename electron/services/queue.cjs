@@ -6,6 +6,9 @@ const crypto = require("crypto");
 const ROOT = path.join(os.homedir(), ".shutterqueue");
 const QUEUE_PATH = path.join(ROOT, "queue.json");
 const duplicateHashCacheByItemId = new Map();
+const VALID_PRIVACY = new Set(["public", "friends", "family", "friends_family", "private"]);
+const VALID_GEO_PRIVACY = new Set(["public", "contacts", "friends", "family", "friends_family", "private"]);
+const VALID_STATUS = new Set(["pending", "uploading", "done", "done_warn", "failed"]);
 
 function ensureRoot() {
   if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT, { recursive: true });
@@ -71,6 +74,63 @@ function addPaths(paths) {
     });
   }
   return saveQueue(q);
+}
+
+function normalizeImportedQueue(input) {
+  const rawItems = Array.isArray(input)
+    ? input
+    : (input && typeof input === "object" && Array.isArray(input.queue) ? input.queue : []);
+
+  const seenIds = new Set();
+  const items = [];
+  let skipped = 0;
+
+  for (const raw of rawItems) {
+    if (!raw || typeof raw !== "object") {
+      skipped += 1;
+      continue;
+    }
+
+    const photoPath = String(raw.photoPath || "").trim();
+    if (!photoPath) {
+      skipped += 1;
+      continue;
+    }
+
+    let id = String(raw.id || "").trim();
+    if (!id || seenIds.has(id)) id = makeId();
+    seenIds.add(id);
+
+    const safetyLevel = Number(raw.safetyLevel);
+    const normalized = {
+      id,
+      photoPath,
+      title: String(raw.title || ""),
+      description: String(raw.description || ""),
+      tags: String(raw.tags || ""),
+      groupIds: Array.isArray(raw.groupIds) ? raw.groupIds.map((v) => String(v)).filter(Boolean) : [],
+      albumIds: Array.isArray(raw.albumIds) ? raw.albumIds.map((v) => String(v)).filter(Boolean) : [],
+      createAlbums: Array.isArray(raw.createAlbums) ? raw.createAlbums.map((v) => String(v)).filter(Boolean) : [],
+      privacy: VALID_PRIVACY.has(String(raw.privacy || "")) ? String(raw.privacy) : "private",
+      safetyLevel: safetyLevel === 2 || safetyLevel === 3 ? safetyLevel : 1,
+      status: VALID_STATUS.has(String(raw.status || "")) ? String(raw.status) : "pending",
+      lastError: String(raw.lastError || ""),
+      uploadedAt: String(raw.uploadedAt || ""),
+      photoId: String(raw.photoId || ""),
+      scheduledUploadAt: String(raw.scheduledUploadAt || ""),
+    };
+
+    if (Number.isFinite(Number(raw.latitude))) normalized.latitude = Number(raw.latitude);
+    if (Number.isFinite(Number(raw.longitude))) normalized.longitude = Number(raw.longitude);
+    if (Number.isFinite(Number(raw.accuracy))) normalized.accuracy = Number(raw.accuracy);
+    if (VALID_GEO_PRIVACY.has(String(raw.geoPrivacy || ""))) normalized.geoPrivacy = String(raw.geoPrivacy);
+    if (raw.locationDisplayName != null && String(raw.locationDisplayName).trim()) normalized.locationDisplayName = String(raw.locationDisplayName);
+    if (raw.groupAddStates && typeof raw.groupAddStates === "object" && !Array.isArray(raw.groupAddStates)) normalized.groupAddStates = raw.groupAddStates;
+
+    items.push(normalized);
+  }
+
+  return { items, skipped };
 }
 
 function removeIds(ids) {
@@ -173,4 +233,5 @@ function clearUploaded() {
 
 module.exports.clearUploaded = clearUploaded;
 module.exports.findDuplicateGroups = findDuplicateGroups;
+module.exports.normalizeImportedQueue = normalizeImportedQueue;
 
