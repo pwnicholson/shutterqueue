@@ -18,7 +18,8 @@ declare global {
       fetchGroupRefreshStatus: () => Promise<{ inProgress: boolean; total: number; completed: number; startedAt: number }>;
       fetchAlbums: () => Promise<Album[]>;
 
-      getThumbDataUrl: (photoPath: string) => Promise<string | null>;
+      getThumbSrc: (photoPath: string) => Promise<string | null>;
+      getPreviewSrc: (photoPath: string, maxEdge?: number) => Promise<string | null>;
 
       queueGet: () => Promise<QueueItem[]>;
       queueAdd: (paths: string[]) => Promise<QueueItem[]>;

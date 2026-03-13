@@ -258,6 +258,26 @@ async function addPhotoToAlbum({ apiKey, apiSecret, token, tokenSecret, photoId,
   });
 }
 
+async function createAlbum({ apiKey, apiSecret, token, tokenSecret, title, primaryPhotoId }) {
+  const j = await flickrRestCall({
+    apiKey,
+    apiSecret,
+    token,
+    tokenSecret,
+    methodName: "flickr.photosets.create",
+    params: {
+      title: String(title || ""),
+      primary_photo_id: String(primaryPhotoId || ""),
+    },
+  });
+
+  const id = String(j?.photoset?.id || "");
+  return {
+    id,
+    title: decodeHtmlEntities(j?.photoset?.title?._content || j?.photoset?.title || title || ""),
+  };
+}
+
 async function addPhotoToGroup({ apiKey, apiSecret, token, tokenSecret, photoId, groupId }) {
   return flickrRestCall({
     apiKey, apiSecret, token, tokenSecret,
@@ -480,6 +500,7 @@ module.exports = {
   getAccessToken,
   uploadPhoto,
   addPhotoToAlbum,
+  createAlbum,
   addPhotoToGroup,
   listGroups,
   getGroupInfo,

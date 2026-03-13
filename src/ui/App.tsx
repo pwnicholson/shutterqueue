@@ -6,6 +6,7 @@ type SavedIdSet = { name: string; ids: string[] };
 type DuplicateMember = { id: string; photoPath: string; title?: string };
 type DuplicateGroup = { hash: string; members: DuplicateMember[]; removeCandidateIds: string[] };
 type LogFilterMode = "all" | "activity" | "warn_error" | "api";
+type AlbumEditorEntry = Album & { isPendingNew?: boolean; pendingTitle?: string; state?: "all" | "some" | "none" };
 
 const PRIVACY_LABEL: Record<Privacy, string> = {
   public: "Public",
@@ -48,6 +49,44 @@ function uniq<T>(arr: T[]) {
   return Array.from(new Set(arr));
 }
 
+const NEW_ALBUM_ID_PREFIX = "__new_album__:";
+
+function pendingAlbumIdFromTitle(title: string) {
+  return `${NEW_ALBUM_ID_PREFIX}${String(title || "").trim().toLowerCase()}`;
+}
+
+function isPendingNewAlbumId(id: string) {
+  return String(id || "").startsWith(NEW_ALBUM_ID_PREFIX);
+}
+
+function pendingAlbumTitleFromId(id: string) {
+  return String(id || "").slice(NEW_ALBUM_ID_PREFIX.length);
+}
+
+function hasCreateAlbumName(names: string[] | undefined, target: string) {
+  const t = String(target || "").trim().toLowerCase();
+  if (!t) return false;
+  return (names || []).some((n) => String(n || "").trim().toLowerCase() === t);
+}
+
+function mergeCreateAlbumNames(existing: string[] | undefined, incoming: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const n of [...(existing || []), ...incoming]) {
+    const trimmed = String(n || "").trim();
+    if (!trimmed) continue;
+    const k = trimmed.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function removeCreateAlbumNames(existing: string[] | undefined, removeLcSet: Set<string>) {
+  return (existing || []).filter((n) => !removeLcSet.has(String(n || "").trim().toLowerCase()));
+}
+
 function fileNameFromPath(p?: string) {
   try {
     if (!p) return "";
@@ -60,7 +99,7 @@ function fileNameFromPath(p?: string) {
 
 function resolveThumbSrc(item: any, thumbs: Record<string, string | null | undefined>, flickrUrls: Record<string, {thumbUrl:string; previewUrl:string} | undefined>) {
   const local = item?.photoPath ? thumbs[item.photoPath] : null;
-  if (local) return { thumbSrc: local, previewSrc: local };
+  if (local) return { thumbSrc: local, previewSrc: "" };
   const pid = item?.photoId;
   const remote = pid ? flickrUrls[pid] : undefined;
   if (remote?.thumbUrl) return { thumbSrc: remote.thumbUrl, previewSrc: remote.previewUrl || remote.thumbUrl };
@@ -356,7 +395,9 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const [flickrUrls, setFlickrUrls] = useState<Record<string, { thumbUrl: string; previewUrl: string }>>({});
 
   // Full-window image preview overlay.
-  const [preview, setPreview] = useState<{ src: string; title?: string } | null>(null);
+  const [preview, setPreview] = useState<{ src: string; title?: string; loading?: boolean } | null>(null);
+  const previewCacheRef = useRef<Record<string, string>>({});
+  const previewRequestIdRef = useRef(0);
 
   // Context menu for queue items
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; itemId: string } | null>(null);
@@ -509,13 +550,55 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const sortedFilteredAlbums = useMemo(() => {
-    if (!selectedIds.length) return filteredAlbums;
-    
-    const withState = filteredAlbums.map(a => {
+    const titleFilter = albumsFilter.trim().toLowerCase();
+    const existingTitleSet = new Set(albums.map((a) => String(a.title || "").trim().toLowerCase()).filter(Boolean));
+
+    const pendingTitleMap = new Map<string, string>();
+    if (selectedIds.length > 1) {
+      for (const sid of selectedIds) {
+        const it = queue.find((x) => x.id === sid);
+        for (const name of it?.createAlbums || []) {
+          const raw = String(name || "").trim();
+          if (!raw) continue;
+          const key = raw.toLowerCase();
+          if (existingTitleSet.has(key)) continue;
+          if (!pendingTitleMap.has(key)) pendingTitleMap.set(key, raw);
+        }
+      }
+    } else if (active) {
+      for (const name of active.createAlbums || []) {
+        const raw = String(name || "").trim();
+        if (!raw) continue;
+        const key = raw.toLowerCase();
+        if (existingTitleSet.has(key)) continue;
+        if (!pendingTitleMap.has(key)) pendingTitleMap.set(key, raw);
+      }
+    }
+
+    const pendingRows: AlbumEditorEntry[] = Array.from(pendingTitleMap.values())
+      .filter((title) => !titleFilter || title.toLowerCase().includes(titleFilter))
+      .map((title) => ({
+        id: pendingAlbumIdFromTitle(title),
+        title,
+        isPendingNew: true,
+        pendingTitle: title,
+      }));
+
+    const baseRows: AlbumEditorEntry[] = filteredAlbums.map((a) => ({ ...a, isPendingNew: false }));
+    const rows: AlbumEditorEntry[] = [...pendingRows, ...baseRows];
+
+    if (!selectedIds.length) return rows;
+
+    const withState = rows.map(a => {
       let on = 0;
       for (const sid of selectedIds) {
         const it = queue.find(x => x.id === sid);
-        if (it?.albumIds?.includes(a.id)) on += 1;
+        if (!it) continue;
+        if (a.isPendingNew) {
+          if (hasCreateAlbumName(it.createAlbums, a.pendingTitle || a.title)) on += 1;
+        } else if (it.albumIds?.includes(a.id)) {
+          on += 1;
+        }
       }
       const state = on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
       return { ...a, state };
@@ -525,11 +608,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       const order = { all: 0, some: 1, none: 2 };
       const stateCompare = order[a.state] - order[b.state];
       if (stateCompare !== 0) return stateCompare;
+      if (a.isPendingNew !== b.isPendingNew) return a.isPendingNew ? -1 : 1;
       return (a.title || "").localeCompare(b.title || "");
     });
     
     return withState;
-  }, [filteredAlbums, selectedIds]);
+  }, [filteredAlbums, selectedIds, albumsFilter, albums, queue, active]);
 
   const selectedItems = useMemo(
     () => queue.filter(it => selectedSet.has(it.id)),
@@ -929,6 +1013,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
     const yieldToBrowser = () => new Promise<void>(resolve => window.setTimeout(resolve, 0));
 
+    const hw = Math.max(2, Number((globalThis as any)?.navigator?.hardwareConcurrency || 8));
+    const thumbBatchSize = Math.min(32, Math.max(10, Math.floor(hw * 1.5)));
+    const flickrBatchSize = Math.min(16, Math.max(6, Math.floor(hw)));
+    const initialThumbCount = Math.min(queue.length, Math.max(24, thumbBatchSize * 2));
+
     const loadThumbBatch = async (paths: string[]) => {
       const batch = paths.filter(photoPath => {
         if (!photoPath) return false;
@@ -941,7 +1030,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       batch.forEach(photoPath => thumbLoadsInFlightRef.current.add(photoPath));
       const results = await Promise.all(batch.map(async (photoPath) => {
         try {
-          return [photoPath, await window.sq.getThumbDataUrl(photoPath)] as const;
+          return [photoPath, await window.sq.getThumbSrc(photoPath)] as const;
         } finally {
           thumbLoadsInFlightRef.current.delete(photoPath);
         }
@@ -955,7 +1044,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           ...Object.fromEntries(nextEntries),
         }));
       }
-      await yieldToBrowser();
     };
 
     const loadFlickrBatch = async (items: QueueItem[]) => {
@@ -995,23 +1083,44 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     };
 
     void (async () => {
-      const firstPassThumbs = queue.slice(0, 24).map(it => it.photoPath);
-      await loadThumbBatch(firstPassThumbs);
-
-      for (let start = 24; start < queue.length && !cancelled; start += 12) {
-        await loadThumbBatch(queue.slice(start, start + 12).map(it => it.photoPath));
+      const preferred = new Set<string>();
+      if (activeId) {
+        const activeItem = queue.find(it => it.id === activeId);
+        if (activeItem?.photoPath) preferred.add(activeItem.photoPath);
+      }
+      for (const sid of selectedIds) {
+        const sel = queue.find(it => it.id === sid);
+        if (sel?.photoPath) preferred.add(sel.photoPath);
+      }
+      for (const it of queue.slice(0, initialThumbCount)) {
+        if (it.photoPath) preferred.add(it.photoPath);
       }
 
-      await loadFlickrBatch(queue.slice(0, 24));
-      for (let start = 24; start < queue.length && !cancelled; start += 8) {
-        await loadFlickrBatch(queue.slice(start, start + 8));
+      const preferredPaths = Array.from(preferred);
+      if (preferredPaths.length) {
+        await loadThumbBatch(preferredPaths);
+        await yieldToBrowser();
+      }
+
+      const remaining = queue.map(it => it.photoPath).filter(Boolean).filter(p => !preferred.has(p));
+      for (let start = 0; start < remaining.length && !cancelled; start += thumbBatchSize) {
+        await loadThumbBatch(remaining.slice(start, start + thumbBatchSize));
+        if ((start / thumbBatchSize) % 2 === 1) await yieldToBrowser();
+      }
+
+      const firstFlickr = queue.slice(0, initialThumbCount);
+      await loadFlickrBatch(firstFlickr);
+      await yieldToBrowser();
+      for (let start = initialThumbCount; start < queue.length && !cancelled; start += flickrBatchSize) {
+        await loadFlickrBatch(queue.slice(start, start + flickrBatchSize));
+        if ((start / flickrBatchSize) % 2 === 1) await yieldToBrowser();
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [queue, displayTab]);
+  }, [queue, displayTab, activeId, selectedIds]);
 
   // Close dropdown menus when clicking outside them
   useEffect(() => {
@@ -1634,6 +1743,48 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     updateItems([updated]);
   };
 
+  const openPreviewForItem = useCallback(async (item: QueueItem, optimisticSrc?: string, fallbackPreviewSrc?: string) => {
+    const title = item.title || fileNameFromPath(item.photoPath);
+    const requestId = ++previewRequestIdRef.current;
+    const cacheKey = String(item.photoPath || "");
+
+    if (cacheKey && previewCacheRef.current[cacheKey]) {
+      setPreview({
+        src: previewCacheRef.current[cacheKey],
+        title,
+        loading: false,
+      });
+      return;
+    }
+
+    if (optimisticSrc) {
+      setPreview({ src: optimisticSrc, title, loading: true });
+    } else if (fallbackPreviewSrc) {
+      setPreview({ src: fallbackPreviewSrc, title, loading: true });
+    }
+
+    if (item.photoPath) {
+      try {
+        const fullSrc = await window.sq.getPreviewSrc(item.photoPath, 2560);
+        if (requestId !== previewRequestIdRef.current) return;
+        if (fullSrc) {
+          if (cacheKey) previewCacheRef.current[cacheKey] = fullSrc;
+          setPreview({ src: fullSrc, title, loading: false });
+          return;
+        }
+      } catch {
+        // Ignore and fall back to remote preview URL.
+      }
+    }
+
+    if (requestId !== previewRequestIdRef.current) return;
+    if (fallbackPreviewSrc) {
+      setPreview({ src: fallbackPreviewSrc, title, loading: false });
+    } else if (optimisticSrc) {
+      setPreview({ src: optimisticSrc, title, loading: false });
+    }
+  }, []);
+
   const searchBatchLocation = async () => {
     const query = batchLocationQuery.trim();
     if (!query) {
@@ -1884,6 +2035,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const [batchTitle, setBatchTitle] = useState("");
   const [batchTags, setBatchTags] = useState("");
+  const [batchTitleWasMixed, setBatchTitleWasMixed] = useState(false);
+  const [batchDescriptionWasMixed, setBatchDescriptionWasMixed] = useState(false);
+  const [batchTitleDirty, setBatchTitleDirty] = useState(false);
+  const [batchDescriptionDirty, setBatchDescriptionDirty] = useState(false);
+  const batchTitleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const batchDescriptionDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [uploadByteProgress, setUploadByteProgress] = useState<number | null>(null);
 
@@ -1959,31 +2116,161 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   }>>([]);
   const [batchLocationSearching, setBatchLocationSearching] = useState(false);
 
-  const applyBatch = async () => {
-    if (!selectedIds.length) return;
+  useEffect(() => {
+    if (selectedIds.length < 2) return;
+    const selected = queue.filter((it) => selectedIds.includes(it.id));
+    if (selected.length < 2) return;
+
+    const first = selected[0];
+    const sameTitle = selected.every((it) => it.title === first.title);
+    const sameDescription = selected.every((it) => it.description === first.description);
+    const samePrivacy = selected.every((it) => it.privacy === first.privacy);
+    const sameSafety = selected.every((it) => it.safetyLevel === first.safetyLevel);
+
+    setBatchTitle(sameTitle ? first.title : "");
+    setBatchDescription(sameDescription ? first.description : "");
+    setBatchPrivacy(samePrivacy ? first.privacy : "");
+    setBatchSafety(sameSafety ? first.safetyLevel : "");
+    setBatchTitleWasMixed(!sameTitle);
+    setBatchDescriptionWasMixed(!sameDescription);
+    setBatchTitleDirty(false);
+    setBatchDescriptionDirty(false);
+    setBatchTags("");
+    setBatchCreateAlbums("");
+  }, [selectedIds.join("|")]);
+
+  useEffect(() => {
+    return () => {
+      if (batchTitleDebounceRef.current) clearTimeout(batchTitleDebounceRef.current);
+      if (batchDescriptionDebounceRef.current) clearTimeout(batchDescriptionDebounceRef.current);
+    };
+  }, []);
+
+  const applyBatchTitleNow = async (value: string) => {
+    if (selectedIds.length < 2) return;
     const byId = new Map(queue.map(it => [it.id, it]));
     const changed: QueueItem[] = [];
     for (const id of selectedIds) {
       const it = byId.get(id);
       if (!it) continue;
-      const next: QueueItem = { ...it };
-      if (batchTitle.trim()) next.title = batchTitle.trim();
-      if (batchTags.trim()) {
-        const existing = parseTagsCsv(next.tags);
-        const add = parseTagsCsv(batchTags);
-        const merged = formatTagsCsv(uniq([...existing, ...add]));
-        next.tags = merged;
-      }
-      if (batchDescription.trim()) next.description = batchDescription;
-      if (batchCreateAlbums.trim()) next.createAlbums = batchCreateAlbums.split(",").map(s => s.trim()).filter(Boolean);
-      if (batchPrivacy) next.privacy = batchPrivacy as Privacy;
-      if (batchSafety) next.safetyLevel = batchSafety as 1 | 2 | 3;
+      if (it.title === value) continue;
+      const next: QueueItem = { ...it, title: value };
       changed.push(next);
     }
     if (!changed.length) return;
     setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
     await updateItems(changed);
-    showToast(`Applied to ${changed.length} item(s).`);
+  };
+
+  const applyBatchDescriptionNow = async (value: string) => {
+    if (selectedIds.length < 2) return;
+    const byId = new Map(queue.map(it => [it.id, it]));
+    const changed: QueueItem[] = [];
+    for (const id of selectedIds) {
+      const it = byId.get(id);
+      if (!it) continue;
+      if (it.description === value) continue;
+      const next: QueueItem = { ...it, description: value };
+      changed.push(next);
+    }
+    if (!changed.length) return;
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    await updateItems(changed);
+  };
+
+  useEffect(() => {
+    if (selectedIds.length < 2) return;
+    if (!batchTitleDirty) return;
+    if (batchTitleDebounceRef.current) clearTimeout(batchTitleDebounceRef.current);
+    batchTitleDebounceRef.current = setTimeout(() => {
+      void applyBatchTitleNow(batchTitle);
+    }, 220);
+    return () => {
+      if (batchTitleDebounceRef.current) clearTimeout(batchTitleDebounceRef.current);
+    };
+  }, [batchTitle, batchTitleDirty, selectedIds.join("|")]);
+
+  useEffect(() => {
+    if (selectedIds.length < 2) return;
+    if (!batchDescriptionDirty) return;
+    if (batchDescriptionDebounceRef.current) clearTimeout(batchDescriptionDebounceRef.current);
+    batchDescriptionDebounceRef.current = setTimeout(() => {
+      void applyBatchDescriptionNow(batchDescription);
+    }, 260);
+    return () => {
+      if (batchDescriptionDebounceRef.current) clearTimeout(batchDescriptionDebounceRef.current);
+    };
+  }, [batchDescription, batchDescriptionDirty, selectedIds.join("|")]);
+
+  const applyBatchPrivacyNow = async (value: Privacy) => {
+    if (selectedIds.length < 2) return;
+    const byId = new Map(queue.map(it => [it.id, it]));
+    const changed: QueueItem[] = [];
+    for (const id of selectedIds) {
+      const it = byId.get(id);
+      if (!it) continue;
+      if (it.privacy === value) continue;
+      changed.push({ ...it, privacy: value });
+    }
+    if (!changed.length) return;
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    await updateItems(changed);
+  };
+
+  const applyBatchSafetyNow = async (value: 1 | 2 | 3) => {
+    if (selectedIds.length < 2) return;
+    const byId = new Map(queue.map(it => [it.id, it]));
+    const changed: QueueItem[] = [];
+    for (const id of selectedIds) {
+      const it = byId.get(id);
+      if (!it) continue;
+      if (it.safetyLevel === value) continue;
+      changed.push({ ...it, safetyLevel: value });
+    }
+    if (!changed.length) return;
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    await updateItems(changed);
+  };
+
+  const applyBatchTags = async () => {
+    if (selectedIds.length < 2 || !batchTags.trim()) return;
+    const byId = new Map(queue.map(it => [it.id, it]));
+    const changed: QueueItem[] = [];
+    const add = parseTagsCsv(batchTags);
+    for (const id of selectedIds) {
+      const it = byId.get(id);
+      if (!it) continue;
+      const existing = parseTagsCsv(it.tags);
+      const merged = formatTagsCsv(uniq([...existing, ...add]));
+      if (merged === it.tags) continue;
+      changed.push({ ...it, tags: merged });
+    }
+    if (!changed.length) return;
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    await updateItems(changed);
+    setBatchTags("");
+    showToast(`Added tags to ${changed.length} item(s).`);
+  };
+
+  const applyBatchCreateAlbums = async () => {
+    if (selectedIds.length < 2 || !batchCreateAlbums.trim()) return;
+    const names = batchCreateAlbums.split(",").map(s => s.trim()).filter(Boolean);
+    if (!names.length) return;
+    const byId = new Map(queue.map(it => [it.id, it]));
+    const changed: QueueItem[] = [];
+    for (const id of selectedIds) {
+      const it = byId.get(id);
+      if (!it) continue;
+      const nextCreate = mergeCreateAlbumNames(it.createAlbums, names);
+      const same = nextCreate.length === (it.createAlbums || []).length && nextCreate.every((n, i) => n === (it.createAlbums || [])[i]);
+      if (same) continue;
+      changed.push({ ...it, createAlbums: nextCreate });
+    }
+    if (!changed.length) return;
+    setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
+    await updateItems(changed);
+    setBatchCreateAlbums("");
+    showToast(`Added album creation names to ${changed.length} item(s).`);
 
   };
 
@@ -2046,11 +2333,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const triState = (kind: "group" | "album", id: string) => {
     if (!selectedIds.length) return "none" as const;
+    const pendingAlbumTitle = kind === "album" && isPendingNewAlbumId(id) ? pendingAlbumTitleFromId(id) : "";
     let on = 0;
     for (const sid of selectedIds) {
       const it = queue.find(x => x.id === sid);
-      const list = kind === "group" ? it?.groupIds : it?.albumIds;
-      if (list?.includes(id)) on += 1;
+      if (kind === "album" && pendingAlbumTitle) {
+        if (hasCreateAlbumName(it?.createAlbums, pendingAlbumTitle)) on += 1;
+      } else {
+        const list = kind === "group" ? it?.groupIds : it?.albumIds;
+        if (list?.includes(id)) on += 1;
+      }
     }
     if (on === 0) return "none" as const;
     if (on === selectedIds.length) return "all" as const;
@@ -2059,6 +2351,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const setForSelected = async (kind: "group" | "album", id: string, next: "all" | "none") => {
     if (!selectedIds.length) return;
+    const pendingAlbumTitle = kind === "album" && isPendingNewAlbumId(id) ? pendingAlbumTitleFromId(id) : "";
     const changed: QueueItem[] = [];
     for (const sid of selectedIds) {
       const it = queue.find(x => x.id === sid);
@@ -2067,6 +2360,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         let updated: QueueItem = { ...it, groupIds: toggleIds(it.groupIds || [], id, next === "all" ? "add" : "remove") };
         if (next === "none") updated = removeGroupRetryAndSelection(updated, id);
         changed.push(updated);
+      } else if (pendingAlbumTitle) {
+        if (next === "all") {
+          changed.push({ ...it, createAlbums: mergeCreateAlbumNames(it.createAlbums, [pendingAlbumTitle]) });
+        } else {
+          changed.push({ ...it, createAlbums: removeCreateAlbumNames(it.createAlbums, new Set([pendingAlbumTitle.toLowerCase()])) });
+        }
       }
       else changed.push({ ...it, albumIds: toggleIds(it.albumIds || [], id, next === "all" ? "add" : "remove") });
     }
@@ -2220,8 +2519,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   };
 
   const clearFilteredSelections = async (kind: "group" | "album") => {
-    const idsToRemove = new Set((kind === "group" ? sortedFilteredGroups : sortedFilteredAlbums).map(x => String(x.id)));
-    if (!idsToRemove.size) {
+    const albumRows = kind === "album" ? sortedFilteredAlbums : [];
+    const idsToRemove = new Set((kind === "group" ? sortedFilteredGroups : albumRows.filter(x => !x.isPendingNew)).map(x => String(x.id)));
+    const pendingAlbumTitlesToRemoveLc = new Set(
+      albumRows
+        .filter((x) => x.isPendingNew)
+        .map((x) => String(x.pendingTitle || x.title || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    if (!idsToRemove.size && !pendingAlbumTitlesToRemoveLc.size) {
       showToast(`No filtered ${kind === "group" ? "groups" : "albums"} to clear.`);
       return;
     }
@@ -2236,7 +2542,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           for (const gid of idsToRemove) updated = removeGroupRetryAndSelection(updated, gid);
           changed.push(updated);
         } else {
-          changed.push({ ...it, albumIds: (it.albumIds || []).filter(id => !idsToRemove.has(String(id))) });
+          changed.push({
+            ...it,
+            albumIds: (it.albumIds || []).filter(id => !idsToRemove.has(String(id))),
+            createAlbums: removeCreateAlbumNames(it.createAlbums, pendingAlbumTitlesToRemoveLc),
+          });
         }
       }
       if (!changed.length) return;
@@ -2253,7 +2563,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       setQueue(prev => prev.map(it => (it.id === updated.id ? updated : it)));
       await updateItems([updated]);
     } else {
-      const updated: QueueItem = { ...active, albumIds: (active.albumIds || []).filter(id => !idsToRemove.has(String(id))) };
+      const updated: QueueItem = {
+        ...active,
+        albumIds: (active.albumIds || []).filter(id => !idsToRemove.has(String(id))),
+        createAlbums: removeCreateAlbumNames(active.createAlbums, pendingAlbumTitlesToRemoveLc),
+      };
       setQueue(prev => prev.map(it => (it.id === updated.id ? updated : it)));
       await updateItems([updated]);
     }
@@ -2261,8 +2575,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   };
 
   const selectAllFilteredForCurrentSelection = async (kind: "group" | "album") => {
-    const idsToAdd = (kind === "group" ? sortedFilteredGroups : sortedFilteredAlbums).map(x => String(x.id));
-    if (!idsToAdd.length) {
+    const albumRows = kind === "album" ? sortedFilteredAlbums : [];
+    const idsToAdd = (kind === "group" ? sortedFilteredGroups : albumRows.filter(x => !x.isPendingNew)).map(x => String(x.id));
+    const pendingAlbumTitlesToAdd = albumRows
+      .filter((x) => x.isPendingNew)
+      .map((x) => String(x.pendingTitle || x.title || "").trim())
+      .filter(Boolean);
+    if (!idsToAdd.length && !pendingAlbumTitlesToAdd.length) {
       showToast(`No filtered ${kind === "group" ? "groups" : "albums"} to select.`);
       return;
     }
@@ -2273,7 +2592,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       for (const it of queue) {
         if (!selectedIdSet.has(it.id)) continue;
         if (kind === "group") changed.push({ ...it, groupIds: uniq([...(it.groupIds || []), ...idsToAdd]) });
-        else changed.push({ ...it, albumIds: uniq([...(it.albumIds || []), ...idsToAdd]) });
+        else changed.push({
+          ...it,
+          albumIds: uniq([...(it.albumIds || []), ...idsToAdd]),
+          createAlbums: mergeCreateAlbumNames(it.createAlbums, pendingAlbumTitlesToAdd),
+        });
       }
       if (!changed.length) return;
       setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
@@ -2284,7 +2607,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
     if (!active) return;
     if (kind === "group") await updateActive({ groupIds: uniq([...(active.groupIds || []), ...idsToAdd]) });
-    else await updateActive({ albumIds: uniq([...(active.albumIds || []), ...idsToAdd]) });
+    else await updateActive({
+      albumIds: uniq([...(active.albumIds || []), ...idsToAdd]),
+      createAlbums: mergeCreateAlbumNames(active.createAlbums, pendingAlbumTitlesToAdd),
+    });
     showToast(`Selected all filtered ${kind === "group" ? "groups" : "albums"}.`);
   };
 
@@ -2833,13 +3159,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         onClick={(e) => {
                           // Prevent row-click selection toggle when opening preview.
                           e.stopPropagation();
-                          if (!srcs.previewSrc) return;
-                          setPreview({
-                            src: srcs.previewSrc,
-                            title: it.title || fileNameFromPath(it.photoPath),
-                          });
+                          void openPreviewForItem(it, thumb || undefined, srcs.previewSrc || undefined);
                         }}
-                        style={{ cursor: srcs.previewSrc ? "pointer" : "default" }}
+                        style={{ cursor: (it.photoPath || srcs.previewSrc) ? "pointer" : "default" }}
                       />
                       <div className="qmid">
                         <div className="qtitle">{it.title || "(untitled)"}</div>
@@ -3000,11 +3322,29 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div className="small" style={{ marginBottom: 12 }}>Batch edit: {selectedIds.length} selected items</div>
 
                   <label className="small">Title</label>
-                  <input className="input" value={batchTitle} onChange={(e) => setBatchTitle(e.target.value)} placeholder="Leave blank to keep existing" />
+                  <input
+                    className="input"
+                    value={batchTitle}
+                    onChange={(e) => {
+                      setBatchTitleWasMixed(false);
+                      setBatchTitleDirty(true);
+                      setBatchTitle(e.target.value);
+                    }}
+                    placeholder={batchTitleWasMixed ? "Mixed values" : "Title"}
+                  />
 
                   <div className="section-divider" />
                   <label className="small">Description</label>
-                  <textarea className="textarea" value={batchDescription} onChange={(e) => setBatchDescription(e.target.value)} placeholder="Leave blank to keep existing" />
+                  <textarea
+                    className="textarea"
+                    value={batchDescription}
+                    onChange={(e) => {
+                      setBatchDescriptionWasMixed(false);
+                      setBatchDescriptionDirty(true);
+                      setBatchDescription(e.target.value);
+                    }}
+                    placeholder={batchDescriptionWasMixed ? "Mixed values" : "Description"}
+                  />
 
                   <div className="section-divider" />
                   <label className="small">Add tags (comma-separated)</label>
@@ -3028,7 +3368,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     </div>
                   )}
 
-                  <input className="input" value={batchTags} onChange={(e) => setBatchTags(e.target.value)} placeholder="e.g., travel, chicago, black and white" />
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input className="input" value={batchTags} onChange={(e) => setBatchTags(e.target.value)} placeholder="e.g., travel, chicago, black and white" style={{ flex: 1 }} />
+                    <button className="btn btn-sm" onClick={applyBatchTags} disabled={!batchTags.trim()}>Add Tags</button>
+                  </div>
                   <div className="small" style={{ marginTop: 6 }}>
                     New tags will be <b>added</b> to each selected item (existing tags are kept).
                   </div>
@@ -3043,8 +3386,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div className="split">
                     <div>
                       <label className="small">Privacy</label>
-                      <select className="input" value={batchPrivacy} onChange={(e) => setBatchPrivacy(e.target.value as any)}>
-                        <option value="">(leave unchanged)</option>
+                      <select
+                        className="input"
+                        value={batchPrivacy}
+                        onChange={(e) => {
+                          const value = e.target.value as Privacy | "";
+                          setBatchPrivacy(value);
+                          if (value) void applyBatchPrivacyNow(value);
+                        }}
+                      >
+                        <option value="">(mixed values)</option>
                         <option value="public">Public</option>
                         <option value="friends">Friends only</option>
                         <option value="family">Family only</option>
@@ -3054,21 +3405,23 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     </div>
                     <div>
                       <label className="small">Safety level</label>
-                      <select className="input" value={batchSafety} onChange={(e) => {
-                        const v = e.target.value;
-                        setBatchSafety((v === "" ? "" : (Number(v) as any)));
-                      }}>
-                        <option value="">(leave unchanged)</option>
+                      <select
+                        className="input"
+                        value={batchSafety}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          const next = (v === "" ? "" : (Number(v) as any));
+                          setBatchSafety(next);
+                          if (next !== "") void applyBatchSafetyNow(next);
+                        }}
+                      >
+                        <option value="">(mixed values)</option>
                         <option value="1">Safe</option>
                         <option value="2">Moderate</option>
                         <option value="3">Restricted</option>
                       </select>
                     </div>
                   </div>
-
-                  <div style={{ height: 12 }} />
-
-                  <button className="btn primary" onClick={applyBatch}>Apply to selected</button>
 
                   <div className="section-divider" />
 
@@ -3120,7 +3473,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {sortedFilteredAlbums.map(a => (
                           <label key={a.id} className="listrow trirow">
                             <TriCheck state={triState("album", a.id)} onToggle={(next) => setForSelected("album", a.id, next)} />
-                            <span className="small">{a.title}</span>
+                            <span className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              <span>{a.title}</span>
+                              {a.isPendingNew ? <span className="badge" style={{ background: "var(--bad)", color: "#fff", fontSize: 9, padding: "0 4px", lineHeight: 1.1 }}>New</span> : null}
+                            </span>
                           </label>
                         ))}
                         {!albums.length && <div className="small">Load albums in Setup tab.</div>}
@@ -3130,7 +3486,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <button className="btn" onClick={() => saveCurrentSelectionAsSet("album")}>Save selected Albums as a set</button>
                       <div style={{ height: 10 }} />
                       <div className="small">Create new albums (comma-separated titles)</div>
-                      <input className="input" value={batchCreateAlbums} onChange={(e) => setBatchCreateAlbums(e.target.value)} placeholder="e.g., Trip 2026, Portfolio" />
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input className="input" value={batchCreateAlbums} onChange={(e) => setBatchCreateAlbums(e.target.value)} placeholder="e.g., Trip 2026, Portfolio" style={{ flex: 1 }} />
+                        <button className="btn btn-sm" onClick={applyBatchCreateAlbums} disabled={!batchCreateAlbums.trim()}>Add</button>
+                      </div>
                     </div>
                   </div>
 
@@ -3371,10 +3730,23 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           <label key={a.id} className="listrow">
                             <input
                               type="checkbox"
-                              checked={(active.albumIds || []).includes(a.id)}
-                              onChange={(e) => updateActive({ albumIds: toggleIds(active.albumIds || [], a.id, e.target.checked ? "add" : "remove") })}
+                              checked={a.isPendingNew ? hasCreateAlbumName(active.createAlbums, a.pendingTitle || a.title) : (active.albumIds || []).includes(a.id)}
+                              onChange={(e) => {
+                                if (a.isPendingNew) {
+                                  const pendingTitle = String(a.pendingTitle || a.title || "").trim();
+                                  const nextCreate = e.target.checked
+                                    ? mergeCreateAlbumNames(active.createAlbums, [pendingTitle])
+                                    : removeCreateAlbumNames(active.createAlbums, new Set([pendingTitle.toLowerCase()]));
+                                  updateActive({ createAlbums: nextCreate });
+                                  return;
+                                }
+                                updateActive({ albumIds: toggleIds(active.albumIds || [], a.id, e.target.checked ? "add" : "remove") });
+                              }}
                             />
-                            <span className="small">{a.title}</span>
+                            <span className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              <span>{a.title}</span>
+                              {a.isPendingNew ? <span className="badge" style={{ background: "var(--bad)", color: "#fff", fontSize: 9, padding: "0 4px", lineHeight: 1.1 }}>New</span> : null}
+                            </span>
                           </label>
                         ))}
                         {!albums.length && <div className="small">Load albums in Setup tab.</div>}
@@ -3769,8 +4141,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                                     className={`thumb ${srcs.thumbSrc ? "" : "empty"}`}
                                     src={srcs.thumbSrc || ""}
                                     alt=""
-                                    style={{ width: 34, height: 34, cursor: srcs.previewSrc ? "pointer" : "default" }}
-                                    onClick={() => { if (srcs.previewSrc) setPreview({ src: srcs.previewSrc, title: it.title }); }}
+                                    style={{ width: 34, height: 34, cursor: (fullItem.photoPath || srcs.previewSrc) ? "pointer" : "default" }}
+                                    onClick={() => { void openPreviewForItem(fullItem, srcs.thumbSrc || undefined, srcs.previewSrc || undefined); }}
                                   />
                                   <div>
                                     <div>{it.title} <span className="small">({fname})</span></div>
@@ -3957,6 +4329,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       {preview && (
               <div className="preview-overlay" onClick={() => setPreview(null)}>
                 <div className="preview-top">
+                  {preview.loading ? <div className="small" style={{ marginRight: 10 }}>Loading full preview...</div> : null}
                   <button className="preview-close" onClick={(e) => { e.stopPropagation(); setPreview(null); }}>×</button>
                 </div>
                 <div className="preview-body" onClick={(e) => e.stopPropagation()}>

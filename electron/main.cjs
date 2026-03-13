@@ -1,8 +1,22 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, Tray, nativeImage } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, Tray, nativeImage, protocol, net } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
+const crypto = require("crypto");
+const { pathToFileURL } = require("url");
 const Store = require("electron-store");
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "sqimg",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  },
+]);
 
 
 const os = require("os");
@@ -30,6 +44,8 @@ function decryptCredential(encrypted) {
 
 const ROOT_DIR = path.join(os.homedir(), ".shutterqueue");
 const LOG_PATH = path.join(ROOT_DIR, "activity.log");
+const THUMB_CACHE_DIR = path.join(ROOT_DIR, "thumb-cache");
+const PREVIEW_CACHE_DIR = path.join(ROOT_DIR, "preview-cache");
 const GITHUB_REPO = "pwnicholson/shutterqueue";
 const GITHUB_REPO_URL = `https://github.com/${GITHUB_REPO}`;
 const GITHUB_LATEST_RELEASE_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
@@ -38,6 +54,172 @@ const GROUP_COUNT_REFRESH_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 function ensureRootDir() {
   if (!fs.existsSync(ROOT_DIR)) fs.mkdirSync(ROOT_DIR, { recursive: true });
+}
+
+function ensureImageCacheDirs() {
+  ensureRootDir();
+  if (!fs.existsSync(THUMB_CACHE_DIR)) fs.mkdirSync(THUMB_CACHE_DIR, { recursive: true });
+  if (!fs.existsSync(PREVIEW_CACHE_DIR)) fs.mkdirSync(PREVIEW_CACHE_DIR, { recursive: true });
+}
+
+function toSqimgUrl(filePath) {
+  if (!filePath) return null;
+  return `sqimg://cache?path=${encodeURIComponent(String(filePath))}`;
+}
+
+function isPathInside(parentDir, targetPath) {
+  const parent = path.resolve(parentDir);
+  const target = path.resolve(targetPath);
+  return target === parent || target.startsWith(parent + path.sep);
+}
+
+function getPhotoCacheKey(photoPath) {
+  const p = String(photoPath || "");
+  const stat = fs.statSync(p);
+  const payload = `${p}|${Number(stat.size)}|${Number(stat.mtimeMs)}`;
+  return crypto.createHash("sha1").update(payload).digest("hex");
+}
+
+function getPhotoPathHash(photoPath) {
+  const p = String(photoPath || "");
+  return crypto.createHash("sha1").update(p).digest("hex").slice(0, 16);
+}
+
+const thumbBuildsInFlight = new Map();
+const previewBuildsInFlight = new Map();
+
+function deleteCacheFilesForPathHash(pathHash) {
+  if (!pathHash) return 0;
+  let deleted = 0;
+  const dirs = [THUMB_CACHE_DIR, PREVIEW_CACHE_DIR];
+  for (const dir of dirs) {
+    try {
+      if (!fs.existsSync(dir)) continue;
+      const files = fs.readdirSync(dir);
+      for (const f of files) {
+        if (!f.startsWith(`${pathHash}-`)) continue;
+        try {
+          fs.unlinkSync(path.join(dir, f));
+          deleted++;
+        } catch {
+          // ignore per-file errors
+        }
+      }
+    } catch {
+      // ignore dir-level errors
+    }
+  }
+  return deleted;
+}
+
+function pruneImageCacheForRemovedItems(beforeQueue, afterQueue) {
+  const before = Array.isArray(beforeQueue) ? beforeQueue : [];
+  const after = Array.isArray(afterQueue) ? afterQueue : [];
+  const afterPaths = new Set(after.map((it) => String(it?.photoPath || "")).filter(Boolean));
+
+  const removedPathHashes = new Set();
+  for (const it of before) {
+    const p = String(it?.photoPath || "");
+    if (!p || afterPaths.has(p)) continue;
+    removedPathHashes.add(getPhotoPathHash(p));
+  }
+
+  let deleted = 0;
+  for (const h of removedPathHashes) {
+    deleted += deleteCacheFilesForPathHash(h);
+  }
+  if (deleted > 0 || removedPathHashes.size > 0) {
+    logEvent("INFO", "Pruned image cache for removed queue items", {
+      removedPaths: removedPathHashes.size,
+      deletedFiles: deleted,
+    });
+  }
+}
+
+async function getOrCreateThumbPath(photoPath) {
+  const p = String(photoPath || "");
+  if (!p) return null;
+  ensureImageCacheDirs();
+  const pathHash = getPhotoPathHash(p);
+  const key = getPhotoCacheKey(p);
+  const outPath = path.join(THUMB_CACHE_DIR, `${pathHash}-${key}.jpg`);
+  if (fs.existsSync(outPath)) return outPath;
+
+  const existing = thumbBuildsInFlight.get(outPath);
+  if (existing) return existing;
+
+  const work = (async () => {
+    let image = null;
+    if (typeof nativeImage.createThumbnailFromPath === "function") {
+      try {
+        image = await nativeImage.createThumbnailFromPath(p, { width: 192, height: 192 });
+      } catch {
+        image = null;
+      }
+    }
+    if (!image || image.isEmpty()) {
+      image = nativeImage.createFromPath(p);
+    }
+    if (!image || image.isEmpty()) return null;
+    const { width, height } = image.getSize();
+    const side = Math.max(1, Math.min(width, height));
+    const x = Math.max(0, Math.floor((width - side) / 2));
+    const y = Math.max(0, Math.floor((height - side) / 2));
+    const cropped = image.crop({ x, y, width: side, height: side });
+    const thumb = cropped.resize({ width: 96, height: 96, quality: "good" });
+    const jpg = thumb.toJPEG(84);
+    fs.writeFileSync(outPath, jpg);
+    return outPath;
+  })();
+
+  thumbBuildsInFlight.set(outPath, work);
+  try {
+    return await work;
+  } finally {
+    thumbBuildsInFlight.delete(outPath);
+  }
+}
+
+async function getOrCreatePreviewPath(photoPath, maxEdge) {
+  const p = String(photoPath || "");
+  if (!p) return null;
+  ensureImageCacheDirs();
+  const cap = Math.max(512, Math.min(4096, Number(maxEdge) || 2560));
+  const pathHash = getPhotoPathHash(p);
+  const key = getPhotoCacheKey(p);
+  const outPath = path.join(PREVIEW_CACHE_DIR, `${pathHash}-${key}-e${cap}.jpg`);
+  if (fs.existsSync(outPath)) return outPath;
+
+  const existing = previewBuildsInFlight.get(outPath);
+  if (existing) return existing;
+
+  const work = (async () => {
+    const image = nativeImage.createFromPath(p);
+    if (!image || image.isEmpty()) return null;
+
+    const size = image.getSize();
+    const longest = Math.max(size.width || 0, size.height || 0);
+    let preview = image;
+    if (longest > cap && size.width > 0 && size.height > 0) {
+      const scale = cap / longest;
+      preview = image.resize({
+        width: Math.max(1, Math.round(size.width * scale)),
+        height: Math.max(1, Math.round(size.height * scale)),
+        quality: "good",
+      });
+    }
+
+    const jpg = preview.toJPEG(88);
+    fs.writeFileSync(outPath, jpg);
+    return outPath;
+  })();
+
+  previewBuildsInFlight.set(outPath, work);
+  try {
+    return await work;
+  } finally {
+    previewBuildsInFlight.delete(outPath);
+  }
 }
 
 function logLine(line) {
@@ -1148,6 +1330,25 @@ function sendFilesToRenderer() {
 }
 
 app.whenReady().then(() => {
+  protocol.handle("sqimg", async (request) => {
+    try {
+      const url = new URL(request.url);
+      const requestedPath = url.searchParams.get("path");
+      if (!requestedPath) return new Response("Missing image path", { status: 400 });
+
+      const decodedPath = decodeURIComponent(requestedPath);
+      if (!fs.existsSync(decodedPath)) return new Response("Image not found", { status: 404 });
+
+      const allowed = isPathInside(THUMB_CACHE_DIR, decodedPath) || isPathInside(PREVIEW_CACHE_DIR, decodedPath);
+      if (!allowed) return new Response("Forbidden", { status: 403 });
+
+      return net.fetch(pathToFileURL(decodedPath).toString());
+    } catch (e) {
+      logEvent("WARN", "sqimg protocol failed", { error: String(e) });
+      return new Response("Image load failed", { status: 500 });
+    }
+  });
+
   createWindow();
   
   // Create tray if minimize-to-tray is enabled
@@ -1512,12 +1713,17 @@ ipcMain.handle("flickr:photoUrls", async (_e, { photoId }) => {
 });
 
 
-ipcMain.handle("thumb:getDataUrl", async (_e, { photoPath }) => {
+ipcMain.handle("thumb:getSrc", async (_e, { photoPath }) => {
   try {
-    const image = nativeImage.createFromPath(photoPath);
-    if (!image || image.isEmpty()) return null;
-    const thumb = image.resize({ width: 96, height: 96, quality: "good" });
-    return thumb.toDataURL();
+    return toSqimgUrl(await getOrCreateThumbPath(photoPath));
+  } catch {
+    return null;
+  }
+});
+
+ipcMain.handle("image:getPreviewSrc", async (_e, { photoPath, maxEdge }) => {
+  try {
+    return toSqimgUrl(await getOrCreatePreviewPath(photoPath, maxEdge));
   } catch {
     return null;
   }
@@ -1532,11 +1738,18 @@ ipcMain.handle("queue:add", async (_e, { paths }) => {
 });
 ipcMain.handle("queue:remove", async (_e, { ids }) => {
   const list = Array.isArray(ids) ? ids : [];
+  const before = queue.loadQueue();
   const out = await queue.removeIds(list);
+  pruneImageCacheForRemovedItems(before, out);
   logEvent("INFO", "Removed items from queue", { removed: list.length, queueSize: Array.isArray(out) ? out.length : 0 });
   return out;
 });
-ipcMain.handle("queue:update", async (_e, { items }) => queue.updateItems(items || []));
+ipcMain.handle("queue:update", async (_e, { items }) => {
+  const before = queue.loadQueue();
+  const out = await queue.updateItems(items || []);
+  pruneImageCacheForRemovedItems(before, out);
+  return out;
+});
 ipcMain.handle("queue:reorder", async (_e, { idsInOrder }) => {
   const list = Array.isArray(idsInOrder) ? idsInOrder : [];
   const out = await queue.reorder(list);
@@ -1546,6 +1759,7 @@ ipcMain.handle("queue:reorder", async (_e, { idsInOrder }) => {
 ipcMain.handle("queue:clearUploaded", async () => {
   const before = queue.loadQueue();
   const out = await queue.clearUploaded();
+  pruneImageCacheForRemovedItems(before, out);
   const beforeCount = Array.isArray(before) ? before.length : 0;
   const afterCount = Array.isArray(out) ? out.length : 0;
   logEvent("INFO", "Cleared uploaded items from queue", { removed: Math.max(0, beforeCount - afterCount), queueSize: afterCount });
@@ -1692,10 +1906,62 @@ ipcMain.handle("ui:show-start-scheduler-dialog", async () => {
   }
 });
 
-async function ensureAlbumByTitle(title) {
-  // MVP: album creation not implemented.
-  // Future: call flickr.photosets.create with primary photo ID once uploaded.
-  return null;
+let albumTitleToIdCache = new Map();
+let albumTitleCacheKey = "";
+
+function normalizeAlbumTitleKey(title) {
+  return String(title || "").trim().toLowerCase();
+}
+
+async function warmAlbumTitleCache(auth) {
+  const key = `${String(auth?.userNsid || "")}|${String(auth?.token || "")}`;
+  if (albumTitleCacheKey === key && albumTitleToIdCache.size > 0) return;
+
+  const list = await flickr.listAlbums({
+    apiKey: auth.apiKey,
+    apiSecret: auth.apiSecret,
+    token: auth.token,
+    tokenSecret: auth.tokenSecret,
+    userNsid: auth.userNsid,
+  });
+
+  const nextMap = new Map();
+  for (const a of Array.isArray(list) ? list : []) {
+    const t = normalizeAlbumTitleKey(a?.title || "");
+    const id = String(a?.id || "");
+    if (!t || !id || nextMap.has(t)) continue;
+    nextMap.set(t, id);
+  }
+  albumTitleToIdCache = nextMap;
+  albumTitleCacheKey = key;
+}
+
+async function ensureAlbumByTitle({ title, primaryPhotoId, auth }) {
+  const rawTitle = String(title || "").trim();
+  if (!rawTitle) return null;
+  const titleKey = normalizeAlbumTitleKey(rawTitle);
+
+  try {
+    await warmAlbumTitleCache(auth);
+  } catch (e) {
+    logEvent("WARN", "Failed to warm album title cache", { error: String(e) });
+  }
+
+  const existing = albumTitleToIdCache.get(titleKey);
+  if (existing) return { id: existing, createdNow: false };
+
+  const created = await flickr.createAlbum({
+    apiKey: auth.apiKey,
+    apiSecret: auth.apiSecret,
+    token: auth.token,
+    tokenSecret: auth.tokenSecret,
+    title: rawTitle,
+    primaryPhotoId,
+  });
+  const id = String(created?.id || "");
+  if (!id) throw new Error("Album creation succeeded but no album id was returned.");
+  albumTitleToIdCache.set(titleKey, id);
+  return { id, createdNow: true };
 }
 
 async function uploadNowOneInternal(options = {}) {
@@ -1790,9 +2056,48 @@ async function uploadNowOneInternal(options = {}) {
 
     const warnings = [];
     const albumParts = [];
+    const createdAlbumIdsForThisPhoto = new Set();
+
+    // Ensure/create albums requested by title for this item only.
+    // If no item references a "new" album title, it will not be created.
+    const requestedCreateAlbums = [];
+    {
+      const seen = new Set();
+      for (const title of (next.createAlbums || [])) {
+        const trimmed = String(title || "").trim();
+        const k = trimmed.toLowerCase();
+        if (!trimmed || seen.has(k)) continue;
+        seen.add(k);
+        requestedCreateAlbums.push(trimmed);
+      }
+    }
+    const unresolvedCreateAlbums = [];
+    for (const title of requestedCreateAlbums) {
+      try {
+        const ensured = await ensureAlbumByTitle({ title, primaryPhotoId: photoId, auth });
+        if (!ensured?.id) {
+          unresolvedCreateAlbums.push(title);
+          continue;
+        }
+        next.albumIds = Array.from(new Set([...(next.albumIds || []), String(ensured.id)]));
+        if (ensured.createdNow) {
+          createdAlbumIdsForThisPhoto.add(String(ensured.id));
+          logEvent("INFO", "Created album for queued photo", { id: next.id, photoId, title, albumId: String(ensured.id) });
+        }
+      } catch (e) {
+        const msg = e?.message ? String(e.message) : String(e);
+        unresolvedCreateAlbums.push(title);
+        warnings.push(`create album \"${title}\": ${msg}`);
+        albumParts.push(`create album \"${title}\": ${msg}`);
+        logEvent("WARN", "Album create failed", { id: next.id, photoId, title, error: msg });
+      }
+    }
+    next.createAlbums = unresolvedCreateAlbums;
+    queue.saveQueue(q);
 
     // Attach to albums (already-existing)
     for (const aid of (next.albumIds || [])) {
+      if (createdAlbumIdsForThisPhoto.has(String(aid))) continue;
       try {
         await flickr.addPhotoToAlbum({ apiKey: auth.apiKey, apiSecret: auth.apiSecret, token: auth.token, tokenSecret: auth.tokenSecret, photoId, albumId: aid });
         logEvent("INFO", "Added to album", { id: next.id, photoId, albumId: aid });

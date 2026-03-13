@@ -15,7 +15,8 @@ contextBridge.exposeInMainWorld("sq", {
   fetchAlbums: () => ipcRenderer.invoke("flickr:albums"),
   getFlickrPhotoUrls: (photoId) => ipcRenderer.invoke("flickr:photoUrls", { photoId }),
 
-  getThumbDataUrl: (photoPath) => ipcRenderer.invoke("thumb:getDataUrl", { photoPath }),
+  getThumbSrc: (photoPath) => ipcRenderer.invoke("thumb:getSrc", { photoPath }),
+  getPreviewSrc: (photoPath, maxEdge) => ipcRenderer.invoke("image:getPreviewSrc", { photoPath, maxEdge }),
 
   queueGet: () => ipcRenderer.invoke("queue:get"),
   queueAdd: (paths) => ipcRenderer.invoke("queue:add", { paths }),

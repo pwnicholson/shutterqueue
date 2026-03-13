@@ -1,4 +1,4 @@
-# ShutterQueue — A paced uploader for Flickr (v0.9.3)
+# ShutterQueue — A paced uploader for Flickr (v0.9.3a)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
@@ -70,6 +70,20 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 
 
 
+
+## New to 0.9.3a (since 0.9.3)
+
+- **Performance upgrades for image handling**
+  - Faster and lighter local queue image display and preview loading
+  - Better responsiveness while browsing larger queues
+  - Automatic stale image-cache cleanup when queue items are removed
+- **Batch edit behavior fixes**
+  - Fixed title/description state mismatches between single-select and multi-select editing
+  - Multi-select metadata updates are now more consistent and predictable
+- **UI polish and create-album clarity**
+  - Batch edit controls are clearer with dedicated action buttons where needed
+  - New queued album names now appear directly in album lists with a visible `New` badge
+  - New albums are only created at upload time when still referenced by queued photos
 
 ## New to 0.9.3 (since 0.9.2)
 

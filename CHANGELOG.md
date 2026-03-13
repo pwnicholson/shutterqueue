@@ -2,6 +2,29 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
+## [0.9.3a] - 2026-03-13
+
+### Changed
+- **Local image and preview performance enhancements**
+  - Local queue images now use cached protocol-backed sources instead of heavy inline image payloads
+  - Thumbnail and preview generation/use was optimized for faster open and smoother scrolling in larger queues
+  - Added automatic image-cache pruning when queue items are removed or cleared to prevent stale cache growth
+
+### Fixed
+- **Batch metadata consistency and selection-state correctness**
+  - Fixed mixed/single selection mismatch where title/description fields could appear inconsistent across selection modes
+  - Multi-select title/description/privacy/safety editing now behaves consistently and applies correctly to the selected cohort
+- **Create-album workflow and upload behavior**
+  - Fixed missing visibility for queued new-album creation in the Albums editor list
+  - New album rows now appear with a distinct red `New` indicator and are fully selectable in edit flows
+  - New albums are now actually created during upload when referenced, and are not created when no queued photos reference them
+
+### UI
+- **Batch edit experience improvements**
+  - Replaced confusing single "Apply to selected" behavior with clearer field-specific actions and live updates where appropriate
+  - Added dedicated compact action buttons for batch tag add and batch create-album add next to their corresponding fields
+  - Tuned the new-album `New` badge size for cleaner visual hierarchy
+
 ## [0.9.3] - 2026-03-12
 
 ### Added
