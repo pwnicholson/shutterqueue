@@ -2,12 +2,17 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
-## [0.9.3b] - 2026-03-13
+## [0.9.3c] - 2026-03-15
 
 ### Added
 - **Queue backup import/export**
   - Added JSON export/import for the full queue so you can save a backup and restore it later when files are still available at the same paths
   - Import now prompts whether to append to the existing queue or replace it, then runs duplicate detection so new duplicate collisions are flagged immediately
+- **Embedded image metadata prefill on add**
+  - New queue items now read embedded EXIF/IPTC/XMP title/description metadata when present and prefill those fields automatically
+  - Embedded GPS geotags are also read automatically and prefill location coordinates for upload
+  - Embedded keywords/tags are now imported and prefilled into each queue item's Tags field
+  - If metadata is missing, title continues to default from filename and description remains blank
 
 ### Changed
 - **Local image and preview performance enhancements**
@@ -17,6 +22,8 @@ All notable changes to ShutterQueue will be documented in this file.
 - **Queue tab split-pane scrolling**
   - Queue controls now stay fixed at the top of the queue pane while the queue list scrolls independently
   - The edit panel now has its own independent scroll area so queue navigation and metadata editing no longer fight for one page scroll
+- **Queue sorting options**
+  - Added Date Taken sorting (Old-New / New-Old) using embedded capture timestamps when available
 
 ### Fixed
 - **Batch metadata consistency and selection-state correctness**

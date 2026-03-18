@@ -50,6 +50,7 @@ declare global {
       schedulerStart: (intervalHours: number, uploadImmediately: boolean, settings: any) => Promise<any>;
       showStartSchedulerDialog: () => Promise<"now" | "delay" | "cancel">;
       showQueueImportModeDialog: () => Promise<"replace" | "append" | "cancel">;
+      showRetryUploadDialog: () => Promise<"retry_now" | "reset_status" | "cancel">;
       appVersion: () => Promise<string>;
       getFlickrPhotoUrls: (photoId: string) => Promise<{thumbUrl: string; previewUrl: string;}>
       schedulerStop: () => Promise<any>;

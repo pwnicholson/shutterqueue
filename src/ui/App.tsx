@@ -1536,6 +1536,55 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     showToast(`Uploaded ${idsToUpload.length} item(s).`);
   };
 
+  const retryFailedContextMenuItems = async () => {
+    const idsToCheck = selectedIds.length > 0 ? selectedIds : (contextMenu ? [contextMenu.itemId] : []);
+    setContextMenu(null);
+    if (!idsToCheck.length) return;
+
+    const failedItems = queue.filter((it) => idsToCheck.includes(it.id) && it.status === "failed");
+    if (!failedItems.length) return;
+
+    const action = await window.sq.showRetryUploadDialog();
+    if (action === "cancel") return;
+
+    const resetItems = failedItems.map((it) => ({
+      ...it,
+      status: "pending" as const,
+      lastError: "",
+    }));
+
+    setQueue((prev) => prev.map((it) => resetItems.find((x) => x.id === it.id) || it));
+    await updateItems(resetItems);
+
+    if (action === "reset_status") {
+      showToast(
+        resetItems.length === 1
+          ? "Reset upload status in queue."
+          : `Reset upload status on ${resetItems.length} items.`
+      );
+      return;
+    }
+
+    let okCount = 0;
+    let failCount = 0;
+    for (const item of resetItems) {
+      try {
+        const res = await window.sq.uploadNowOne({ itemId: item.id, reason: "manual_retry" });
+        if (res?.ok) okCount += 1;
+        else failCount += 1;
+      } catch {
+        failCount += 1;
+      }
+    }
+
+    await refreshDynamic();
+    if (failCount === 0) {
+      showToast(okCount === 1 ? "Retried upload successfully." : `Retried ${okCount} uploads successfully.`);
+    } else {
+      showToast(`Retry complete: ${okCount} succeeded, ${failCount} failed.`);
+    }
+  };
+
   const toggleScheduleContextMenu = () => {
     const idsToSchedule = selectedIds.length > 0 ? selectedIds : (contextMenu ? [contextMenu.itemId] : []);
     setContextMenu(null);
@@ -1708,6 +1757,53 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       await window.sq.queueReorder(sorted.map(it => it.id));
       const direction = reverse ? "Z to A" : "A to Z";
       showToast(`Sorted queue by title (${direction}).`);
+    }
+  };
+
+  const sortQueueByDateTaken = async (reverse: boolean = false) => {
+    const compareByDateTaken = (a: QueueItem, b: QueueItem) => {
+      const aMsRaw = Date.parse(String(a.dateTaken || ""));
+      const bMsRaw = Date.parse(String(b.dateTaken || ""));
+      const aHas = Number.isFinite(aMsRaw);
+      const bHas = Number.isFinite(bMsRaw);
+
+      // Keep items without embedded date at the end for both directions.
+      if (aHas !== bHas) return aHas ? -1 : 1;
+      if (!aHas && !bHas) {
+        const pathA = (a.photoPath || "").toLowerCase();
+        const pathB = (b.photoPath || "").toLowerCase();
+        return pathA.localeCompare(pathB);
+      }
+
+      return reverse ? (bMsRaw - aMsRaw) : (aMsRaw - bMsRaw);
+    };
+
+    if (selectedIds.length > 1) {
+      const selectedIndices: number[] = [];
+      const selectedItems: QueueItem[] = [];
+      queue.forEach((item, index) => {
+        if (selectedIds.includes(item.id)) {
+          selectedIndices.push(index);
+          selectedItems.push(item);
+        }
+      });
+
+      const sorted = applySortToQueueItems(selectedItems, compareByDateTaken);
+      const result = [...queue];
+      selectedIndices.forEach((index, i) => {
+        result[index] = sorted[i];
+      });
+
+      setQueue(result);
+      await window.sq.queueReorder(result.map(it => it.id));
+      const direction = reverse ? "Newest to oldest" : "Oldest to newest";
+      showToast(`Sorted selected items by date taken (${direction}).`);
+    } else {
+      const sorted = applySortToQueueItems(queue, compareByDateTaken);
+      setQueue(sorted);
+      await window.sq.queueReorder(sorted.map(it => it.id));
+      const direction = reverse ? "Newest to oldest" : "Oldest to newest";
+      showToast(`Sorted queue by date taken (${direction}).`);
     }
   };
 
@@ -3021,6 +3117,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <button className="btn btn-sm" onClick={() => sortQueueByFilename(true)} disabled={queue.length === 0}>Filename Z-A</button>
                   <button className="btn btn-sm" onClick={() => sortQueueByTitle(false)} disabled={queue.length === 0}>Title A-Z</button>
                   <button className="btn btn-sm" onClick={() => sortQueueByTitle(true)} disabled={queue.length === 0}>Title Z-A</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByDateTaken(false)} disabled={queue.length === 0}>Date Taken Old-New</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByDateTaken(true)} disabled={queue.length === 0}>Date Taken New-Old</button>
                 </div>
                 <div className="queue-toolbar-row-spread">
                   <div className="btncluster btncluster-secondary" style={{ justifySelf: "start" }}>
@@ -3235,12 +3333,17 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                             hasPendingGroupRetries ? <span className="badge accent">Uploaded</span> : <span className="badge warn">done (warnings)</span>
                           ) : it.status === "done" ? (
                             hasPendingGroupRetries ? <span className="badge accent">Uploaded</span> : <span className="badge good">done</span>
+                          ) : it.status === "failed" ? (
+                            <span className="badge bad">failed</span>
                           ) : (
                             <span className="badge">{it.status}</span>
                           )}
                           <span className="badge">{PRIVACY_LABEL[it.privacy || "private"]}</span>
                           {(it.groupIds?.length || 0) > 0 ? <span className="badge">{it.groupIds.length} groups</span> : null}
                           {(it.albumIds?.length || 0) > 0 ? <span className="badge">{it.albumIds.length} albums</span> : null}
+                          {it.status === "failed" ? (
+                            <span className="badge accent" title="Right-click and choose Retry Upload">Retry available</span>
+                          ) : null}
                           {it.status === "done_warn" && !hasPendingGroupRetries && it.lastError ? (
                             <span className="badge warn" title={friendlyIdInMessage(it.lastError)}>warnings: see details</span>
                           ) : null}
@@ -3325,6 +3428,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   const idsToCheck = selectedIds.length > 0 ? selectedIds : [contextMenu.itemId];
                   const items = queue.filter(it => idsToCheck.includes(it.id));
                   const hasPending = items.some(it => it.status === "pending");
+                  const hasFailed = items.some(it => it.status === "failed");
                   const hasScheduled = items.some(it => it.scheduledUploadAt);
                   
                   return (
@@ -3335,13 +3439,28 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         style={{
                           padding: "8px 12px",
                           cursor: "pointer",
-                          borderBottom: hasPending ? "1px solid var(--border)" : "none",
+                          borderBottom: (hasFailed || hasPending) ? "1px solid var(--border)" : "none",
                         }}
                         onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
                         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                       >
                         Remove Item{selectedIds.length > 1 ? "s" : ""}
                       </div>
+                      {hasFailed && (
+                        <div
+                          className="context-menu-item"
+                          onClick={retryFailedContextMenuItems}
+                          style={{
+                            padding: "8px 12px",
+                            cursor: "pointer",
+                            borderBottom: hasPending ? "1px solid var(--border)" : "none",
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                        >
+                          Retry Upload
+                        </div>
+                      )}
                       {hasPending && (
                         <>
                           <div

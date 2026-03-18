@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld("sq", {
   pickPhotos: () => ipcRenderer.invoke("ui:pickPhotos"),
   showStartSchedulerDialog: () => ipcRenderer.invoke("ui:show-start-scheduler-dialog"),
   showQueueImportModeDialog: () => ipcRenderer.invoke("ui:show-queue-import-mode-dialog"),
+  showRetryUploadDialog: () => ipcRenderer.invoke("ui:show-retry-upload-dialog"),
   getPathForFile: (file) => {
     // Use Electron's webUtils to safely get the file system path from a File object
     try {

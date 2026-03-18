@@ -1,4 +1,4 @@
-# ShutterQueue — A paced uploader for Flickr (v0.9.3b)
+# ShutterQueue — A paced uploader for Flickr (v0.9.3c)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
@@ -71,7 +71,7 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 
 
 
-## New to 0.9.3b (since 0.9.3a)
+## New to 0.9.3c (since 0.9.3a)
 
 - **Queue backup and restore**
   - Export the full queue to JSON and import it later

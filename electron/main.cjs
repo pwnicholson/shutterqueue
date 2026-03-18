@@ -2020,6 +2020,28 @@ ipcMain.handle("ui:show-queue-import-mode-dialog", async () => {
   }
 });
 
+ipcMain.handle("ui:show-retry-upload-dialog", async () => {
+  const res = await dialog.showMessageBox(win, {
+    type: "question",
+    buttons: ["Retry upload now", "Reset status in queue", "Cancel"],
+    defaultId: 0,
+    cancelId: 2,
+    title: "Retry upload",
+    message: "Choose how you want to handle this failed upload.",
+    detail: "Retry upload now immediately attempts upload again. Reset status in queue marks the item pending so it can upload later.",
+    noLink: true,
+  });
+
+  switch (res.response) {
+    case 0:
+      return "retry_now";
+    case 1:
+      return "reset_status";
+    default:
+      return "cancel";
+  }
+});
+
 let albumTitleToIdCache = new Map();
 let albumTitleCacheKey = "";
 
@@ -2080,6 +2102,7 @@ async function ensureAlbumByTitle({ title, primaryPhotoId, auth }) {
 
 async function uploadNowOneInternal(options = {}) {
   const auth = getFlickrAuth();
+  const maxUploadAttempts = 2;
 
   // Prevent overlapping uploads
   uploadLock = true;
@@ -2092,7 +2115,7 @@ async function uploadNowOneInternal(options = {}) {
     const nowMs = Date.now();
     let next = null;
     if (requestedId) {
-      next = q.find(it => it.id === requestedId && it.status === "pending") || null;
+      next = q.find(it => it.id === requestedId && (it.status === "pending" || it.status === "failed")) || null;
     } else {
       next = getDueManualScheduledPendingItem(q, nowMs);
       if (!next) {
@@ -2105,33 +2128,59 @@ async function uploadNowOneInternal(options = {}) {
     }
     if (!next) return { ok: true, message: "No pending items." };
 
+    if (next.status === "failed") {
+      next.status = "pending";
+      next.lastError = "";
+      queue.saveQueue(q);
+    }
+
     next.status = "uploading";
     next.lastError = "";
     queue.saveQueue(q);
 
     logEvent("INFO", "Uploading photo", { id: next.id, path: next.photoPath });
 
-    let lastProgressBytes = 0;
-    const photoId = await flickr.uploadPhoto({
-      apiKey: auth.apiKey,
-      apiSecret: auth.apiSecret,
-      token: auth.token,
-      tokenSecret: auth.tokenSecret,
-      item: next,
-      onProgress: (loaded, total) => {
-        // Only dispatch progress if bytes increased meaningfully or we're at the end.
-        // This avoids flashing caused by socket.bytesWritten jumping to 0 between files.
-        const minThreshold = 512; // 512 bytes minimum before first report
-        if (loaded > lastProgressBytes && (loaded >= minThreshold || loaded === total)) {
-          lastProgressBytes = loaded;
-          try {
-            if (win && win.webContents) {
-              win.webContents.send("upload:progress", { loaded, total });
+    let photoId = "";
+    let lastUploadErr = null;
+    for (let attempt = 1; attempt <= maxUploadAttempts; attempt++) {
+      try {
+        let lastProgressBytes = 0;
+        photoId = await flickr.uploadPhoto({
+          apiKey: auth.apiKey,
+          apiSecret: auth.apiSecret,
+          token: auth.token,
+          tokenSecret: auth.tokenSecret,
+          item: next,
+          onProgress: (loaded, total) => {
+            // Only dispatch progress if bytes increased meaningfully or we're at the end.
+            // This avoids flashing caused by socket.bytesWritten jumping to 0 between files.
+            const minThreshold = 512; // 512 bytes minimum before first report
+            if (loaded > lastProgressBytes && (loaded >= minThreshold || loaded === total)) {
+              lastProgressBytes = loaded;
+              try {
+                if (win && win.webContents) {
+                  win.webContents.send("upload:progress", { loaded, total });
+                }
+              } catch (_) {}
             }
-          } catch (_) {}
+          }
+        });
+        lastUploadErr = null;
+        break;
+      } catch (e) {
+        lastUploadErr = e;
+        const msg = e?.message ? String(e.message) : String(e);
+        if (attempt < maxUploadAttempts) {
+          logEvent("WARN", "Upload attempt failed; retrying", {
+            id: next.id,
+            attempt,
+            maxAttempts: maxUploadAttempts,
+            error: msg,
+          });
         }
       }
-    });
+    }
+    if (!photoId) throw (lastUploadErr || new Error("Upload failed"));
 
     // Mark upload complete immediately so we never re-upload this file again.
     next.photoId = photoId;
