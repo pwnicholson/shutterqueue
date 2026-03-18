@@ -38,6 +38,5 @@
 ## Nice-to-have
 
 * \[ ] Implement dark mode/light mode switch for app UI
-* \[ ] Spellcheck for title/description/tags (free/open-source)
 * \[ ] Per-group throttling (freq + quantity), link to group rules
 * \[ ] Improve progress bar on uploads (just flashes now, doesn't show actual progress of the individual item, only the batch that is it in)

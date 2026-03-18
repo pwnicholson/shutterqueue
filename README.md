@@ -15,6 +15,7 @@ ShutterQueue is free to use. It requires you generate your own Flickr API key, w
   - Add geotagging/location data (at any level of granularity)
   - Set photo "safety" level for safe, moderate, or restricted photo content
   - Separate photo and location privacy controls
+  - Import and use file metadata from embedded EXIF/IPTC/XMP when present: title, description, GPS geotags, keywords/tags
 - **Groups and Albums** - all individually or in batches
   - Quickly add photos to any combination of your albums or groups
   - Save and recall custom sets of frequently used albums and/or groups
@@ -27,6 +28,10 @@ ShutterQueue is free to use. It requires you generate your own Flickr API key, w
   - Set any photo to upload at a specific time and date, regardless of queue status
   - Queue will catch if you have the same photo duplicated in the queue at the same time (based on file contents, not file name)
   - Can be minimized to the system tray (Windows) or Menu Bar (Mac) while it runs in the background, using very few resources.
+- **Queue backup and restore**
+  - Export the full queue to JSON and import it later
+  - Choose whether imports replace the current queue or add to it
+  - Duplicate detection runs right after import so collisions are flagged immediately
 
 
 
@@ -73,6 +78,8 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 
 ## New to 0.9.3c (since 0.9.3a)
 
+- **Import and use file metadata**
+  - New queue items now read embedded EXIF/IPTC/XMP metadata when present and prefill those fields automatically. Supported fields include: title, description, GPS geotags, keywords/tags
 - **Queue backup and restore**
   - Export the full queue to JSON and import it later
   - Choose whether imports replace the current queue or add to it
