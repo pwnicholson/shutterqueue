@@ -7,6 +7,7 @@ const exifr = require("exifr");
 const ROOT = path.join(os.homedir(), ".shutterqueue");
 const QUEUE_PATH = path.join(ROOT, "queue.json");
 const duplicateHashCacheByItemId = new Map();
+const VALID_TARGET_SERVICES = new Set(["flickr", "tumblr"]);
 const VALID_PRIVACY = new Set(["public", "friends", "family", "friends_family", "private"]);
 const VALID_GEO_PRIVACY = new Set(["public", "contacts", "friends", "family", "friends_family", "private"]);
 const VALID_STATUS = new Set(["pending", "uploading", "done", "done_warn", "failed"]);
@@ -28,6 +29,7 @@ function loadQueue() {
     // as expected after upgrades.
     for (const it of q) {
       if (!it) continue;
+      it.targetServices = normalizeTargetServices(it.targetServices);
       if (it.status === "done_warn") {
         const states = it.groupAddStates || {};
         const hasProblem = Object.values(states).some(st => st && (st.status === "retry" || st.status === "failed" || st.status === "gave_up"));
@@ -47,6 +49,21 @@ function saveQueue(q) {
   ensureRoot();
   fs.writeFileSync(QUEUE_PATH, JSON.stringify(q, null, 2), "utf-8");
   return q;
+}
+
+function normalizeTargetServices(input) {
+  const list = Array.isArray(input) ? input : [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of list) {
+    const svc = String(raw || "").trim().toLowerCase();
+    if (!VALID_TARGET_SERVICES.has(svc)) continue;
+    if (seen.has(svc)) continue;
+    seen.add(svc);
+    out.push(svc);
+  }
+  if (!out.length) out.push("flickr");
+  return out;
 }
 
 function makeId() {
@@ -214,6 +231,7 @@ async function addPaths(paths) {
     q.push({
       id: makeId(),
       photoPath: p,
+      targetServices: ["flickr"],
       title: String(embedded.title || ""),
       description: String(embedded.description || ""),
       tags: String(embedded.tags || ""),
@@ -268,6 +286,7 @@ function normalizeImportedQueue(input) {
     const normalized = {
       id,
       photoPath,
+      targetServices: normalizeTargetServices(raw.targetServices),
       title: String(raw.title || ""),
       description: String(raw.description || ""),
       tags: String(raw.tags || ""),
@@ -290,6 +309,7 @@ function normalizeImportedQueue(input) {
     if (VALID_GEO_PRIVACY.has(String(raw.geoPrivacy || ""))) normalized.geoPrivacy = String(raw.geoPrivacy);
     if (raw.locationDisplayName != null && String(raw.locationDisplayName).trim()) normalized.locationDisplayName = String(raw.locationDisplayName);
     if (raw.groupAddStates && typeof raw.groupAddStates === "object" && !Array.isArray(raw.groupAddStates)) normalized.groupAddStates = raw.groupAddStates;
+    if (raw.serviceStates && typeof raw.serviceStates === "object" && !Array.isArray(raw.serviceStates)) normalized.serviceStates = raw.serviceStates;
 
     items.push(normalized);
   }

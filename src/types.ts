@@ -4,6 +4,8 @@ export type GeoPrivacy = "public" | "contacts" | "friends" | "family" | "friends
 
 export type QueueStatus = "pending" | "uploading" | "done" | "done_warn" | "failed";
 
+export type UploadService = "flickr" | "tumblr";
+
 export type ScheduleSettings = {
   intervalHours: number;
   schedulerOn: boolean;
@@ -25,6 +27,7 @@ export type ScheduleSettings = {
 export type QueueItem = {
   id: string;
   photoPath: string;
+  targetServices: UploadService[];
   title: string;
   description: string;
   tags: string; // comma-separated in UI
@@ -56,6 +59,13 @@ export type QueueItem = {
     lastAttemptAt?: string;
     retryPriority?: number;
   }>;
+  // Per-service upload state allows retrying failed services without re-uploading successful ones.
+  serviceStates?: Partial<Record<UploadService, {
+    status: "pending" | "done" | "failed";
+    remoteId?: string;
+    uploadedAt?: string;
+    lastError?: string;
+  }>>;
 };
 
 export type Group = { id: string; name: string; memberCount?: number; photoCount?: number };

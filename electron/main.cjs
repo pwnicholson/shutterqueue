@@ -343,6 +343,7 @@ async function checkForAppUpdates({ force = false } = {}) {
 
 const queue = require("./services/queue.cjs");
 const flickr = require("./services/flickr.cjs");
+const tumblr = require("./services/tumblr.cjs");
 const geo = require("./services/geocoding.cjs");
 
 let win = null;
@@ -432,6 +433,16 @@ const store = new Store({
     username: "",
     fullname: "",
     oauthTmp: null,
+    tumblrApiKey: "",
+    tumblrApiSecretEnc: "",
+    tumblrHasApiSecret: false,
+    tumblrTokenEnc: "",
+    tumblrTokenSecretEnc: "",
+    tumblrHasToken: false,
+    tumblrOauthTmp: null,
+    tumblrUsername: "",
+    tumblrPrimaryBlogId: "",
+    tumblrBlogsCache: [],
     intervalHours: 24,
     schedulerOn: false,
     nextRunAt: null,
@@ -450,8 +461,16 @@ const store = new Store({
   }
 });
 
-function isAuthed() {
+function isFlickrAuthed() {
   return Boolean(store.get("apiKey")) && Boolean(store.get("hasApiSecret")) && Boolean(store.get("hasToken"));
+}
+
+function isTumblrAuthed() {
+  return Boolean(store.get("tumblrApiKey")) && Boolean(store.get("tumblrHasApiSecret")) && Boolean(store.get("tumblrHasToken"));
+}
+
+function isAuthed() {
+  return isFlickrAuthed() || isTumblrAuthed();
 }
 
 // Helper to retrieve decrypted Flickr credentials for API calls
@@ -461,6 +480,17 @@ function getFlickrAuth() {
     apiSecret: decryptCredential(store.get("apiSecretEnc") || ""),
     token: decryptCredential(store.get("tokenEnc") || ""),
     tokenSecret: decryptCredential(store.get("tokenSecretEnc") || "")
+  };
+}
+
+function getTumblrAuth() {
+  return {
+    consumerKey: store.get("tumblrApiKey") || "",
+    consumerSecret: decryptCredential(store.get("tumblrApiSecretEnc") || ""),
+    token: decryptCredential(store.get("tumblrTokenEnc") || ""),
+    tokenSecret: decryptCredential(store.get("tumblrTokenSecretEnc") || ""),
+    username: store.get("tumblrUsername") || "",
+    primaryBlogId: store.get("tumblrPrimaryBlogId") || "",
   };
 }
 
@@ -1433,6 +1463,13 @@ ipcMain.handle("cfg:get", async () => ({
   apiKey: store.get("apiKey"),
   hasApiSecret: Boolean(store.get("hasApiSecret")),
   hasToken: Boolean(store.get("hasToken")),
+  flickrAuthed: isFlickrAuthed(),
+  tumblrApiKey: store.get("tumblrApiKey") || "",
+  tumblrHasApiSecret: Boolean(store.get("tumblrHasApiSecret")),
+  tumblrHasToken: Boolean(store.get("tumblrHasToken")),
+  tumblrAuthed: isTumblrAuthed(),
+  tumblrUsername: store.get("tumblrUsername") || "",
+  tumblrPrimaryBlogId: store.get("tumblrPrimaryBlogId") || "",
   authed: isAuthed(),
   username: store.get("username") || "",
   fullname: store.get("fullname") || "",
@@ -1463,6 +1500,16 @@ ipcMain.handle("cfg:setKeys", async (_e, { apiKey, apiSecret }) => {
     const encrypted = encryptCredential(apiSecret.trim());
     store.set("apiSecretEnc", encrypted);
     store.set("hasApiSecret", true);
+  }
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setTumblrKeys", async (_e, { consumerKey, consumerSecret }) => {
+  if (typeof consumerKey === "string" && consumerKey.length) store.set("tumblrApiKey", consumerKey);
+  if (typeof consumerSecret === "string" && consumerSecret.trim().length) {
+    const encrypted = encryptCredential(consumerSecret.trim());
+    store.set("tumblrApiSecretEnc", encrypted);
+    store.set("tumblrHasApiSecret", true);
   }
   return { ok: true };
 });
@@ -1587,6 +1634,95 @@ ipcMain.handle("oauth:start", async () => {
   return { ok: true };
 });
 
+ipcMain.handle("tumblr:oauth:start", async () => {
+  const consumerKey = store.get("tumblrApiKey") || "";
+  const consumerSecret = decryptCredential(store.get("tumblrApiSecretEnc") || "");
+  if (!consumerKey || !consumerSecret) throw new Error("Missing Tumblr API key/secret");
+
+  const tmp = await tumblr.getRequestToken(consumerKey, consumerSecret);
+  store.set("tumblrOauthTmp", tmp);
+  const url = tumblr.getAuthorizeUrl(tmp.oauthToken);
+  await shell.openExternal(url);
+  return { ok: true };
+});
+
+ipcMain.handle("tumblr:oauth:finish", async (_e, { verifier }) => {
+  const consumerKey = store.get("tumblrApiKey") || "";
+  const consumerSecret = decryptCredential(store.get("tumblrApiSecretEnc") || "");
+  const tmp = store.get("tumblrOauthTmp");
+  if (!tmp) throw new Error("No Tumblr OAuth session. Click Start Authorization first.");
+
+  const tok = await tumblr.getAccessToken(
+    consumerKey,
+    consumerSecret,
+    tmp.oauthToken,
+    tmp.oauthTokenSecret,
+    verifier
+  );
+
+  store.set("tumblrTokenEnc", encryptCredential(tok.token));
+  store.set("tumblrTokenSecretEnc", encryptCredential(tok.tokenSecret));
+  store.set("tumblrHasToken", true);
+  store.set("tumblrUsername", tok.name || "");
+  store.set("tumblrOauthTmp", null);
+
+  try {
+    const blogs = await tumblr.listBlogs({
+      consumerKey,
+      consumerSecret,
+      token: tok.token,
+      tokenSecret: tok.tokenSecret,
+    });
+    store.set("tumblrBlogsCache", blogs);
+    if (!store.get("tumblrPrimaryBlogId") && blogs.length) {
+      store.set("tumblrPrimaryBlogId", blogs[0].id);
+    }
+  } catch (e) {
+    logEvent("WARN", "Tumblr authorized but blog fetch failed", { error: String(e?.message || e) });
+  }
+
+  store.set("lastError", "");
+  return { ok: true };
+});
+
+ipcMain.handle("tumblr:oauth:logout", async () => {
+  store.set("tumblrTokenEnc", "");
+  store.set("tumblrTokenSecretEnc", "");
+  store.set("tumblrHasToken", false);
+  store.set("tumblrOauthTmp", null);
+  store.set("tumblrUsername", "");
+  store.set("tumblrBlogsCache", []);
+  store.set("tumblrPrimaryBlogId", "");
+  store.set("lastError", "");
+  return { ok: true };
+});
+
+ipcMain.handle("tumblr:blogs", async (_e, { force } = {}) => {
+  if (!isTumblrAuthed()) throw new Error("Tumblr is not authorized");
+  const cached = store.get("tumblrBlogsCache") || [];
+  if (!force && Array.isArray(cached) && cached.length) return cached;
+
+  const auth = getTumblrAuth();
+  const blogs = await tumblr.listBlogs({
+    consumerKey: auth.consumerKey,
+    consumerSecret: auth.consumerSecret,
+    token: auth.token,
+    tokenSecret: auth.tokenSecret,
+  });
+  store.set("tumblrBlogsCache", blogs);
+  const selectedBlogId = String(store.get("tumblrPrimaryBlogId") || "");
+  if (!selectedBlogId || !blogs.some((b) => String(b.id) === selectedBlogId)) {
+    store.set("tumblrPrimaryBlogId", blogs[0]?.id || "");
+  }
+  return blogs;
+});
+
+ipcMain.handle("tumblr:setPrimaryBlog", async (_e, { blogId }) => {
+  const clean = String(blogId || "").trim();
+  store.set("tumblrPrimaryBlogId", clean);
+  return { ok: true, blogId: clean };
+});
+
 ipcMain.handle("oauth:finish", async (_e, { verifier }) => {
   const apiKey = store.get("apiKey");
   const apiSecret = decryptCredential(store.get("apiSecretEnc") || "");
@@ -1617,7 +1753,7 @@ ipcMain.handle("oauth:logout", async () => {
 });
 
 ipcMain.handle("flickr:groups", async (_e, opts = {}) => {
-  if (!isAuthed()) throw new Error("Not authorized");
+  if (!isFlickrAuthed()) throw new Error("Flickr is not authorized");
   const auth = getFlickrAuth();
   const force = Boolean(opts && opts.force);
   try {
@@ -1670,7 +1806,7 @@ ipcMain.handle("flickr:groupsRefreshStatus", async () => {
 });
 
 ipcMain.handle("flickr:albums", async () => {
-  if (!isAuthed()) throw new Error("Not authorized");
+  if (!isFlickrAuthed()) throw new Error("Flickr is not authorized");
   const auth = getFlickrAuth();
   try {
     const result = await flickr.listAlbums({
@@ -1690,7 +1826,7 @@ ipcMain.handle("flickr:albums", async () => {
   }
 });
 ipcMain.handle("flickr:photoUrls", async (_e, { photoId }) => {
-  if (!isAuthed()) throw new Error("Not authorized");
+  if (!isFlickrAuthed()) throw new Error("Flickr is not authorized");
   if (!photoId) return { thumbUrl: "", previewUrl: "" };
 
   const cache = store.get("photoUrlCache") || {};
@@ -2100,8 +2236,22 @@ async function ensureAlbumByTitle({ title, primaryPhotoId, auth }) {
   return { id, createdNow: true };
 }
 
+function normalizeTargetServicesForItem(item) {
+  const raw = Array.isArray(item?.targetServices) ? item.targetServices : [];
+  const out = [];
+  const seen = new Set();
+  for (const svc of raw) {
+    const clean = String(svc || "").trim().toLowerCase();
+    if (clean !== "flickr" && clean !== "tumblr") continue;
+    if (seen.has(clean)) continue;
+    seen.add(clean);
+    out.push(clean);
+  }
+  if (!out.length) out.push("flickr");
+  return out;
+}
+
 async function uploadNowOneInternal(options = {}) {
-  const auth = getFlickrAuth();
   const maxUploadAttempts = 2;
 
   // Prevent overlapping uploads
@@ -2128,6 +2278,9 @@ async function uploadNowOneInternal(options = {}) {
     }
     if (!next) return { ok: true, message: "No pending items." };
 
+    next.targetServices = normalizeTargetServicesForItem(next);
+    if (!next.serviceStates || typeof next.serviceStates !== "object") next.serviceStates = {};
+
     if (next.status === "failed") {
       next.status = "pending";
       next.lastError = "";
@@ -2140,154 +2293,247 @@ async function uploadNowOneInternal(options = {}) {
 
     logEvent("INFO", "Uploading photo", { id: next.id, path: next.photoPath });
 
-    let photoId = "";
-    let lastUploadErr = null;
-    for (let attempt = 1; attempt <= maxUploadAttempts; attempt++) {
-      try {
-        let lastProgressBytes = 0;
-        photoId = await flickr.uploadPhoto({
-          apiKey: auth.apiKey,
-          apiSecret: auth.apiSecret,
-          token: auth.token,
-          tokenSecret: auth.tokenSecret,
-          item: next,
-          onProgress: (loaded, total) => {
-            // Only dispatch progress if bytes increased meaningfully or we're at the end.
-            // This avoids flashing caused by socket.bytesWritten jumping to 0 between files.
-            const minThreshold = 512; // 512 bytes minimum before first report
-            if (loaded > lastProgressBytes && (loaded >= minThreshold || loaded === total)) {
-              lastProgressBytes = loaded;
-              try {
-                if (win && win.webContents) {
-                  win.webContents.send("upload:progress", { loaded, total });
+    let successfulServices = 0;
+    const warningParts = [];
+    const errorParts = [];
+
+    if (next.targetServices.includes("flickr") && next.serviceStates?.flickr?.status !== "done") {
+      if (!isFlickrAuthed()) {
+        const msg = "Flickr target selected but Flickr is not authorized.";
+        next.serviceStates.flickr = { status: "failed", lastError: msg };
+        errorParts.push(`Flickr: ${msg}`);
+      } else {
+        const auth = getFlickrAuth();
+        try {
+          let photoId = "";
+          let lastUploadErr = null;
+          for (let attempt = 1; attempt <= maxUploadAttempts; attempt++) {
+            try {
+              let lastProgressBytes = 0;
+              photoId = await flickr.uploadPhoto({
+                apiKey: auth.apiKey,
+                apiSecret: auth.apiSecret,
+                token: auth.token,
+                tokenSecret: auth.tokenSecret,
+                item: next,
+                onProgress: (loaded, total) => {
+                  const minThreshold = 512;
+                  if (loaded > lastProgressBytes && (loaded >= minThreshold || loaded === total)) {
+                    lastProgressBytes = loaded;
+                    try {
+                      if (win && win.webContents) {
+                        win.webContents.send("upload:progress", { loaded, total });
+                      }
+                    } catch (_) {}
+                  }
                 }
-              } catch (_) {}
+              });
+              lastUploadErr = null;
+              break;
+            } catch (e) {
+              lastUploadErr = e;
+              const msg = e?.message ? String(e.message) : String(e);
+              if (attempt < maxUploadAttempts) {
+                logEvent("WARN", "Upload attempt failed; retrying", {
+                  id: next.id,
+                  attempt,
+                  maxAttempts: maxUploadAttempts,
+                  error: msg,
+                });
+              }
             }
           }
-        });
-        lastUploadErr = null;
-        break;
-      } catch (e) {
-        lastUploadErr = e;
-        const msg = e?.message ? String(e.message) : String(e);
-        if (attempt < maxUploadAttempts) {
-          logEvent("WARN", "Upload attempt failed; retrying", {
-            id: next.id,
-            attempt,
-            maxAttempts: maxUploadAttempts,
-            error: msg,
-          });
+          if (!photoId) throw (lastUploadErr || new Error("Upload failed"));
+
+          next.photoId = photoId;
+          next.uploadedAt = new Date().toISOString();
+          logEvent("INFO", "Uploaded photo", { id: next.id, photoId });
+
+          if (next.latitude != null && next.longitude != null) {
+            try {
+              await flickr.setPhotoLocation({
+                apiKey: auth.apiKey,
+                apiSecret: auth.apiSecret,
+                token: auth.token,
+                tokenSecret: auth.tokenSecret,
+                photoId,
+                latitude: next.latitude,
+                longitude: next.longitude,
+                accuracy: next.accuracy || 16,
+                geoPrivacy: next.geoPrivacy || "private"
+              });
+              logEvent("INFO", "Set photo location", {
+                id: next.id,
+                photoId,
+                location: next.locationDisplayName || `${next.latitude}, ${next.longitude}`
+              });
+            } catch (e) {
+              const msg = e?.message ? String(e.message) : String(e);
+              logEvent("WARN", "Failed to set photo location", { id: next.id, photoId, error: msg });
+            }
+          }
+
+          const serviceWarnings = [];
+          const albumParts = [];
+          const createdAlbumIdsForThisPhoto = new Set();
+
+          const requestedCreateAlbums = [];
+          {
+            const seen = new Set();
+            for (const title of (next.createAlbums || [])) {
+              const trimmed = String(title || "").trim();
+              const k = trimmed.toLowerCase();
+              if (!trimmed || seen.has(k)) continue;
+              seen.add(k);
+              requestedCreateAlbums.push(trimmed);
+            }
+          }
+          const unresolvedCreateAlbums = [];
+          for (const title of requestedCreateAlbums) {
+            try {
+              const ensured = await ensureAlbumByTitle({ title, primaryPhotoId: photoId, auth });
+              if (!ensured?.id) {
+                unresolvedCreateAlbums.push(title);
+                continue;
+              }
+              next.albumIds = Array.from(new Set([...(next.albumIds || []), String(ensured.id)]));
+              if (ensured.createdNow) {
+                createdAlbumIdsForThisPhoto.add(String(ensured.id));
+                logEvent("INFO", "Created album for queued photo", { id: next.id, photoId, title, albumId: String(ensured.id) });
+              }
+            } catch (e) {
+              const msg = e?.message ? String(e.message) : String(e);
+              unresolvedCreateAlbums.push(title);
+              serviceWarnings.push(`create album \"${title}\": ${msg}`);
+              albumParts.push(`create album \"${title}\": ${msg}`);
+              logEvent("WARN", "Album create failed", { id: next.id, photoId, title, error: msg });
+            }
+          }
+          next.createAlbums = unresolvedCreateAlbums;
+          queue.saveQueue(q);
+
+          for (const aid of (next.albumIds || [])) {
+            if (createdAlbumIdsForThisPhoto.has(String(aid))) continue;
+            try {
+              await flickr.addPhotoToAlbum({ apiKey: auth.apiKey, apiSecret: auth.apiSecret, token: auth.token, tokenSecret: auth.tokenSecret, photoId, albumId: aid });
+              logEvent("INFO", "Added to album", { id: next.id, photoId, albumId: aid });
+            } catch (e) {
+              const msg = e?.message ? String(e.message) : String(e);
+              serviceWarnings.push(`album ${aid}: ${msg}`);
+              albumParts.push(`album ${aid}: ${msg}`);
+              logEvent("WARN", "Album add failed", { id: next.id, photoId, albumId: aid, error: msg });
+            }
+          }
+
+          for (const gid of (next.groupIds || [])) {
+            const res = await attemptAddToGroup({ apiKey: auth.apiKey, apiSecret: auth.apiSecret, token: auth.token, tokenSecret: auth.tokenSecret, item: next, groupId: gid });
+            if (!res.ok) serviceWarnings.push(`group ${gid}: ${res.message || "Group add failed"}`);
+          }
+
+          if (serviceWarnings.length) {
+            setItemLastErrorFromGroupStates(next, albumParts);
+            warningParts.push(...serviceWarnings.map((w) => `Flickr: ${w}`));
+          }
+
+          next.serviceStates.flickr = {
+            status: "done",
+            remoteId: photoId,
+            uploadedAt: next.uploadedAt,
+          };
+          successfulServices += 1;
+          queue.saveQueue(q);
+        } catch (e) {
+          const msg = e?.message ? String(e.message) : String(e);
+          next.serviceStates.flickr = { status: "failed", lastError: msg };
+          errorParts.push(`Flickr: ${msg}`);
+          logEvent("WARN", "Flickr upload failed", { id: next.id, error: msg });
         }
       }
-    }
-    if (!photoId) throw (lastUploadErr || new Error("Upload failed"));
-
-    // Mark upload complete immediately so we never re-upload this file again.
-    next.photoId = photoId;
-    next.uploadedAt = new Date().toISOString();
-    next.status = "done";
-    next.scheduledUploadAt = "";
-    queue.saveQueue(q);
-
-    logEvent("INFO", "Uploaded photo", { id: next.id, photoId });
-
-    // Set geographic location if provided
-    if (next.latitude != null && next.longitude != null) {
-      try {
-        await flickr.setPhotoLocation({
-          apiKey: auth.apiKey,
-          apiSecret: auth.apiSecret,
-          token: auth.token,
-          tokenSecret: auth.tokenSecret,
-          photoId,
-          latitude: next.latitude,
-          longitude: next.longitude,
-          accuracy: next.accuracy || 16,
-          geoPrivacy: next.geoPrivacy || "private"
-        });
-        logEvent("INFO", "Set photo location", { 
-          id: next.id, 
-          photoId, 
-          location: next.locationDisplayName || `${next.latitude}, ${next.longitude}` 
-        });
-      } catch (e) {
-        const msg = e?.message ? String(e.message) : String(e);
-        logEvent("WARN", "Failed to set photo location", { id: next.id, photoId, error: msg });
-        // Don't fail the whole upload if geo tagging fails - just log it
-      }
+    } else if (next.targetServices.includes("flickr")) {
+      successfulServices += 1;
     }
 
-    const warnings = [];
-    const albumParts = [];
-    const createdAlbumIdsForThisPhoto = new Set();
-
-    // Ensure/create albums requested by title for this item only.
-    // If no item references a "new" album title, it will not be created.
-    const requestedCreateAlbums = [];
-    {
-      const seen = new Set();
-      for (const title of (next.createAlbums || [])) {
-        const trimmed = String(title || "").trim();
-        const k = trimmed.toLowerCase();
-        if (!trimmed || seen.has(k)) continue;
-        seen.add(k);
-        requestedCreateAlbums.push(trimmed);
-      }
-    }
-    const unresolvedCreateAlbums = [];
-    for (const title of requestedCreateAlbums) {
-      try {
-        const ensured = await ensureAlbumByTitle({ title, primaryPhotoId: photoId, auth });
-        if (!ensured?.id) {
-          unresolvedCreateAlbums.push(title);
-          continue;
+    if (next.targetServices.includes("tumblr") && next.serviceStates?.tumblr?.status !== "done") {
+      if (!isTumblrAuthed()) {
+        const msg = "Tumblr target selected but Tumblr is not authorized.";
+        next.serviceStates.tumblr = { status: "failed", lastError: msg };
+        errorParts.push(`Tumblr: ${msg}`);
+      } else if (String(next.privacy || "private") === "private") {
+        const msg = "Tumblr does not support private visibility from this app. Change privacy to upload to Tumblr.";
+        next.serviceStates.tumblr = { status: "failed", lastError: msg };
+        errorParts.push(`Tumblr: ${msg}`);
+      } else {
+        const tauth = getTumblrAuth();
+        const blogId = String(store.get("tumblrPrimaryBlogId") || "").trim();
+        if (!blogId) {
+          const msg = "Select a Tumblr blog in Setup before uploading.";
+          next.serviceStates.tumblr = { status: "failed", lastError: msg };
+          errorParts.push(`Tumblr: ${msg}`);
+        } else {
+          try {
+            const postId = await tumblr.createPhotoPost({
+              consumerKey: tauth.consumerKey,
+              consumerSecret: tauth.consumerSecret,
+              token: tauth.token,
+              tokenSecret: tauth.tokenSecret,
+              blogIdentifier: blogId,
+              item: next,
+              markMature: Number(next.safetyLevel || 1) >= 2,
+            });
+            const uploadedAt = new Date().toISOString();
+            next.serviceStates.tumblr = {
+              status: "done",
+              remoteId: postId,
+              uploadedAt,
+            };
+            successfulServices += 1;
+            logEvent("INFO", "Uploaded to Tumblr", { id: next.id, postId, blogId });
+          } catch (e) {
+            const msg = e?.message ? String(e.message) : String(e);
+            next.serviceStates.tumblr = { status: "failed", lastError: msg };
+            errorParts.push(`Tumblr: ${msg}`);
+            logEvent("WARN", "Tumblr upload failed", { id: next.id, error: msg, blogId });
+          }
         }
-        next.albumIds = Array.from(new Set([...(next.albumIds || []), String(ensured.id)]));
-        if (ensured.createdNow) {
-          createdAlbumIdsForThisPhoto.add(String(ensured.id));
-          logEvent("INFO", "Created album for queued photo", { id: next.id, photoId, title, albumId: String(ensured.id) });
-        }
-      } catch (e) {
-        const msg = e?.message ? String(e.message) : String(e);
-        unresolvedCreateAlbums.push(title);
-        warnings.push(`create album \"${title}\": ${msg}`);
-        albumParts.push(`create album \"${title}\": ${msg}`);
-        logEvent("WARN", "Album create failed", { id: next.id, photoId, title, error: msg });
       }
-    }
-    next.createAlbums = unresolvedCreateAlbums;
-    queue.saveQueue(q);
-
-    // Attach to albums (already-existing)
-    for (const aid of (next.albumIds || [])) {
-      if (createdAlbumIdsForThisPhoto.has(String(aid))) continue;
-      try {
-        await flickr.addPhotoToAlbum({ apiKey: auth.apiKey, apiSecret: auth.apiSecret, token: auth.token, tokenSecret: auth.tokenSecret, photoId, albumId: aid });
-        logEvent("INFO", "Added to album", { id: next.id, photoId, albumId: aid });
-      } catch (e) {
-        const msg = e?.message ? String(e.message) : String(e);
-        warnings.push(`album ${aid}: ${msg}`);
-        albumParts.push(`album ${aid}: ${msg}`);
-        logEvent("WARN", "Album add failed", { id: next.id, photoId, albumId: aid, error: msg });
-      }
+    } else if (next.targetServices.includes("tumblr")) {
+      successfulServices += 1;
     }
 
-    // Attach to groups
-    for (const gid of (next.groupIds || [])) {
-      const res = await attemptAddToGroup({ apiKey: auth.apiKey, apiSecret: auth.apiSecret, token: auth.token, tokenSecret: auth.tokenSecret, item: next, groupId: gid });
-      if (!res.ok) warnings.push(`group ${gid}: ${res.message || "Group add failed"}`);
-    }
-
-    if (warnings.length) {
-      // Build per-item warnings from per-group states (retry, failed, etc.)
-      setItemLastErrorFromGroupStates(next, albumParts);
+    if (!next.targetServices.length) {
+      const msg = "No target services selected for this item.";
+      next.status = "failed";
+      next.lastError = msg;
       queue.saveQueue(q);
-      // Do NOT persist per-item warnings into global lastError (prevents stale warnings on launch).
-      return { ok: true, photoId, warnings };
+      return { ok: false, error: msg };
     }
 
+    if (successfulServices > 0) {
+      next.scheduledUploadAt = "";
+    }
+
+    const combinedMessages = [...warningParts, ...errorParts].filter(Boolean);
+    if (successfulServices === 0) {
+      const msg = combinedMessages.join(" | ") || "Upload failed for all target services.";
+      next.status = "failed";
+      next.lastError = msg;
+      store.set("lastError", msg);
+      queue.saveQueue(q);
+      return { ok: false, error: msg };
+    }
+
+    if (combinedMessages.length) {
+      next.status = "done_warn";
+      next.lastError = combinedMessages.join(" | ");
+      queue.saveQueue(q);
+      return { ok: true, photoId: next.photoId || "", warnings: combinedMessages };
+    }
+
+    next.status = "done";
+    next.lastError = "";
+    queue.saveQueue(q);
     store.set("lastError", "");
-    return { ok: true, photoId };
+    return { ok: true, photoId: next.photoId || "" };
   } catch (err) {
     const msg = err?.message ? String(err.message) : String(err);
     store.set("lastError", msg);
@@ -2318,7 +2564,7 @@ async function tickScheduler() {
   // Always process due group retries (independent of upload schedule).
   // This allows 1h/6h/12h/24h backoff to work even when upload interval is longer.
   try {
-    if (isAuthed()) {
+    if (isFlickrAuthed()) {
       const auth = getFlickrAuth();
       await processDueGroupRetries({
         apiKey: auth.apiKey,
@@ -2366,7 +2612,7 @@ async function tickScheduler() {
   if (uploadLock) return;
   // First, process any due group retries (even if there are no pending uploads)
   try {
-    if (isAuthed()) {
+    if (isFlickrAuthed()) {
       const auth = getFlickrAuth();
       await processDueGroupRetries({
         apiKey: auth.apiKey,

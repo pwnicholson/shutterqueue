@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
-import type { Album, GeoPrivacy, Group, Privacy, QueueItem } from "../types";
+import type { Album, GeoPrivacy, Group, Privacy, QueueItem, UploadService } from "../types";
 
 type Tab = "setup" | "queue" | "schedule" | "logs";
 type SavedIdSet = { name: string; ids: string[] };
@@ -21,6 +21,80 @@ const SAFETY_LABEL: Record<1 | 2 | 3, string> = {
   2: "Moderate",
   3: "Restricted",
 };
+
+const SERVICES: Array<{ id: UploadService; label: string }> = [
+  { id: "flickr", label: "Flickr" },
+  { id: "tumblr", label: "Tumblr" },
+];
+
+const PLATFORM_META: Record<string, { label: string; icon: string; bg: string; fg: string }> = {
+  flickr: { label: "Flickr", icon: "F", bg: "#ff0084", fg: "#ffffff" },
+  tumblr: { label: "Tumblr", icon: "T", bg: "#001935", fg: "#ffffff" },
+};
+
+const PLATFORM_CHIP_BASE_STYLE: React.CSSProperties = {
+  width: 16,
+  height: 16,
+  borderRadius: 999,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: 10,
+  fontWeight: 700,
+  lineHeight: 1,
+};
+
+function normalizeTargetServices(services: UploadService[] | undefined): UploadService[] {
+  const out: UploadService[] = [];
+  const seen = new Set<string>();
+  for (const raw of services || []) {
+    const svc = String(raw || "").trim().toLowerCase();
+    if ((svc !== "flickr" && svc !== "tumblr") || seen.has(svc)) continue;
+    seen.add(svc);
+    out.push(svc as UploadService);
+  }
+  if (!out.length) out.push("flickr");
+  return out;
+}
+
+function platformLabel(id: string): string {
+  const key = String(id || "").trim().toLowerCase();
+  if (!key) return "Platform";
+  if (PLATFORM_META[key]?.label) return PLATFORM_META[key].label;
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+function platformChipStyle(id: string): React.CSSProperties {
+  const key = String(id || "").trim().toLowerCase();
+  const meta = PLATFORM_META[key];
+  if (meta) {
+    return {
+      ...PLATFORM_CHIP_BASE_STYLE,
+      background: meta.bg,
+      color: meta.fg,
+      border: "1px solid rgba(255,255,255,0.22)",
+    };
+  }
+  return {
+    ...PLATFORM_CHIP_BASE_STYLE,
+    background: "rgba(255,255,255,0.2)",
+    color: "#fff",
+    border: "1px solid rgba(255,255,255,0.22)",
+  };
+}
+
+function servicesForBadgeDisplay(services: string[] | undefined): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of services || []) {
+    const key = String(raw || "").trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  if (!out.length) out.push("flickr");
+  return out;
+}
 
 const GEO_PRIVACY_LABEL: Record<GeoPrivacy, string> = {
   public: "Public",
@@ -231,6 +305,11 @@ export default function App() {
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [verifier, setVerifier] = useState("");
+  const [tumblrKey, setTumblrKey] = useState("");
+  const [tumblrSecret, setTumblrSecret] = useState("");
+  const [tumblrVerifier, setTumblrVerifier] = useState("");
+  const [tumblrBlogs, setTumblrBlogs] = useState<Array<{ id: string; name: string; title: string; url: string; primary?: boolean }>>([]);
+  const [tumblrPrimaryBlogId, setTumblrPrimaryBlogId] = useState("");
   const [showSetupAdvanced, setShowSetupAdvanced] = useState(false);
 
   const [groups, setGroups] = useState<Group[]>([]);
@@ -366,6 +445,7 @@ const matchesLogFilter = (line: string, mode: LogFilterMode) => {
 
   const [didAutoLoadGroups, setDidAutoLoadGroups] = useState(false);
   const [didAutoLoadAlbums, setDidAutoLoadAlbums] = useState(false);
+  const [didAutoLoadTumblrBlogs, setDidAutoLoadTumblrBlogs] = useState(false);
 
   const [appVersion, setAppVersion] = useState<string>("");
   const [isUploadingNow, setIsUploadingNow] = useState(false);
@@ -621,6 +701,63 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     [queue, selectedSet]
   );
 
+  const configuredServiceIds = useMemo(() => {
+    const out: UploadService[] = [];
+    if (cfg?.flickrAuthed) out.push("flickr");
+    if (cfg?.tumblrAuthed) out.push("tumblr");
+    return out;
+  }, [cfg?.flickrAuthed, cfg?.tumblrAuthed]);
+
+  const showPlatformSelector = configuredServiceIds.length >= 2;
+
+  const selectorServiceOptions = useMemo(() => {
+    if (!showPlatformSelector) return [] as Array<{ id: UploadService; label: string }>;
+    return SERVICES.filter((svc) => configuredServiceIds.includes(svc.id));
+  }, [configuredServiceIds, showPlatformSelector]);
+
+  const selectedEditorServices = useMemo(() => {
+    const set = new Set<string>();
+    if (selectedIds.length > 1) {
+      for (const item of selectedItems) {
+        for (const svc of normalizeTargetServices(item.targetServices)) set.add(svc);
+      }
+    } else if (active) {
+      for (const svc of normalizeTargetServices(active.targetServices)) set.add(svc);
+    }
+    return Array.from(set);
+  }, [selectedIds, selectedItems, active]);
+
+  const showFlickrOnlyFieldHint = useMemo(() => {
+    return selectedEditorServices.includes("flickr") && selectedEditorServices.some((svc) => svc !== "flickr");
+  }, [selectedEditorServices]);
+
+  const tumblrSelectedInEditor = useMemo(() => {
+    if (selectedIds.length > 1) {
+      return selectedItems.some((it) => normalizeTargetServices(it.targetServices).includes("tumblr"));
+    }
+    if (!active) return false;
+    return normalizeTargetServices(active.targetServices).includes("tumblr");
+  }, [selectedIds, selectedItems, active]);
+
+  const safetyOptionLabel = useCallback((level: 1 | 2 | 3) => {
+    if (!tumblrSelectedInEditor) return SAFETY_LABEL[level];
+    if (level === 2) return "Moderate / Mature";
+    if (level === 3) return "Restricted / Mature";
+    return "Safe";
+  }, [tumblrSelectedInEditor]);
+
+  useEffect(() => {
+    if (configuredServiceIds.length !== 1 || !queue.length) return;
+    const only = configuredServiceIds[0];
+    const changed = queue
+      .filter((it) => normalizeTargetServices(it.targetServices).join("|") !== only)
+      .map((it) => ({ ...it, targetServices: [only] as UploadService[] }));
+    if (!changed.length) return;
+    setQueue((prev) => prev.map((it) => changed.find((x) => x.id === it.id) || it));
+    void updateItems(changed);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configuredServiceIds.join("|"), queue.length]);
+
   const commonTags = useMemo(() => {
     if (selectedItems.length < 2) return [] as string[];
 
@@ -765,6 +902,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setSkipOvernight(Boolean(c.skipOvernight));
     // only set API key when field is empty so we don't clobber user input
     if (!apiKey) setApiKey(c.apiKey || "");
+    if (!tumblrKey) setTumblrKey(c.tumblrApiKey || "");
+    setTumblrPrimaryBlogId(String(c.tumblrPrimaryBlogId || ""));
+    if (!c.tumblrAuthed) {
+      setTumblrBlogs([]);
+      setDidAutoLoadTumblrBlogs(false);
+    }
     // note: apiSecret is intentionally left untouched here
   };
 
@@ -920,7 +1063,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   }, [hasBackgroundQueueActivity]);
 
   useEffect(() => {
-    if (!cfg?.authed) return;
+    if (!cfg?.flickrAuthed) return;
 
     if (!didAutoLoadGroups) {
       (async () => {
@@ -947,12 +1090,26 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         }
       })();
     }
-  }, [cfg?.authed, didAutoLoadGroups, didAutoLoadAlbums]);
+  }, [cfg?.flickrAuthed, didAutoLoadGroups, didAutoLoadAlbums]);
+
+  useEffect(() => {
+    if (!cfg?.tumblrAuthed || didAutoLoadTumblrBlogs) return;
+    (async () => {
+      try {
+        const blogs = await window.sq.fetchTumblrBlogs();
+        setTumblrBlogs(blogs || []);
+      } catch {
+        // ignore
+      } finally {
+        setDidAutoLoadTumblrBlogs(true);
+      }
+    })();
+  }, [cfg?.tumblrAuthed, didAutoLoadTumblrBlogs]);
 
   // Group member counts are refreshed in the main process background.
   // Only poll cached groups while that background refresh is actively running.
   useEffect(() => {
-    if (!cfg?.authed) return;
+    if (!cfg?.flickrAuthed) return;
     let cancelled = false;
 
     const refreshGroupsFromCache = async () => {
@@ -975,11 +1132,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       cancelled = true;
       if (interval) window.clearInterval(interval);
     };
-  }, [cfg?.authed, groupRefreshStatus.inProgress]);
+  }, [cfg?.flickrAuthed, groupRefreshStatus.inProgress]);
 
   // Poll explicit background refresh status from the main process.
   useEffect(() => {
-    if (!cfg?.authed) return;
+    if (!cfg?.flickrAuthed) return;
     let cancelled = false;
 
     const loadStatus = async () => {
@@ -998,7 +1155,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [cfg?.authed]);
+  }, [cfg?.flickrAuthed]);
 
   useEffect(() => {
     thumbsRef.current = thumbs;
@@ -1182,6 +1339,39 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setVerifier("");
     await refreshAll();
     showToast("Authorization complete.");
+  };
+
+  const saveTumblrKeys = async () => {
+    await window.sq.setTumblrKeySecret(tumblrKey, tumblrSecret);
+    await refreshAll();
+    showToast("Saved Tumblr API key/secret.");
+  };
+
+  const startTumblrOAuth = async () => {
+    await saveTumblrKeys();
+    await window.sq.startTumblrOAuth();
+    showToast("Tumblr browser authorization opened. Authorize, then paste verifier and click Finish.");
+  };
+
+  const finishTumblrOAuth = async () => {
+    await window.sq.finishTumblrOAuth(tumblrVerifier);
+    setTumblrVerifier("");
+    const blogs = await window.sq.fetchTumblrBlogs({ force: true });
+    setTumblrBlogs(blogs || []);
+    await refreshAll();
+    showToast("Tumblr authorization complete.");
+  };
+
+  const refreshTumblrBlogs = async () => {
+    const blogs = await window.sq.fetchTumblrBlogs({ force: true });
+    setTumblrBlogs(blogs || []);
+    showToast(`Loaded ${blogs.length} Tumblr blog(s).`);
+  };
+
+  const selectTumblrBlog = async (blogId: string) => {
+    setTumblrPrimaryBlogId(blogId);
+    await window.sq.setTumblrPrimaryBlog(blogId);
+    await refreshAll();
   };
 
   const refreshGroups = async () => {
@@ -2031,7 +2221,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const updateActive = async (patch: Partial<QueueItem>) => {
     if (!active) return;
-    const updated: QueueItem = { ...active, ...patch };
+    const updated: QueueItem = {
+      ...active,
+      ...patch,
+      ...(patch.targetServices ? { targetServices: normalizeTargetServices(patch.targetServices as UploadService[]) } : {}),
+    };
     setQueue(prev => prev.map(it => it.id === updated.id ? updated : it));
     await updateItems([updated]);
   };
@@ -2483,13 +2677,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return Array.from(set);
   };
 
-  const triState = (kind: "group" | "album", id: string) => {
+  const triState = (kind: "group" | "album" | "service", id: string) => {
     if (!selectedIds.length) return "none" as const;
     const pendingAlbumTitle = kind === "album" && isPendingNewAlbumId(id) ? pendingAlbumTitleFromId(id) : "";
     let on = 0;
     for (const sid of selectedIds) {
       const it = queue.find(x => x.id === sid);
-      if (kind === "album" && pendingAlbumTitle) {
+      if (kind === "service") {
+        if (normalizeTargetServices(it?.targetServices).includes(id as UploadService)) on += 1;
+      } else if (kind === "album" && pendingAlbumTitle) {
         if (hasCreateAlbumName(it?.createAlbums, pendingAlbumTitle)) on += 1;
       } else {
         const list = kind === "group" ? it?.groupIds : it?.albumIds;
@@ -2501,14 +2697,20 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return "some" as const;
   };
 
-  const setForSelected = async (kind: "group" | "album", id: string, next: "all" | "none") => {
+  const setForSelected = async (kind: "group" | "album" | "service", id: string, next: "all" | "none") => {
     if (!selectedIds.length) return;
     const pendingAlbumTitle = kind === "album" && isPendingNewAlbumId(id) ? pendingAlbumTitleFromId(id) : "";
     const changed: QueueItem[] = [];
     for (const sid of selectedIds) {
       const it = queue.find(x => x.id === sid);
       if (!it) continue;
-      if (kind === "group") {
+      if (kind === "service") {
+        const current = normalizeTargetServices(it.targetServices);
+        const set = new Set(current);
+        if (next === "all") set.add(id as UploadService);
+        else set.delete(id as UploadService);
+        changed.push({ ...it, targetServices: normalizeTargetServices(Array.from(set) as UploadService[]) });
+      } else if (kind === "group") {
         let updated: QueueItem = { ...it, groupIds: toggleIds(it.groupIds || [], id, next === "all" ? "add" : "remove") };
         if (next === "none") updated = removeGroupRetryAndSelection(updated, id);
         changed.push(updated);
@@ -2832,7 +3034,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <div className={`tab ${tab==="setup"?"selected":""}`} onClick={() => switchTab("setup")} role="tab" tabIndex={0}>Setup</div>
         </div>
         <div className="btncluster" style={{ alignItems: "center", marginLeft: "auto" }}>
-          {cfg?.authed ? <span className="badge good" onClick={() => switchTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Authorized</span> : <span className="badge warn" onClick={() => switchTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Not authorized</span>}
+          {cfg?.authed ? (
+            <span className="badge good" onClick={() => switchTab("setup")} style={{ cursor: "pointer", display: "inline-flex", gap: 6, alignItems: "center" }} title="Click to jump to Setup">
+              <span>Authorized</span>
+              {configuredServiceIds.map((svc) => (
+                <span key={svc} style={platformChipStyle(svc)} title={platformLabel(svc)}>
+                  {PLATFORM_META[svc]?.icon || platformLabel(svc).charAt(0).toUpperCase()}
+                </span>
+              ))}
+            </span>
+          ) : <span className="badge warn" onClick={() => switchTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Not authorized</span>}
           <span className="badge" onClick={() => switchTab("queue")} style={{ cursor: "pointer" }} title="Click to jump to Queue">{queue.length} in queue</span>
           {sched?.schedulerOn ? (
             <span className="badge good" onClick={async () => { await stopSched(); }} style={{ cursor: "pointer" }} title="Click to stop scheduler">Scheduler ON</span>
@@ -2872,7 +3083,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <div className="card">
             <h2>Flickr API + OAuth</h2>
             <div className="content">
-{cfg?.authed && !showSetupAdvanced ? (
+{cfg?.flickrAuthed && !showSetupAdvanced ? (
   <>
     <div className="badge good" style={{ marginBottom: 10 }}>Already authorized.</div>
     <div className="small" style={{ marginBottom: 12 }}>
@@ -2939,8 +3150,52 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       <input className="input" value={verifier} onChange={(e) => setVerifier(e.target.value)} placeholder="Verifier code" style={{ maxWidth: 240 }} />
       <button className="btn primary" onClick={finishOAuth} disabled={!verifier}>Finish</button>
     </div>
+
   </>
 )}
+              <div className="hr" />
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Tumblr API + OAuth</div>
+              <div className="small">Tumblr OAuth uses your browser. ShutterQueue stores encrypted Tumblr tokens locally.</div>
+              <div style={{ height: 12 }} />
+              <label className="small">Tumblr Consumer Key</label>
+              <input className="input" value={tumblrKey} onChange={(e) => setTumblrKey(e.target.value)} placeholder="Paste Tumblr consumer key" />
+              <div style={{ height: 10 }} />
+              <label className="small">Tumblr Consumer Secret</label>
+              <input className="input" value={tumblrSecret} onChange={(e) => setTumblrSecret(e.target.value)} placeholder="Paste Tumblr consumer secret" type="password" />
+              <div style={{ height: 12 }} />
+              <div className="row">
+                <button className="btn" onClick={saveTumblrKeys}>Save</button>
+                <button className="btn primary" onClick={startTumblrOAuth} disabled={!tumblrKey || (!tumblrSecret && !cfg?.tumblrHasApiSecret)}>Start Tumblr Authorization</button>
+                <button className="btn danger" onClick={async () => { await window.sq.tumblrLogout(); await refreshAll(); setTumblrBlogs([]); showToast("Tumblr logged out."); }}>Logout Tumblr</button>
+              </div>
+              <div className="small" style={{ marginTop: 10 }}>Paste verifier code shown by Tumblr:</div>
+              <div style={{ height: 10 }} />
+              <div className="row">
+                <input className="input" value={tumblrVerifier} onChange={(e) => setTumblrVerifier(e.target.value)} placeholder="Tumblr verifier code" style={{ maxWidth: 240 }} />
+                <button className="btn primary" onClick={finishTumblrOAuth} disabled={!tumblrVerifier}>Finish Tumblr OAuth</button>
+              </div>
+
+              <div style={{ height: 12 }} />
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <div className="small">Tumblr status: {cfg?.tumblrAuthed ? `Authorized${cfg?.tumblrUsername ? ` as ${cfg.tumblrUsername}` : ""}` : "Not authorized"}</div>
+                <button className="btn" onClick={refreshTumblrBlogs} disabled={!cfg?.tumblrAuthed}>Refresh Blogs</button>
+              </div>
+              <div style={{ height: 8 }} />
+              <label className="small">Tumblr Blog</label>
+              <select
+                className="input"
+                value={tumblrPrimaryBlogId}
+                disabled={!cfg?.tumblrAuthed || !tumblrBlogs.length}
+                onChange={(e) => { void selectTumblrBlog(e.target.value); }}
+              >
+                {!tumblrBlogs.length ? <option value="">No blogs loaded</option> : null}
+                {tumblrBlogs.map((b) => (
+                  <option key={b.id} value={b.id}>{b.title || b.name || b.id}</option>
+                ))}
+              </select>
+              <div className="small" style={{ marginTop: 6 }}>
+                Tumblr uploads require a selected blog and cannot use Flickr "Private" visibility.
+              </div>
               <div className="hr" />
               {showGroupCountsUpdating && (
                 <div className="small" style={{ marginTop: 6 }}>
@@ -3001,7 +3256,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               <div className="split">
                 <div>
                   <div className="row" style={{ marginBottom: 8, justifyContent: "space-between" }}>
-                    <button className="btn" onClick={refreshGroups} disabled={!cfg?.authed}>Refresh Groups</button>
+                    <button className="btn" onClick={refreshGroups} disabled={!cfg?.flickrAuthed}>Refresh Groups</button>
                     <div className="small">Groups loaded: {groups.length}</div>
                   </div>
                   <div className="small">Groups filter</div>
@@ -3019,7 +3274,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 </div>
                 <div>
                   <div className="row" style={{ marginBottom: 8, justifyContent: "space-between" }}>
-                    <button className="btn" onClick={refreshAlbums} disabled={!cfg?.authed}>Refresh Albums</button>
+                    <button className="btn" onClick={refreshAlbums} disabled={!cfg?.flickrAuthed}>Refresh Albums</button>
                     <div className="small">Albums loaded: {albums.length}</div>
                   </div>
                   <div className="small">Albums filter</div>
@@ -3344,6 +3599,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           {it.status === "failed" ? (
                             <span className="badge accent" title="Right-click and choose Retry Upload">Retry available</span>
                           ) : null}
+                          {servicesForBadgeDisplay((it.targetServices as string[] | undefined)).map((svc) => (
+                            <span key={`${it.id}-svc-${svc}`} style={platformChipStyle(svc)} title={`Target: ${platformLabel(svc)}`}>
+                              {PLATFORM_META[svc]?.icon || platformLabel(svc).charAt(0).toUpperCase()}
+                            </span>
+                          ))}
                           {it.status === "done_warn" && !hasPendingGroupRetries && it.lastError ? (
                             <span className="badge warn" title={friendlyIdInMessage(it.lastError)}>warnings: see details</span>
                           ) : null}
@@ -3505,6 +3765,23 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 <>
                   <div className="small" style={{ marginBottom: 12 }}>Batch edit: {selectedIds.length} selected items</div>
 
+                  {showPlatformSelector && (
+                    <>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Platforms</div>
+                      <div className="small" style={{ marginBottom: 8 }}>
+                        Choose which authorized platforms each selected item should upload to.
+                      </div>
+                      <div className="listbox" style={{ maxWidth: 320, marginBottom: 10 }}>
+                        {selectorServiceOptions.map((svc) => (
+                          <label key={svc.id} className="listrow trirow">
+                            <TriCheck state={triState("service", svc.id)} onToggle={(next) => setForSelected("service", svc.id, next)} />
+                            <span className="small">{svc.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
                   <label className="small">Title</label>
                   <input
                     className="input"
@@ -3600,9 +3877,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         }}
                       >
                         <option value="">(mixed values)</option>
-                        <option value="1">Safe</option>
-                        <option value="2">Moderate</option>
-                        <option value="3">Restricted</option>
+                        <option value="1">{safetyOptionLabel(1)}</option>
+                        <option value="2">{safetyOptionLabel(2)}</option>
+                        <option value="3">{safetyOptionLabel(3)}</option>
                       </select>
                     </div>
                   </div>
@@ -3611,7 +3888,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="split">
                     <div>
-                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Groups</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>Groups</span>
+                        {showFlickrOnlyFieldHint ? <span className="small" style={{ opacity: 0.75 }}>Flickr only</span> : null}
+                      </div>
                       <div className="small" style={{ marginTop: 6 }}>Load saved group set</div>
                       {renderSavedSetFilterControl("group")}
                       <div style={{ height: 6 }} />
@@ -3639,7 +3919,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <button className="btn" onClick={() => saveCurrentSelectionAsSet("group")}>Save selected Groups as a set</button>
                     </div>
                     <div>
-                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Albums</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>Albums</span>
+                        {showFlickrOnlyFieldHint ? <span className="small" style={{ opacity: 0.75 }}>Flickr only</span> : null}
+                      </div>
                       <div className="small" style={{ marginTop: 6 }}>Load saved album set</div>
                       {renderSavedSetFilterControl("album")}
                       <div style={{ height: 6 }} />
@@ -3680,7 +3963,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div className="section-divider" />
 
                   <div>
-                    <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Location</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span>Location</span>
+                      {showFlickrOnlyFieldHint ? <span className="small" style={{ opacity: 0.75 }}>Flickr only</span> : null}
+                    </div>
 
                     {batchLocationState.mode === "same" && (
                       <div style={{ marginBottom: 10 }}>
@@ -3800,6 +4086,32 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     </div>
                   )}
 
+                  {showPlatformSelector && (
+                    <>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Platforms</div>
+                      <div className="listbox" style={{ maxWidth: 320, marginBottom: 10 }}>
+                        {selectorServiceOptions.map((svc) => {
+                          const enabled = normalizeTargetServices(active.targetServices).includes(svc.id);
+                          return (
+                            <label key={svc.id} className="listrow">
+                              <input
+                                type="checkbox"
+                                checked={enabled}
+                                onChange={(e) => {
+                                  const set = new Set(normalizeTargetServices(active.targetServices));
+                                  if (e.target.checked) set.add(svc.id);
+                                  else set.delete(svc.id);
+                                  updateActive({ targetServices: normalizeTargetServices(Array.from(set) as UploadService[]) });
+                                }}
+                              />
+                              <span className="small">{svc.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+
                   <label className="small">Title</label>
                   <input className="input" disabled={isUploaded} value={active.title} onChange={(e) => updateActive({ title: e.target.value })} />
 
@@ -3840,9 +4152,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         value={String((active as any).safetyLevel || 1)}
                         onChange={(e) => updateActive({ safetyLevel: Number(e.target.value) as any })}
                       >
-                        <option value="1">Safe</option>
-                        <option value="2">Moderate</option>
-                        <option value="3">Restricted</option>
+                        <option value="1">{safetyOptionLabel(1)}</option>
+                        <option value="2">{safetyOptionLabel(2)}</option>
+                        <option value="3">{safetyOptionLabel(3)}</option>
                       </select>
                     </div>
                   </div>
@@ -3851,7 +4163,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="split">
                     <div>
-                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Groups</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>Groups</span>
+                        {showFlickrOnlyFieldHint ? <span className="small" style={{ opacity: 0.75 }}>Flickr only</span> : null}
+                      </div>
                       <div className="small" style={{ marginTop: 6 }}>Load saved group set</div>
                       {renderSavedSetFilterControl("group")}
                       <div style={{ height: 6 }} />
@@ -3895,7 +4210,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <button className="btn" onClick={() => saveCurrentSelectionAsSet("group")}>Save selected Groups as a set</button>
                     </div>
                     <div>
-                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Albums</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>Albums</span>
+                        {showFlickrOnlyFieldHint ? <span className="small" style={{ opacity: 0.75 }}>Flickr only</span> : null}
+                      </div>
                       <div className="small" style={{ marginTop: 6 }}>Load saved album set</div>
                       {renderSavedSetFilterControl("album")}
                       <div style={{ height: 6 }} />
@@ -3953,7 +4271,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   {/* Location Section - Full Width */}
                   <div>
-                    <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Location</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span>Location</span>
+                      {showFlickrOnlyFieldHint ? <span className="small" style={{ opacity: 0.75 }}>Flickr only</span> : null}
+                    </div>
                     
                     {active.locationDisplayName ? (
                       // Show selected location

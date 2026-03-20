@@ -7,12 +7,18 @@ declare global {
     sq: {
       getConfig: () => Promise<any>;
       setApiKeySecret: (apiKey: string, apiSecret: string) => Promise<any>;
+      setTumblrKeySecret: (consumerKey: string, consumerSecret: string) => Promise<any>;
       setUploadBatchSize: (uploadBatchSize: number) => Promise<any>;
       setSchedulerSettings: (payload: any) => Promise<any>;
       setSavedSets: (options: { kind: "group" | "album" | "tag"; sets: Array<{ name: string; ids: string[] }> }) => Promise<any>;
       startOAuth: () => Promise<any>;
       finishOAuth: (verifier: string) => Promise<any>;
       logout: () => Promise<any>;
+      startTumblrOAuth: () => Promise<any>;
+      finishTumblrOAuth: (verifier: string) => Promise<any>;
+      tumblrLogout: () => Promise<any>;
+      fetchTumblrBlogs: (options?: { force?: boolean }) => Promise<Array<{ id: string; name: string; title: string; url: string; primary?: boolean }>>;
+      setTumblrPrimaryBlog: (blogId: string) => Promise<any>;
 
       fetchGroups: (options?: { force?: boolean }) => Promise<Group[]>;
       fetchGroupRefreshStatus: () => Promise<{ inProgress: boolean; total: number; completed: number; startedAt: number }>;

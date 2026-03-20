@@ -3,12 +3,18 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 contextBridge.exposeInMainWorld("sq", {
   getConfig: () => ipcRenderer.invoke("cfg:get"),
   setApiKeySecret: (apiKey, apiSecret) => ipcRenderer.invoke("cfg:setKeys", { apiKey, apiSecret }),
+  setTumblrKeySecret: (consumerKey, consumerSecret) => ipcRenderer.invoke("cfg:setTumblrKeys", { consumerKey, consumerSecret }),
   setUploadBatchSize: (uploadBatchSize) => ipcRenderer.invoke("cfg:setUploadBatchSize", { uploadBatchSize }),
   setSchedulerSettings: (payload) => ipcRenderer.invoke("cfg:setSchedulerSettings", payload),
   setSavedSets: (options) => ipcRenderer.invoke("cfg:setSavedSets", options),
   startOAuth: () => ipcRenderer.invoke("oauth:start"),
   finishOAuth: (verifier) => ipcRenderer.invoke("oauth:finish", { verifier }),
   logout: () => ipcRenderer.invoke("oauth:logout"),
+  startTumblrOAuth: () => ipcRenderer.invoke("tumblr:oauth:start"),
+  finishTumblrOAuth: (verifier) => ipcRenderer.invoke("tumblr:oauth:finish", { verifier }),
+  tumblrLogout: () => ipcRenderer.invoke("tumblr:oauth:logout"),
+  fetchTumblrBlogs: (options) => ipcRenderer.invoke("tumblr:blogs", options || {}),
+  setTumblrPrimaryBlog: (blogId) => ipcRenderer.invoke("tumblr:setPrimaryBlog", { blogId }),
 
   fetchGroups: (options) => ipcRenderer.invoke("flickr:groups", options || {}),
   fetchGroupRefreshStatus: () => ipcRenderer.invoke("flickr:groupsRefreshStatus"),

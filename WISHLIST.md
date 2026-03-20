@@ -34,6 +34,11 @@
 ## Soon
 
 * \[ ] Fix bug that displays past times for group addition retry attempts and verify that they aren't getting stuck
+* \[ ] Implement support for Tumblr
+* \[ ] Implement support for Pixelfed
+* \[ ] Implement support for Mastodon
+* \[ ] Implement support for Bluesky
+* \[ ] Implement support for Lemmy Photo groups
 
 ## Nice-to-have
 
