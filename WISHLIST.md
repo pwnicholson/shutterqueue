@@ -29,16 +29,16 @@
 * [X] Add geographic data at upload (country/region/city lookup)
 * [X] Pull in basic info about groups size
 * [X] Added a "check for new version" feature
+* [X] Hotlink new version notices straight to the GitHub release when an update is detected
 * [X] Add sorting options for the queue: sort by original file name (A-Z or Z-A), sort by Title (A-Z or Z-A), or shuffle the queue
 * [X] Implement support for Tumblr
 * [X] Implement support for Bluesky
+* [X] Implement support for PixelFed (added, but currently untested)
 * [X] Implement support for Mastodon
 
 ## Soon
 
 * \[ ] Fix bug that displays past times for group addition retry attempts and verify that they aren't getting stuck
-* \[ ] Hotlink straight to new version download when new version is detected
-* \[ ] Implement support for Pixelfed
 * \[ ] Implement support for Pixfed.com
 * \[ ] Implement support for Lemmy Photo groups
 

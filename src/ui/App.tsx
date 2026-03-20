@@ -1156,7 +1156,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [skipOvernight, setSkipOvernight] = useState<boolean>(false);
   const [sched, setSched] = useState<any>(null);
 
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; actionUrl?: string } | null>(null);
   const [dismissedMessages, setDismissedMessages] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [logFilterMode, setLogFilterMode] = useState<LogFilterMode>("all");
@@ -1169,7 +1169,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [updateAvailableNotice, setUpdateAvailableNotice] = useState<{ message: string; releaseUrl?: string } | null>(null);
   const [didAutoCheckUpdates, setDidAutoCheckUpdates] = useState(false);
 
-  const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
+  const showToast = (message: string, options?: { actionUrl?: string }) => {
+    setToast({ message, actionUrl: options?.actionUrl });
+    setTimeout(() => setToast(null), 2800);
+  };
 
   const globalBannerMessages = useMemo(() => splitBannerMessages(cfg?.lastError), [cfg?.lastError]);
   const allKnownBannerMessages = useMemo(() => {
@@ -1402,9 +1405,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       }
       if (result.updateAvailable) {
         const msg = `Update available: v${result.latestVersion} (current v${result.currentVersion})`;
-        showToast(msg);
+        const releaseUrl = result.releaseUrl || `${"https://github.com/pwnicholson/shutterqueue"}/releases/latest`;
+        showToast(msg, { actionUrl: releaseUrl });
         setUpdateCheckStatus(msg);
-        setUpdateAvailableNotice({ message: msg, releaseUrl: result.releaseUrl || `${"https://github.com/pwnicholson/shutterqueue"}/releases/latest` });
+        setUpdateAvailableNotice({ message: msg, releaseUrl });
       } else {
         const suffix = result.cacheHit ? " (cached)" : "";
         const msg = `You're up to date (v${result.currentVersion})${suffix}.`;
@@ -3620,7 +3624,17 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
       {toast ? (
         <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-          <span>{toast}</span>
+          <span
+            style={{ cursor: toast.actionUrl ? "pointer" : "default" }}
+            title={toast.actionUrl ? "Open release page" : undefined}
+            onClick={() => {
+              if (toast.actionUrl) {
+                void window.sq.openExternal({ url: toast.actionUrl });
+              }
+            }}
+          >
+            {toast.message}
+          </span>
           <button
             className="btn"
             style={{ padding: "0 6px", minHeight: 22 }}
@@ -4488,7 +4502,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 </button>
               </div>
               {!!updateCheckStatus && (
-                <div className="small" style={{ marginTop: 8 }}>{updateCheckStatus}</div>
+                <div
+                  className="small"
+                  style={{ marginTop: 8, cursor: updateAvailableNotice?.releaseUrl && updateCheckStatus === updateAvailableNotice.message ? "pointer" : "default" }}
+                  title={updateAvailableNotice?.releaseUrl && updateCheckStatus === updateAvailableNotice.message ? "Open release page" : undefined}
+                  onClick={() => {
+                    if (updateAvailableNotice?.releaseUrl && updateCheckStatus === updateAvailableNotice.message) {
+                      void window.sq.openExternal({ url: updateAvailableNotice.releaseUrl });
+                    }
+                  }}
+                >
+                  {updateCheckStatus}
+                </div>
               )}
               <div style={{ height: 8 }} />
               <button className="btn" onClick={async () => { await (window as any).api.openThirdPartyLicenses?.(); }}>
@@ -6061,7 +6086,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official Flickr app.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.8.2-b1"}</span>
+          <span className="mono">v{appVersion || "0.9.5"}</span>
         </div>
       </div>
 

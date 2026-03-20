@@ -1,4 +1,4 @@
-# ShutterQueue — A paced uploader for Flickr (v0.9.3c)
+# ShutterQueue — A paced photo uploader (v0.9.5)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
@@ -7,7 +7,14 @@ Note that this is purely vibe-coded using a combination of different AI tools. I
 
 ShutterQueue is free to use. It requires you generate your own Flickr API key, which is free and easily available from Flickr (see setup instructions below)
 
+As of v0.9.5, ShutterQueue now includes Tumblr, Bluesky, Mastodon, and PixelFed support alongside Flickr. PixelFed support has been added, but it is still untested at this time.
+
 ## Summary of Key Features
+
+- **Multi-platform posting**
+  - Upload to Flickr, Tumblr, Bluesky, Mastodon, and PixelFed from the same queue
+  - Choose one or multiple target platforms per queued item
+  - PixelFed support is currently included but has not yet been fully live-tested
 
 - **Advanced Metadata** - all individually or in batches
   - Add Title, Tags, Descriptions
@@ -71,6 +78,24 @@ Note: If someone gains access to your computer's user account, they can still de
 ## Licenses
 
 The app includes a **View Third-Party Licenses** button in the Setup tab.
+
+
+
+
+
+## New to 0.9.5
+
+- **New platform support**
+  - Added Tumblr, Bluesky, PixelFed, and Mastodon support alongside Flickr
+  - Queue items can now target one or multiple platforms at once
+  - PixelFed support has been added, but is still untested at this time
+- **Platform-aware posting behavior**
+  - Added per-platform post composition controls, privacy/sensitivity handling, and accessibility text options where supported
+  - Added service-aware upload warnings so unsupported capabilities are called out without blocking supported targets
+  - Added clearer editor hints for Flickr-only fields when non-Flickr targets are selected
+- **Setup and update-check improvements**
+  - Setup now has service-specific tabs and authorization flows for each supported platform
+  - Update-available notices now hotlink directly to the matching GitHub release page
 
 
 
