@@ -30,14 +30,16 @@
 * [X] Pull in basic info about groups size
 * [X] Added a "check for new version" feature
 * [X] Add sorting options for the queue: sort by original file name (A-Z or Z-A), sort by Title (A-Z or Z-A), or shuffle the queue
+* [X] Implement support for Tumblr
+* [X] Implement support for Bluesky
+* [X] Implement support for Mastodon
 
 ## Soon
 
 * \[ ] Fix bug that displays past times for group addition retry attempts and verify that they aren't getting stuck
-* \[ ] Implement support for Tumblr
+* \[ ] Hotlink straight to new version download when new version is detected
 * \[ ] Implement support for Pixelfed
-* \[ ] Implement support for Mastodon
-* \[ ] Implement support for Bluesky
+* \[ ] Implement support for Pixfed.com
 * \[ ] Implement support for Lemmy Photo groups
 
 ## Nice-to-have

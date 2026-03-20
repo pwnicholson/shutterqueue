@@ -7,6 +7,11 @@ type DuplicateMember = { id: string; photoPath: string; title?: string };
 type DuplicateGroup = { hash: string; members: DuplicateMember[]; removeCandidateIds: string[] };
 type LogFilterMode = "all" | "activity" | "warn_error" | "api";
 type AlbumEditorEntry = Album & { isPendingNew?: boolean; pendingTitle?: string; state?: "all" | "some" | "none" };
+type TumblrPostTextMode = "bold_title_then_description" | "title_then_description" | "title_only" | "description_only";
+type BlueskyPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
+type BlueskyLongPostMode = "truncate" | "thread";
+type PixelFedPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
+type MastodonPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
 
 const PRIVACY_LABEL: Record<Privacy, string> = {
   public: "Public",
@@ -25,11 +30,17 @@ const SAFETY_LABEL: Record<1 | 2 | 3, string> = {
 const SERVICES: Array<{ id: UploadService; label: string }> = [
   { id: "flickr", label: "Flickr" },
   { id: "tumblr", label: "Tumblr" },
+  { id: "bluesky", label: "Bluesky" },
+  { id: "pixelfed", label: "PixelFed" },
+  { id: "mastodon", label: "Mastodon" },
 ];
 
 const PLATFORM_META: Record<string, { label: string; icon: string; bg: string; fg: string }> = {
   flickr: { label: "Flickr", icon: "F", bg: "#ff0084", fg: "#ffffff" },
   tumblr: { label: "Tumblr", icon: "T", bg: "#001935", fg: "#ffffff" },
+  bluesky: { label: "Bluesky", icon: "B", bg: "#1185fe", fg: "#ffffff" },
+  pixelfed: { label: "PixelFed", icon: "P", bg: "#b33cf2", fg: "#ffffff" },
+  mastodon: { label: "Mastodon", icon: "M", bg: "#563acc", fg: "#ffffff" },
 };
 
 const PLATFORM_CHIP_BASE_STYLE: React.CSSProperties = {
@@ -49,7 +60,7 @@ function normalizeTargetServices(services: UploadService[] | undefined): UploadS
   const seen = new Set<string>();
   for (const raw of services || []) {
     const svc = String(raw || "").trim().toLowerCase();
-    if ((svc !== "flickr" && svc !== "tumblr") || seen.has(svc)) continue;
+    if ((svc !== "flickr" && svc !== "tumblr" && svc !== "bluesky" && svc !== "pixelfed" && svc !== "mastodon") || seen.has(svc)) continue;
     seen.add(svc);
     out.push(svc as UploadService);
   }
@@ -204,6 +215,150 @@ function formatTagsCsv(tags: string[]): string {
   return tags.join(", ");
 }
 
+function toBlueskyHashtag(tag: string): string {
+  const raw = String(tag || "").trim().replace(/^#+/, "");
+  if (!raw) return "";
+  const compact = raw.replace(/\s+/g, "");
+  const safe = compact.replace(/[^\p{L}\p{N}_]/gu, "");
+  if (!safe) return "";
+  return `#${safe}`;
+}
+
+function buildBlueskyHashtagLine(tagsCsv: string): string {
+  return parseTagsCsv(tagsCsv).map(toBlueskyHashtag).filter(Boolean).join(" ");
+}
+
+function buildBlueskyPostPreviewText(params: { title: string; description: string; tagsCsv: string; mode: BlueskyPostTextMode }) {
+  const mode = params.mode;
+  const title = String(params.title || "").trim();
+  const description = String(params.description || "").trim();
+  const hashtagLine = buildBlueskyHashtagLine(params.tagsCsv || "");
+  const lines: string[] = [];
+
+  if (mode === "title_only") {
+    if (title) lines.push(title);
+    return { label: "Title", text: lines.join("\n").trim() };
+  }
+  if (mode === "description_only") {
+    if (description) lines.push(description);
+    return { label: "Description", text: lines.join("\n").trim() };
+  }
+  if (mode === "merge_title_description_tags") {
+    if (title) lines.push(title);
+    if (description) lines.push(description);
+    if (hashtagLine) lines.push(hashtagLine);
+    return { label: "Title+Description+Tags", text: lines.join("\n").trim() };
+  }
+  if (mode === "merge_title_description") {
+    if (title) lines.push(title);
+    if (description) lines.push(description);
+    return { label: "Title+Description", text: lines.join("\n").trim() };
+  }
+  if (mode === "merge_title_tags") {
+    if (title) lines.push(title);
+    if (hashtagLine) lines.push(hashtagLine);
+    return { label: "Title+Tags", text: lines.join("\n").trim() };
+  }
+  if (mode === "merge_description_tags") {
+    if (description) lines.push(description);
+    if (hashtagLine) lines.push(hashtagLine);
+    return { label: "Description+Tags", text: lines.join("\n").trim() };
+  }
+
+  if (title) lines.push(title);
+  if (description) lines.push(description);
+  if (hashtagLine) lines.push(hashtagLine);
+  return { label: "Title+Description+Tags", text: lines.join("\n").trim() };
+}
+
+function estimateBlueskyThreadPostCount(text: string, maxLen = 300): number {
+  const source = String(text || "").trim();
+  if (!source) return 1;
+  if (source.length <= maxLen) return 1;
+
+  const chunks: string[] = [];
+  const tokens = source.split(/(\s+)/);
+  let current = "";
+
+  const pushCurrent = () => {
+    const trimmed = current.trim();
+    if (trimmed) chunks.push(trimmed);
+    current = "";
+  };
+
+  for (const token of tokens) {
+    if (!token) continue;
+    if (token.length > maxLen) {
+      if (current.trim()) pushCurrent();
+      for (let i = 0; i < token.length; i += maxLen) {
+        const part = token.slice(i, i + maxLen).trim();
+        if (part) chunks.push(part);
+      }
+      continue;
+    }
+
+    if ((current + token).length > maxLen) {
+      pushCurrent();
+      current = token.trimStart();
+    } else {
+      current += token;
+    }
+  }
+
+  if (current.trim()) pushCurrent();
+  return Math.max(1, chunks.length);
+}
+
+function mapBlueskyAuthError(rawError: string): string {
+  const raw = String(rawError || "").trim();
+  const lower = raw.toLowerCase();
+  const codeMatch = raw.match(/\[([A-Za-z0-9_.-]+)\]/);
+  const code = String(codeMatch?.[1] || "").toLowerCase();
+
+  const unknownUserCodes = new Set([
+    "invalididentifier",
+    "handledoesnotresolve",
+    "usernotfound",
+    "repo.notfound",
+    "didnotfound",
+  ]);
+  const credentialCodes = new Set([
+    "authenticationrequired",
+    "invalidlogin",
+    "invalidpassword",
+    "invalidcredentials",
+    "authfactorrequired",
+  ]);
+
+  if (
+    credentialCodes.has(code) ||
+    lower.includes("identifier or password") ||
+    lower.includes("identifier/password") ||
+    lower.includes("invalid password") ||
+    lower.includes("password") ||
+    lower.includes("authentication")
+  ) {
+    return "Bluesky authorization failed: Incorrect handle/email or app password.";
+  }
+
+  if (
+    unknownUserCodes.has(code) ||
+    lower.includes("invalid identifier") ||
+    lower.includes("could not resolve") ||
+    lower.includes("resolve handle") ||
+    lower.includes("unknown handle") ||
+    lower.includes("user not found")
+  ) {
+    return "Bluesky authorization failed: unknown user/handle. Please verify your Bluesky handle or email.";
+  }
+
+  if (code === "ratelimitexceeded" || lower.includes("rate limit")) {
+    return "Bluesky authorization failed: too many attempts. Please wait a moment and try again.";
+  }
+
+  return `Bluesky authorization failed: ${raw || "unknown error"}`;
+}
+
 function deriveTitleFromPhotoPath(photoPath: string): string {
   const p = String(photoPath || "");
   // Support Windows and POSIX paths
@@ -310,7 +465,26 @@ export default function App() {
   const [tumblrVerifier, setTumblrVerifier] = useState("");
   const [tumblrBlogs, setTumblrBlogs] = useState<Array<{ id: string; name: string; title: string; url: string; primary?: boolean }>>([]);
   const [tumblrPrimaryBlogId, setTumblrPrimaryBlogId] = useState("");
+  const [tumblrPostTextMode, setTumblrPostTextMode] = useState<TumblrPostTextMode>("bold_title_then_description");
+  const [tumblrUseDescriptionAsImageDescription, setTumblrUseDescriptionAsImageDescription] = useState(true);
+  const [blueskyIdentifier, setBlueskyIdentifier] = useState("");
+  const [blueskyAppPassword, setBlueskyAppPassword] = useState("");
+  const [blueskyPostTextMode, setBlueskyPostTextMode] = useState<BlueskyPostTextMode>("merge_title_description_tags");
+  const [blueskyLongPostMode, setBlueskyLongPostMode] = useState<BlueskyLongPostMode>("truncate");
+  const [blueskyUseDescriptionAsAltText, setBlueskyUseDescriptionAsAltText] = useState(true);
+  const [blueskyAuthError, setBlueskyAuthError] = useState("");
+  const [pixelfedInstanceUrl, setPixelfedInstanceUrl] = useState("https://pixelfed.social");
+  const [pixelfedAccessToken, setPixelfedAccessToken] = useState("");
+  const [pixelfedPostTextMode, setPixelfedPostTextMode] = useState<PixelFedPostTextMode>("merge_title_description_tags");
+  const [pixelfedUseDescriptionAsAltText, setPixelfedUseDescriptionAsAltText] = useState(true);
+  const [pixelfedAuthError, setPixelfedAuthError] = useState("");
+  const [mastodonInstanceUrl, setMastodonInstanceUrl] = useState("https://mastodon.social");
+  const [mastodonAccessToken, setMastodonAccessToken] = useState("");
+  const [mastodonPostTextMode, setMastodonPostTextMode] = useState<MastodonPostTextMode>("merge_title_description_tags");
+  const [mastodonUseDescriptionAsAltText, setMastodonUseDescriptionAsAltText] = useState(true);
+  const [mastodonAuthError, setMastodonAuthError] = useState("");
   const [showSetupAdvanced, setShowSetupAdvanced] = useState(false);
+  const [setupServiceTab, setSetupServiceTab] = useState<UploadService>("flickr");
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
@@ -432,6 +606,23 @@ const categorizeMessage = (msg: string): "success" | "waiting" | "error" => {
   return "error";
 };
 
+const splitBannerMessages = (msg?: string | null): string[] => {
+  const raw = String(msg || "").trim();
+  if (!raw) return [];
+  return raw
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean);
+};
+
+const classifyBannerMessage = (msg: string): "error" | "notice" => {
+  const text = String(msg || "").toLowerCase();
+  if (/\b(error|fail|failed|expired|invalid|missing|denied|unauthorized|not authorized|fatal|forbidden)\b/i.test(text)) {
+    return "error";
+  }
+  return "notice";
+};
+
 const matchesLogFilter = (line: string, mode: LogFilterMode) => {
   const text = String(line || "");
   const isApi = /\[API\s+(OK|ERROR)\]/i.test(text);
@@ -482,6 +673,9 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
 
   // Context menu for queue items
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; itemId: string } | null>(null);
+  const tumblrOAuthPollTimerRef = useRef<number | null>(null);
+  const queueScrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const queueScrollTopRef = useRef(0);
 
   const [pendingGroupFocus, setPendingGroupFocus] = useState<string>("");
 
@@ -551,6 +745,35 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     const exists = pendingRetryGroups.some(g => g.groupId === pendingGroupFocus);
     if (!pendingGroupFocus || !exists) setPendingGroupFocus(pendingRetryGroups[0].groupId);
   }, [pendingRetryGroups, pendingGroupFocus]);
+
+  useEffect(() => {
+    return () => {
+      if (tumblrOAuthPollTimerRef.current != null) {
+        window.clearTimeout(tumblrOAuthPollTimerRef.current);
+        tumblrOAuthPollTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (displayTab !== "queue" || isTabLoading) return;
+
+    const restore = () => {
+      if (!queueScrollAreaRef.current) return;
+      const target = Math.max(0, queueScrollTopRef.current);
+      queueScrollAreaRef.current.scrollTop = target;
+    };
+
+    // Queue tab mounts after a loading transition; restore on next frame and once more
+    // shortly after to handle late layout/paint updates.
+    const raf = window.requestAnimationFrame(restore);
+    const t = window.setTimeout(restore, 80);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(t);
+    };
+  }, [displayTab, isTabLoading, queue.length]);
 
   const isGroupAlbumErrorText = (s?: string | null) => {
     if (!s) return false;
@@ -705,8 +928,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const out: UploadService[] = [];
     if (cfg?.flickrAuthed) out.push("flickr");
     if (cfg?.tumblrAuthed) out.push("tumblr");
+    if (cfg?.blueskyAuthed) out.push("bluesky");
+    if ((cfg as any)?.pixelfedAuthed) out.push("pixelfed");
+    if ((cfg as any)?.mastodonAuthed) out.push("mastodon");
     return out;
-  }, [cfg?.flickrAuthed, cfg?.tumblrAuthed]);
+  }, [cfg?.flickrAuthed, cfg?.tumblrAuthed, cfg?.blueskyAuthed, (cfg as any)?.pixelfedAuthed, (cfg as any)?.mastodonAuthed]);
 
   const showPlatformSelector = configuredServiceIds.length >= 2;
 
@@ -739,12 +965,95 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return normalizeTargetServices(active.targetServices).includes("tumblr");
   }, [selectedIds, selectedItems, active]);
 
+  const flickrSelectedInEditor = useMemo(() => {
+    return selectedEditorServices.includes("flickr");
+  }, [selectedEditorServices]);
+
+  const blueskySelectedInEditor = useMemo(() => {
+    return selectedEditorServices.includes("bluesky");
+  }, [selectedEditorServices]);
+
+  const pixelfedSelectedInEditor = useMemo(() => {
+    return selectedEditorServices.includes("pixelfed");
+  }, [selectedEditorServices]);
+
+  const mastodonSelectedInEditor = useMemo(() => {
+    return selectedEditorServices.includes("mastodon");
+  }, [selectedEditorServices]);
+
+  const blueskyCounterInfo = useMemo(() => {
+    if (!blueskySelectedInEditor) return null as {
+      label: string;
+      countValue: string;
+      threadValue: string;
+      showThreadInfo: boolean;
+      overLimitInTruncate: boolean;
+    } | null;
+    const targetItems = selectedIds.length > 1 ? selectedItems : (active ? [active] : []);
+    if (!targetItems.length) return null as {
+      label: string;
+      countValue: string;
+      threadValue: string;
+      showThreadInfo: boolean;
+      overLimitInTruncate: boolean;
+    } | null;
+
+    const metrics = targetItems.map((it) => {
+      const preview = buildBlueskyPostPreviewText({
+        title: String(it.title || ""),
+        description: String(it.description || ""),
+        tagsCsv: String(it.tags || ""),
+        mode: blueskyPostTextMode,
+      });
+      return {
+        label: preview.label,
+        count: preview.text.length,
+        threadPosts: estimateBlueskyThreadPostCount(preview.text, 300),
+      };
+    });
+
+    const label = metrics[0]?.label || "Title+Description";
+    const minCount = Math.min(...metrics.map((m) => m.count));
+    const maxCount = Math.max(...metrics.map((m) => m.count));
+    const minThreads = Math.min(...metrics.map((m) => m.threadPosts));
+    const maxThreads = Math.max(...metrics.map((m) => m.threadPosts));
+
+    return {
+      label,
+      countValue: minCount === maxCount ? String(minCount) : `${minCount}-${maxCount} across selected items`,
+      threadValue: minThreads === maxThreads ? String(minThreads) : `${minThreads}-${maxThreads} across selected items`,
+      showThreadInfo: blueskyLongPostMode === "thread",
+      overLimitInTruncate: blueskyLongPostMode === "truncate" && maxCount > 300,
+    };
+  }, [blueskySelectedInEditor, selectedIds.length, selectedItems, active, blueskyPostTextMode, blueskyLongPostMode]);
+
+  const shouldShowFlickrOnlyFields = useMemo(() => {
+    // Show Flickr-specific fields (groups, albums, location) only when Flickr is selected
+    return flickrSelectedInEditor;
+  }, [flickrSelectedInEditor]);
+
   const safetyOptionLabel = useCallback((level: 1 | 2 | 3) => {
-    if (!tumblrSelectedInEditor) return SAFETY_LABEL[level];
-    if (level === 2) return "Moderate / Mature";
-    if (level === 3) return "Restricted / Mature";
-    return "Safe";
-  }, [tumblrSelectedInEditor]);
+    // Build labels for each platform: Tumblr uses "Mature" for levels 2-3, Bluesky uses "Suggestive"/"Adult"
+    const labels: string[] = [];
+    if (tumblrSelectedInEditor) {
+      if (level === 2) labels.push("Mature");
+      if (level === 3) labels.push("Mature");
+    }
+    if (blueskySelectedInEditor) {
+      if (level === 2) labels.push("Suggestive");
+      if (level === 3) labels.push("Adult");
+    }
+    if (pixelfedSelectedInEditor) {
+      if (level === 2) labels.push("Sensitive");
+      if (level === 3) labels.push("Sensitive");
+    }
+    if (mastodonSelectedInEditor) {
+      if (level === 2) labels.push("Sensitive");
+      if (level === 3) labels.push("Sensitive");
+    }
+    const suffix = labels.length > 0 ? ` / ${labels.join(" & ")}` : "";
+    return SAFETY_LABEL[level] + suffix;
+  }, [tumblrSelectedInEditor, blueskySelectedInEditor, pixelfedSelectedInEditor, mastodonSelectedInEditor]);
 
   useEffect(() => {
     if (configuredServiceIds.length !== 1 || !queue.length) return;
@@ -848,16 +1157,73 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [sched, setSched] = useState<any>(null);
 
   const [toast, setToast] = useState<string | null>(null);
+  const [dismissedMessages, setDismissedMessages] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [logFilterMode, setLogFilterMode] = useState<LogFilterMode>("all");
   const [verboseLogging, setVerboseLogging] = useState(false);
   const [minimizeToTray, setMinimizeToTray] = useState(false);
   const [checkUpdatesOnLaunch, setCheckUpdatesOnLaunch] = useState(true);
+  const [addShutterQueueTagToAllUploads, setAddShutterQueueTagToAllUploads] = useState(true);
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
   const [updateCheckStatus, setUpdateCheckStatus] = useState("");
+  const [updateAvailableNotice, setUpdateAvailableNotice] = useState<{ message: string; releaseUrl?: string } | null>(null);
   const [didAutoCheckUpdates, setDidAutoCheckUpdates] = useState(false);
 
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
+
+  const globalBannerMessages = useMemo(() => splitBannerMessages(cfg?.lastError), [cfg?.lastError]);
+  const allKnownBannerMessages = useMemo(() => {
+    const set = new Set<string>(globalBannerMessages);
+    for (const it of queue) {
+      for (const part of splitBannerMessages(it.lastError)) {
+        set.add(part);
+      }
+    }
+    return Array.from(set);
+  }, [globalBannerMessages, queue]);
+  const visibleGlobalBannerMessages = useMemo(
+    () => globalBannerMessages.filter((msg) => !dismissedMessages.includes(msg)),
+    [globalBannerMessages, dismissedMessages],
+  );
+  const globalErrorMessages = useMemo(
+    () => visibleGlobalBannerMessages.filter((msg) => classifyBannerMessage(msg) === "error"),
+    [visibleGlobalBannerMessages],
+  );
+  const globalNoticeMessages = useMemo(
+    () => visibleGlobalBannerMessages.filter((msg) => classifyBannerMessage(msg) === "notice"),
+    [visibleGlobalBannerMessages],
+  );
+
+  useEffect(() => {
+    setDismissedMessages((prev) => prev.filter((msg) => allKnownBannerMessages.includes(msg)));
+  }, [allKnownBannerMessages]);
+
+  const dismissMessagesEverywhere = async (messages: string[]) => {
+    const normalized = Array.from(new Set(messages.map((m) => String(m || "").trim()).filter(Boolean)));
+    if (!normalized.length) return;
+
+    const nextDismissed = Array.from(new Set([...dismissedMessages, ...normalized]));
+    setDismissedMessages(nextDismissed);
+
+    const remainingGlobal = globalBannerMessages.filter((msg) => !nextDismissed.includes(msg));
+    if (globalBannerMessages.length > 0 && remainingGlobal.length === 0) {
+      try {
+        await window.sq.clearLastError();
+      } finally {
+        setCfg((prev: any) => (prev ? { ...prev, lastError: "" } : prev));
+      }
+    }
+  };
+
+  const visibleItemMessageParts = (s?: string | null): string[] => {
+    return splitBannerMessages(s).filter((msg) => !dismissedMessages.includes(msg));
+  };
+
+  const hasVisibleActualErrorText = (s?: string | null) => {
+    const parts = visibleItemMessageParts(s);
+    if (!parts.length) return false;
+    return parts.some((p) => /\b(fail|failed|error|gave up|gave_up|will be retried|retry|limit reached|user limit)\b/i.test(p));
+  };
 
   const filteredLogLines = useMemo(() => {
     return logs.slice().reverse().filter((line) => matchesLogFilter(line, logFilterMode));
@@ -883,6 +1249,37 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setVerboseLogging(Boolean(c.verboseLogging));
     setMinimizeToTray(Boolean(c.minimizeToTray));
     setCheckUpdatesOnLaunch(Boolean((c as any).checkUpdatesOnLaunch));
+    setAddShutterQueueTagToAllUploads((c as any).addShutterQueueTagToAllUploads !== false);
+    const rawTumblrMode = String((c as any).tumblrPostTextMode || "bold_title_then_description");
+    const tumblrMode: TumblrPostTextMode =
+      rawTumblrMode === "title_then_description" || rawTumblrMode === "title_only" || rawTumblrMode === "description_only"
+        ? rawTumblrMode
+        : "bold_title_then_description";
+    setTumblrPostTextMode(tumblrMode);
+    const rawBlueskyMode = String((c as any).blueskyPostTextMode || "merge_title_description_tags");
+    const blueskyMode: BlueskyPostTextMode =
+      rawBlueskyMode === "merge_title_description" || rawBlueskyMode === "merge_title_tags" || rawBlueskyMode === "merge_description_tags" || rawBlueskyMode === "title_only" || rawBlueskyMode === "description_only"
+        ? rawBlueskyMode
+        : "merge_title_description_tags";
+    setBlueskyPostTextMode(blueskyMode);
+    const rawBlueskyLongMode = String((c as any).blueskyLongPostMode || "truncate");
+    setBlueskyLongPostMode(rawBlueskyLongMode === "thread" ? "thread" : "truncate");
+    setTumblrUseDescriptionAsImageDescription((c as any).tumblrUseDescriptionAsImageDescription !== false);
+    setBlueskyUseDescriptionAsAltText((c as any).blueskyUseDescriptionAsAltText !== false);
+    const rawPixelfedMode = String((c as any).pixelfedPostTextMode || "merge_title_description_tags");
+    const pixelfedMode: PixelFedPostTextMode =
+      rawPixelfedMode === "merge_title_description" || rawPixelfedMode === "merge_title_tags" || rawPixelfedMode === "merge_description_tags" || rawPixelfedMode === "title_only" || rawPixelfedMode === "description_only"
+        ? rawPixelfedMode
+        : "merge_title_description_tags";
+    setPixelfedPostTextMode(pixelfedMode);
+    setPixelfedUseDescriptionAsAltText((c as any).pixelfedUseDescriptionAsAltText !== false);
+    const rawMastodonMode = String((c as any).mastodonPostTextMode || "merge_title_description_tags");
+    const mastodonMode: MastodonPostTextMode =
+      rawMastodonMode === "merge_title_description" || rawMastodonMode === "merge_title_tags" || rawMastodonMode === "merge_description_tags" || rawMastodonMode === "title_only" || rawMastodonMode === "description_only"
+        ? rawMastodonMode
+        : "merge_title_description_tags";
+    setMastodonPostTextMode(mastodonMode);
+    setMastodonUseDescriptionAsAltText((c as any).mastodonUseDescriptionAsAltText !== false);
     const nextSavedGroupSets = normalizeSavedIdSets((c as any).savedGroupSets);
     const nextSavedAlbumSets = normalizeSavedIdSets((c as any).savedAlbumSets);
     const nextSavedTagSets = normalizeSavedIdSets((c as any).savedTagSets);
@@ -903,6 +1300,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     // only set API key when field is empty so we don't clobber user input
     if (!apiKey) setApiKey(c.apiKey || "");
     if (!tumblrKey) setTumblrKey(c.tumblrApiKey || "");
+    if (!blueskyIdentifier) setBlueskyIdentifier(String((c as any).blueskyIdentifier || ""));
+    setPixelfedInstanceUrl(String((c as any).pixelfedInstanceUrl || "https://pixelfed.social"));
+    setMastodonInstanceUrl(String((c as any).mastodonInstanceUrl || "https://mastodon.social"));
     setTumblrPrimaryBlogId(String(c.tumblrPrimaryBlogId || ""));
     if (!c.tumblrAuthed) {
       setTumblrBlogs([]);
@@ -918,21 +1318,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       setQueue(q);
       if (!activeId && q.length) setActiveId(q[0].id);
     });
-
-    // Ensure default titles (filename without extension) for items missing a title
-    try {
-      const needsTitle = q.filter(it => !String(it.title || "").trim());
-      if (needsTitle.length) {
-        const patched = needsTitle.map(it => ({ ...it, title: deriveTitleFromPhotoPath(it.photoPath) }));
-        const q2 = await window.sq.queueUpdate(patched);
-        startTransition(() => {
-          setQueue(q2);
-          if (!activeId && q2.length) setActiveId(q2[0].id);
-        });
-      }
-    } catch {
-      // ignore
-    }
     setSched(await window.sq.schedulerStatus());
     try { setLogs(await window.sq.logGet()); } catch { /* ignore */ }
   };
@@ -1019,11 +1404,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         const msg = `Update available: v${result.latestVersion} (current v${result.currentVersion})`;
         showToast(msg);
         setUpdateCheckStatus(msg);
+        setUpdateAvailableNotice({ message: msg, releaseUrl: result.releaseUrl || `${"https://github.com/pwnicholson/shutterqueue"}/releases/latest` });
       } else {
         const suffix = result.cacheHit ? " (cached)" : "";
         const msg = `You're up to date (v${result.currentVersion})${suffix}.`;
         if (userInitiated) showToast(msg);
         setUpdateCheckStatus(msg);
+        setUpdateAvailableNotice(null);
       }
     } catch (e: any) {
       const msg = `Update check failed: ${String(e?.message || e)}`;
@@ -1350,16 +1737,60 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const startTumblrOAuth = async () => {
     await saveTumblrKeys();
     await window.sq.startTumblrOAuth();
-    showToast("Tumblr browser authorization opened. Authorize, then paste verifier and click Finish.");
+    showToast("Tumblr browser authorization opened. Authorize in browser. ShutterQueue will try to finish automatically.");
+
+    if (tumblrOAuthPollTimerRef.current != null) {
+      window.clearTimeout(tumblrOAuthPollTimerRef.current);
+      tumblrOAuthPollTimerRef.current = null;
+    }
+
+    let pollCount = 0;
+    const maxPolls = 120;
+    const pollForTumblrVerifier = async () => {
+      try {
+        const payload = await window.sq.consumeTumblrOAuthVerifier();
+        const autoVerifier = String(payload?.verifier || "").trim();
+        if (autoVerifier) {
+          await finishTumblrOAuthWithVerifier(autoVerifier, { showToastOnSuccess: false });
+          showToast("Tumblr authorization complete (captured from browser callback).");
+          return;
+        }
+      } catch {
+        // Ignore polling errors and keep trying for a short window.
+      }
+
+      pollCount += 1;
+      if (pollCount < maxPolls) {
+        tumblrOAuthPollTimerRef.current = window.setTimeout(pollForTumblrVerifier, 1000);
+      } else {
+        tumblrOAuthPollTimerRef.current = null;
+      }
+    };
+
+    tumblrOAuthPollTimerRef.current = window.setTimeout(pollForTumblrVerifier, 800);
   };
 
-  const finishTumblrOAuth = async () => {
-    await window.sq.finishTumblrOAuth(tumblrVerifier);
+  const finishTumblrOAuthWithVerifier = async (rawVerifier: string, options?: { showToastOnSuccess?: boolean }) => {
+    const verifierToUse = String(rawVerifier || "").trim();
+    if (!verifierToUse) return;
+
+    if (tumblrOAuthPollTimerRef.current != null) {
+      window.clearTimeout(tumblrOAuthPollTimerRef.current);
+      tumblrOAuthPollTimerRef.current = null;
+    }
+
+    await window.sq.finishTumblrOAuth(verifierToUse);
     setTumblrVerifier("");
     const blogs = await window.sq.fetchTumblrBlogs({ force: true });
     setTumblrBlogs(blogs || []);
     await refreshAll();
-    showToast("Tumblr authorization complete.");
+    if (options?.showToastOnSuccess !== false) {
+      showToast("Tumblr authorization complete.");
+    }
+  };
+
+  const finishTumblrOAuth = async () => {
+    await finishTumblrOAuthWithVerifier(tumblrVerifier, { showToastOnSuccess: true });
   };
 
   const refreshTumblrBlogs = async () => {
@@ -1372,6 +1803,98 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setTumblrPrimaryBlogId(blogId);
     await window.sq.setTumblrPrimaryBlog(blogId);
     await refreshAll();
+  };
+
+  const saveBlueskyCredentials = async () => {
+    try {
+      setBlueskyAuthError("");
+      await window.sq.setBlueskyCredentials(blueskyIdentifier, blueskyAppPassword);
+      await refreshAll();
+      showToast("Saved Bluesky credentials.");
+    } catch (e: any) {
+      const msg = `Failed to save Bluesky credentials: ${String(e?.message || e)}`;
+      setBlueskyAuthError(msg);
+    }
+  };
+
+  const startBlueskyAuth = async () => {
+    try {
+      setBlueskyAuthError("");
+      await window.sq.setBlueskyCredentials(blueskyIdentifier, blueskyAppPassword);
+      await window.sq.startBlueskyAuth();
+      await refreshAll();
+      showToast("Bluesky authorization complete.");
+    } catch (e: any) {
+      const raw = String(e?.message || e || "");
+      const msg = mapBlueskyAuthError(raw);
+      setBlueskyAuthError(msg);
+    }
+  };
+
+  const logoutBluesky = async () => {
+    await window.sq.blueskyLogout();
+    await refreshAll();
+    showToast("Bluesky logged out.");
+  };
+
+  const savePixelfedCredentials = async () => {
+    try {
+      setPixelfedAuthError("");
+      await window.sq.setPixelfedCredentials(pixelfedInstanceUrl, pixelfedAccessToken);
+      await refreshAll();
+      showToast("Saved PixelFed settings.");
+    } catch (e: any) {
+      setPixelfedAuthError(`Failed to save PixelFed settings: ${String(e?.message || e)}`);
+    }
+  };
+
+  const testPixelfedAuth = async () => {
+    try {
+      setPixelfedAuthError("");
+      await window.sq.setPixelfedCredentials(pixelfedInstanceUrl, pixelfedAccessToken);
+      const out = await window.sq.testPixelfedAuth();
+      await refreshAll();
+      showToast(`PixelFed authorization complete${out?.username ? ` as @${out.username}` : "."}`);
+    } catch (e: any) {
+      const msg = String(e?.message || e || "Unknown PixelFed error");
+      setPixelfedAuthError(msg);
+    }
+  };
+
+  const logoutPixelfed = async () => {
+    await window.sq.pixelfedLogout();
+    await refreshAll();
+    showToast("PixelFed logged out.");
+  };
+
+  const saveMastodonCredentials = async () => {
+    try {
+      setMastodonAuthError("");
+      await window.sq.setMastodonCredentials(mastodonInstanceUrl, mastodonAccessToken);
+      await refreshAll();
+      showToast("Saved Mastodon settings.");
+    } catch (e: any) {
+      setMastodonAuthError(`Failed to save Mastodon settings: ${String(e?.message || e)}`);
+    }
+  };
+
+  const testMastodonAuth = async () => {
+    try {
+      setMastodonAuthError("");
+      await window.sq.setMastodonCredentials(mastodonInstanceUrl, mastodonAccessToken);
+      const out = await window.sq.testMastodonAuth();
+      await refreshAll();
+      showToast(`Mastodon authorization complete${out?.username ? ` as @${out.username}` : "."}`);
+    } catch (e: any) {
+      const msg = String(e?.message || e || "Unknown Mastodon error");
+      setMastodonAuthError(msg);
+    }
+  };
+
+  const logoutMastodon = async () => {
+    await window.sq.mastodonLogout();
+    await refreshAll();
+    showToast("Mastodon logged out.");
   };
 
   const refreshGroups = async () => {
@@ -1736,6 +2259,20 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
     const action = await window.sq.showRetryUploadDialog();
     if (action === "cancel") return;
+
+    const failedItemMessages = failedItems.flatMap((it) => splitBannerMessages(it.lastError));
+    const relatedGlobalMessages = globalBannerMessages.filter((msg) => {
+      const lower = msg.toLowerCase();
+      if (failedItemMessages.includes(msg)) return true;
+      return failedItems.some((it) => {
+        const services = normalizeTargetServices(it.targetServices);
+        if (services.some((svc) => lower.startsWith(`${svc}:`))) return true;
+        if (it.id && lower.includes(String(it.id).toLowerCase())) return true;
+        if (it.photoPath && lower.includes(String(it.photoPath).toLowerCase())) return true;
+        return false;
+      });
+    });
+    await dismissMessagesEverywhere([...failedItemMessages, ...relatedGlobalMessages]);
 
     const resetItems = failedItems.map((it) => ({
       ...it,
@@ -3021,7 +3558,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <div>
           <div className="h1">ShutterQueue</div>
-          <div className="sub">A paced uploader for Flickr. Build a queue, reorder on the fly, and upload every 1–168 hours.</div>
+          <div className="sub">A paced photo uploader. Build a queue, reorder on the fly, add details, and upload on a schedule.</div>
         </div>
       </div>
 
@@ -3033,38 +3570,93 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <div className={`tab ${tab==="logs"?"selected":""}`} onClick={() => switchTab("logs")} role="tab" tabIndex={0}>Logs</div>
           <div className={`tab ${tab==="setup"?"selected":""}`} onClick={() => switchTab("setup")} role="tab" tabIndex={0}>Setup</div>
         </div>
-        <div className="btncluster" style={{ alignItems: "center", marginLeft: "auto" }}>
-          {cfg?.authed ? (
-            <span className="badge good" onClick={() => switchTab("setup")} style={{ cursor: "pointer", display: "inline-flex", gap: 6, alignItems: "center" }} title="Click to jump to Setup">
-              <span>Authorized</span>
-              {configuredServiceIds.map((svc) => (
-                <span key={svc} style={platformChipStyle(svc)} title={platformLabel(svc)}>
-                  {PLATFORM_META[svc]?.icon || platformLabel(svc).charAt(0).toUpperCase()}
-                </span>
-              ))}
-            </span>
-          ) : <span className="badge warn" onClick={() => switchTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Not authorized</span>}
-          <span className="badge" onClick={() => switchTab("queue")} style={{ cursor: "pointer" }} title="Click to jump to Queue">{queue.length} in queue</span>
-          {sched?.schedulerOn ? (
-            <span className="badge good" onClick={async () => { await stopSched(); }} style={{ cursor: "pointer" }} title="Click to stop scheduler">Scheduler ON</span>
-          ) : (
-            <span className="badge" onClick={async () => { switchTab("schedule"); await startSched(); }} style={{ cursor: "pointer" }} title="Click to start scheduler">Scheduler OFF</span>
-          )}
-          <div style={{position:'relative', width:200, height:6, marginLeft:12, background:'rgba(255,255,255,0.05)', borderRadius:3, overflow:'hidden'}}>
-            {uploadProgress != null && (
-              <div style={{position:'absolute', left:0, top:0, bottom:0, width:`${Math.round(uploadProgress*100)}%`, background:'var(--accent)'}} />
+        <div style={{ marginLeft: "auto", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+          {updateAvailableNotice ? (
+            <div style={{ display: "flex", alignItems: "center" }}>
+              <span
+                className="badge warn"
+                style={{ cursor: updateAvailableNotice.releaseUrl ? "pointer" : "default" }}
+                title={updateAvailableNotice.releaseUrl ? "Open release page" : "Update available"}
+                onClick={() => {
+                  if (updateAvailableNotice.releaseUrl) {
+                    void window.sq.openExternal({ url: updateAvailableNotice.releaseUrl });
+                  }
+                }}
+              >
+                {updateAvailableNotice.message}
+              </span>
+            </div>
+          ) : null}
+          <div className="btncluster" style={{ alignItems: "center" }}>
+            {cfg?.authed ? (
+              <span className="badge good" onClick={() => switchTab("setup")} style={{ cursor: "pointer", display: "inline-flex", gap: 6, alignItems: "center" }} title="Click to jump to Setup">
+                <span>Authorized</span>
+                {configuredServiceIds.map((svc) => (
+                  <span key={svc} style={platformChipStyle(svc)} title={platformLabel(svc)}>
+                    {PLATFORM_META[svc]?.icon || platformLabel(svc).charAt(0).toUpperCase()}
+                  </span>
+                ))}
+              </span>
+            ) : <span className="badge warn" onClick={() => switchTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Not authorized</span>}
+            <span className="badge" onClick={() => switchTab("queue")} style={{ cursor: "pointer" }} title="Click to jump to Queue">{queue.length} in queue</span>
+            {sched?.schedulerOn ? (
+              <span className="badge good" onClick={async () => { await stopSched(); }} style={{ cursor: "pointer" }} title="Click to stop scheduler">Scheduler ON</span>
+            ) : (
+              <span className="badge" onClick={async () => { switchTab("schedule"); await startSched(); }} style={{ cursor: "pointer" }} title="Click to start scheduler">Scheduler OFF</span>
+            )}
+            <div style={{position:'relative', width:200, height:6, marginLeft:12, background:'rgba(255,255,255,0.05)', borderRadius:3, overflow:'hidden'}}>
+              {uploadProgress != null && (
+                <div style={{position:'absolute', left:0, top:0, bottom:0, width:`${Math.round(uploadProgress*100)}%`, background:'var(--accent)'}} />
+              )}
+            </div>
+            {batchProgressLabel && (
+              <span className="small" style={{ marginLeft: 8, fontFamily: "ui-monospace" }} title="Batch progress">
+                {batchProgressLabel}
+              </span>
             )}
           </div>
-          {batchProgressLabel && (
-            <span className="small" style={{ marginLeft: 8, fontFamily: "ui-monospace" }} title="Batch progress">
-              {batchProgressLabel}
-            </span>
-          )}
         </div>
       </div>
 
-      {toast && <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 12 }}>{toast}</div>}
-      {cfg?.lastError ? <div className="badge bad" style={{ marginBottom: 12 }}> {friendlyIdInMessage(cfg.lastError)}</div> : null}
+      {toast ? (
+        <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <span>{toast}</span>
+          <button
+            className="btn"
+            style={{ padding: "0 6px", minHeight: 22 }}
+            onClick={() => setToast(null)}
+            title="Dismiss notification"
+          >
+            x
+          </button>
+        </div>
+      ) : null}
+      {globalErrorMessages.map((msg, idx) => (
+        <div key={`global-error-${idx}-${msg}`} className="badge bad" style={{ marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <span>{friendlyIdInMessage(msg)}</span>
+          <button
+            className="btn"
+            style={{ padding: "0 6px", minHeight: 22 }}
+            onClick={() => { void dismissGlobalBanner(msg); }}
+            title="Dismiss error"
+          >
+            x
+          </button>
+        </div>
+      ))}
+      {globalNoticeMessages.map((msg, idx) => (
+        <div key={`global-notice-${idx}-${msg}`} className="badge warn" style={{ marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <span>{friendlyIdInMessage(msg)}</span>
+          <button
+            className="btn"
+            style={{ padding: "0 6px", minHeight: 22 }}
+            onClick={() => { void dismissGlobalBanner(msg); }}
+            title="Dismiss notice"
+          >
+            x
+          </button>
+        </div>
+      ))}
 
       {isTabLoading ? (
         <div className="grid">
@@ -3081,128 +3673,774 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       {displayTab === "setup" && (
         <div className="grid">
           <div className="card">
-            <h2>Flickr API + OAuth</h2>
+            <h2>Service Setup</h2>
             <div className="content">
-{cfg?.flickrAuthed && !showSetupAdvanced ? (
-  <>
-    <div className="badge good" style={{ marginBottom: 10 }}>Already authorized.</div>
-    <div className="small" style={{ marginBottom: 12 }}>
-      Setup is hidden to keep things simple. If authorization fails later, we’ll show setup again automatically.
-    </div>
-    <div className="row">
-      <button className="btn" onClick={() => setShowSetupAdvanced(true)}>Show API + Reauthorize</button>
-      <button className="btn danger" onClick={async () => { await window.sq.logout(); await refreshAll(); showToast("Logged out."); }}>Logout</button>
-    </div>
-  </>
-) : (
-              <>
-    <div className="small">OAuth is done in your browser (no Flickr password stored by ShutterQueue). Keys + tokens are saved between versions.</div>
-    <div style={{ height: 16 }} />
-    <div className="card" style={{ backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
-      <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>Setup Instructions:</div>
-      <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
-        <li style={{ marginBottom: 8 }}>
-          Go to Flickr's Developer Page ({" "}
-          <button
-            style={{
-              background: "none",
-              border: "none",
-              padding: 0,
-              color: "var(--accent)",
-              cursor: "pointer",
-              textDecoration: "underline",
-              fontSize: "inherit",
-              font: "inherit",
-            }}
-            onClick={() => window.sq.openExternal({ url: "https://www.flickr.com/services/" })}
-          >
-            https://www.flickr.com/services
-          </button>
-          {") and click \"Get an API key\""}
-          <ul style={{ marginTop: 4, marginLeft: 20 }}>
-            <li>Choose "Non-commercial" for your key type</li>
-            <li>Name the app something like "ShutterQueue - [your username]"</li>
-            <li>Read and acknowledge the Flickr terms</li>
-          </ul>
-        </li>
-        <li style={{ marginBottom: 8 }}>Copy the API Key and paste it below</li>
-        <li style={{ marginBottom: 8 }}>Copy the API Secret and paste it below</li>
-        <li style={{ marginBottom: 8 }}>Click "Save", then click "Start Authorization"</li>
-        <li style={{ marginBottom: 8 }}>A browser window will open for Flickr's OAuth page - log in if needed</li>
-        <li>Click "Ok I'll Authorize It" and you'll return to ShutterQueue, logged in!</li>
-      </ol>
-    </div>
-    <div style={{ height: 16 }} />
-    <label className="small">API Key</label>
-    <input className="input" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Paste API Key" />
-    <div style={{ height: 10 }} />
-    <label className="small">API Secret</label>
-    <input className="input" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} placeholder="Paste API Secret" type="password" />
-    <div style={{ height: 12 }} />
-    <div className="row">
-      <button className="btn" onClick={saveKeys}>Save</button>
-      <button className="btn primary" onClick={startOAuth} disabled={!apiKey || (!apiSecret && !cfg?.hasApiSecret)}>Start Authorization</button>
-      <button className="btn danger" onClick={async () => { await window.sq.logout(); await refreshAll(); showToast("Logged out."); }}>Logout</button>
-    </div>
-    <div className="small" style={{ marginTop: 10 }}>Paste verifier code shown by Flickr:</div>
-    <div style={{ height: 10 }} />
-    <div className="row">
-      <input className="input" value={verifier} onChange={(e) => setVerifier(e.target.value)} placeholder="Verifier code" style={{ maxWidth: 240 }} />
-      <button className="btn primary" onClick={finishOAuth} disabled={!verifier}>Finish</button>
-    </div>
-
-  </>
-)}
-              <div className="hr" />
-              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Tumblr API + OAuth</div>
-              <div className="small">Tumblr OAuth uses your browser. ShutterQueue stores encrypted Tumblr tokens locally.</div>
-              <div style={{ height: 12 }} />
-              <label className="small">Tumblr Consumer Key</label>
-              <input className="input" value={tumblrKey} onChange={(e) => setTumblrKey(e.target.value)} placeholder="Paste Tumblr consumer key" />
-              <div style={{ height: 10 }} />
-              <label className="small">Tumblr Consumer Secret</label>
-              <input className="input" value={tumblrSecret} onChange={(e) => setTumblrSecret(e.target.value)} placeholder="Paste Tumblr consumer secret" type="password" />
-              <div style={{ height: 12 }} />
-              <div className="row">
-                <button className="btn" onClick={saveTumblrKeys}>Save</button>
-                <button className="btn primary" onClick={startTumblrOAuth} disabled={!tumblrKey || (!tumblrSecret && !cfg?.tumblrHasApiSecret)}>Start Tumblr Authorization</button>
-                <button className="btn danger" onClick={async () => { await window.sq.tumblrLogout(); await refreshAll(); setTumblrBlogs([]); showToast("Tumblr logged out."); }}>Logout Tumblr</button>
-              </div>
-              <div className="small" style={{ marginTop: 10 }}>Paste verifier code shown by Tumblr:</div>
-              <div style={{ height: 10 }} />
-              <div className="row">
-                <input className="input" value={tumblrVerifier} onChange={(e) => setTumblrVerifier(e.target.value)} placeholder="Tumblr verifier code" style={{ maxWidth: 240 }} />
-                <button className="btn primary" onClick={finishTumblrOAuth} disabled={!tumblrVerifier}>Finish Tumblr OAuth</button>
+              <div className="tabs" style={{ marginBottom: 14, flexWrap: "wrap" }}>
+                {SERVICES.map((svc) => {
+                  const authorized = svc.id === "flickr"
+                    ? Boolean(cfg?.flickrAuthed)
+                    : svc.id === "tumblr"
+                      ? Boolean(cfg?.tumblrAuthed)
+                      : svc.id === "bluesky"
+                        ? Boolean((cfg as any)?.blueskyAuthed)
+                        : svc.id === "pixelfed"
+                          ? Boolean((cfg as any)?.pixelfedAuthed)
+                          : Boolean((cfg as any)?.mastodonAuthed);
+                  return (
+                    <div
+                      key={svc.id}
+                      className={`tab ${setupServiceTab===svc.id?"selected":""}`}
+                      onClick={() => setSetupServiceTab(svc.id)}
+                      role="tab"
+                      tabIndex={0}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+                      title={authorized ? `${svc.label} authorized` : `${svc.label} not authorized`}
+                    >
+                      <span>{svc.label}</span>
+                      <span style={{ ...platformChipStyle(svc.id), width: 18, height: 18, fontSize: 10, opacity: authorized ? 1 : 0.45 }}>
+                        {authorized ? "✓" : (PLATFORM_META[svc.id]?.icon || svc.label.charAt(0))}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
 
-              <div style={{ height: 12 }} />
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div className="small">Tumblr status: {cfg?.tumblrAuthed ? `Authorized${cfg?.tumblrUsername ? ` as ${cfg.tumblrUsername}` : ""}` : "Not authorized"}</div>
-                <button className="btn" onClick={refreshTumblrBlogs} disabled={!cfg?.tumblrAuthed}>Refresh Blogs</button>
-              </div>
-              <div style={{ height: 8 }} />
-              <label className="small">Tumblr Blog</label>
-              <select
-                className="input"
-                value={tumblrPrimaryBlogId}
-                disabled={!cfg?.tumblrAuthed || !tumblrBlogs.length}
-                onChange={(e) => { void selectTumblrBlog(e.target.value); }}
-              >
-                {!tumblrBlogs.length ? <option value="">No blogs loaded</option> : null}
-                {tumblrBlogs.map((b) => (
-                  <option key={b.id} value={b.id}>{b.title || b.name || b.id}</option>
-                ))}
-              </select>
-              <div className="small" style={{ marginTop: 6 }}>
-                Tumblr uploads require a selected blog and cannot use Flickr "Private" visibility.
-              </div>
-              <div className="hr" />
-              {showGroupCountsUpdating && (
-                <div className="small" style={{ marginTop: 6 }}>
-                  Updating group counts in background… {Math.min(groupRefreshStatus.completed, groupRefreshStatus.total)}/{groupRefreshStatus.total || groups.length} ready.
-                </div>
+              {setupServiceTab === "flickr" ? (
+                <>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Flickr API + OAuth</div>
+                  {cfg?.flickrAuthed && !showSetupAdvanced ? (
+                    <>
+                      <div className="badge good" style={{ marginBottom: 10 }}>Already authorized.</div>
+                      <div className="small" style={{ marginBottom: 12 }}>
+                        Setup is hidden to keep things simple. If authorization fails later, we’ll show setup again automatically.
+                      </div>
+                      <div className="row">
+                        <button className="btn" onClick={() => setShowSetupAdvanced(true)}>Show API + Reauthorize</button>
+                        <button className="btn danger" onClick={async () => { await window.sq.logout(); await refreshAll(); showToast("Logged out."); }}>Logout</button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="small">OAuth is done in your browser (no Flickr password stored by ShutterQueue). Keys + tokens are saved between versions.</div>
+                      <div style={{ height: 16 }} />
+                      <div className="card" style={{ backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
+                        <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>Setup Instructions:</div>
+                        <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+                          <li style={{ marginBottom: 8 }}>
+                            Go to Flickr's Developer Page ({" "}
+                            <button
+                              style={{
+                                background: "none",
+                                border: "none",
+                                padding: 0,
+                                color: "var(--accent)",
+                                cursor: "pointer",
+                                textDecoration: "underline",
+                                fontSize: "inherit",
+                                font: "inherit",
+                              }}
+                              onClick={() => window.sq.openExternal({ url: "https://www.flickr.com/services/" })}
+                            >
+                              https://www.flickr.com/services
+                            </button>
+                            {") and click \"Get an API key\""}
+                            <ul style={{ marginTop: 4, marginLeft: 20 }}>
+                              <li>Choose "Non-commercial" for your key type</li>
+                              <li>Name the app something like "ShutterQueue - [your username]"</li>
+                              <li>Read and acknowledge the Flickr terms</li>
+                            </ul>
+                          </li>
+                          <li style={{ marginBottom: 8 }}>Copy the API Key and paste it below</li>
+                          <li style={{ marginBottom: 8 }}>Copy the API Secret and paste it below</li>
+                          <li style={{ marginBottom: 8 }}>Click "Save", then click "Start Authorization"</li>
+                          <li style={{ marginBottom: 8 }}>A browser window will open for Flickr's OAuth page - log in if needed</li>
+                          <li>Click "Ok I'll Authorize It" and you'll return to ShutterQueue, logged in!</li>
+                        </ol>
+                      </div>
+                      <div style={{ height: 16 }} />
+                      <label className="small">API Key</label>
+                      <input className="input" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Paste API Key" />
+                      <div style={{ height: 10 }} />
+                      <label className="small">API Secret</label>
+                      <input className="input" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} placeholder="Paste API Secret" type="password" />
+                      <div style={{ height: 12 }} />
+                      <div className="row">
+                        <button className="btn" onClick={saveKeys}>Save</button>
+                        <button className="btn primary" onClick={startOAuth} disabled={!apiKey || (!apiSecret && !cfg?.hasApiSecret)}>Start Authorization</button>
+                        <button className="btn danger" onClick={async () => { await window.sq.logout(); await refreshAll(); showToast("Logged out."); }}>Logout</button>
+                      </div>
+                      {!cfg?.flickrAuthed ? (
+                        <div className="small" style={{ marginTop: 8, color: "var(--text-secondary)" }}>
+                          Not authorized yet? Save key + secret, click Start Authorization, approve in browser, then paste the verifier code and click Finish.
+                        </div>
+                      ) : null}
+                      <div className="small" style={{ marginTop: 10 }}>Paste verifier code shown by Flickr:</div>
+                      <div style={{ height: 10 }} />
+                      <div className="row">
+                        <input className="input" value={verifier} onChange={(e) => setVerifier(e.target.value)} placeholder="Verifier code" style={{ maxWidth: 240 }} />
+                        <button className="btn primary" onClick={finishOAuth} disabled={!verifier}>Finish</button>
+                      </div>
+                    </>
+                  )}
+
+                  <div className="hr" />
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Flickr Groups / Albums</div>
+                  <div className="small" style={{ marginBottom: 10 }}>
+                    Flickr-specific groups and albums live here so each service keeps its own setup resources together.
+                  </div>
+                  {showGroupCountsUpdating && (
+                    <div className="small" style={{ marginBottom: 10 }}>
+                      Updating group counts in background… {Math.min(groupRefreshStatus.completed, groupRefreshStatus.total)}/{groupRefreshStatus.total || groups.length} ready.
+                    </div>
+                  )}
+                  <div className="split">
+                    <div>
+                      <div className="row" style={{ marginBottom: 8, justifyContent: "space-between" }}>
+                        <button className="btn" onClick={refreshGroups} disabled={!cfg?.flickrAuthed}>Refresh Groups</button>
+                        <div className="small">Groups loaded: {groups.length}</div>
+                      </div>
+                      <div className="small">Groups filter</div>
+                      <input className="input" value={groupsFilter} onChange={(e) => setGroupsFilter(e.target.value)} placeholder="search..." />
+                      <div style={{ height: 8 }} />
+                      <div className="listbox">
+                        {filteredGroups.slice(0, 200).map(g => (
+                          <div key={g.id} className="listrow">
+                            <div className="small">{formatGroupName(g)}</div>
+                          </div>
+                        ))}
+                        {!groups.length && <div className="small">Not loaded yet.</div>}
+                        {!!groups.length && !filteredGroups.length && <div className="small">No groups match this filter.</div>}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="row" style={{ marginBottom: 8, justifyContent: "space-between" }}>
+                        <button className="btn" onClick={refreshAlbums} disabled={!cfg?.flickrAuthed}>Refresh Albums</button>
+                        <div className="small">Albums loaded: {albums.length}</div>
+                      </div>
+                      <div className="small">Albums filter</div>
+                      <input className="input" value={albumsFilter} onChange={(e) => setAlbumsFilter(e.target.value)} placeholder="search..." />
+                      <div style={{ height: 8 }} />
+                      <div className="listbox">
+                        {filteredAlbums.slice(0, 200).map(a => (
+                          <div key={a.id} className="listrow">
+                            <div className="small">{a.title}</div>
+                          </div>
+                        ))}
+                        {!albums.length && <div className="small">Not loaded yet.</div>}
+                        {!!albums.length && !filteredAlbums.length && <div className="small">No albums match this filter.</div>}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : setupServiceTab === "tumblr" ? (
+                <>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Tumblr API + OAuth</div>
+                  <div className="small">Tumblr OAuth uses your browser. ShutterQueue stores encrypted Tumblr tokens locally.</div>
+                  {!cfg?.tumblrAuthed ? (
+                    <div className="card" style={{ marginTop: 12, backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
+                      <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>Tumblr Setup Help:</div>
+                      <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+                        <li style={{ marginBottom: 6 }}>
+                          Create an app at{" "}
+                          <button
+                            style={{
+                              background: "none",
+                              border: "none",
+                              padding: 0,
+                              color: "var(--accent)",
+                              cursor: "pointer",
+                              textDecoration: "underline",
+                              fontSize: "inherit",
+                              font: "inherit",
+                            }}
+                            onClick={() => window.sq.openExternal({ url: "https://www.tumblr.com/oauth/apps" })}
+                          >
+                            https://www.tumblr.com/oauth/apps
+                          </button>
+                          .
+                        </li>
+                        <li style={{ marginBottom: 6 }}>Copy Tumblr Consumer Key + Consumer Secret and paste them below, then click Save.</li>
+                        <li style={{ marginBottom: 6 }}>
+                          In Tumblr app settings, set callback/redirect URL to http://localhost:38945/tumblr/callback so ShutterQueue can complete authorization automatically.
+                        </li>
+                        <li style={{ marginBottom: 6 }}>
+                          If Tumblr forces https-only redirect URLs in your app settings, authorization can still work by pasting oauth_verifier manually.
+                        </li>
+                        <li style={{ marginBottom: 6 }}>Click Start Tumblr Authorization, approve in browser, then paste the verifier code and click Finish Tumblr OAuth.</li>
+                        <li>Select a Tumblr Blog after authorization so uploads know where to publish.</li>
+                      </ol>
+                    </div>
+                  ) : null}
+                  <div style={{ height: 12 }} />
+                  <label className="small">Tumblr Consumer Key</label>
+                  <input className="input" value={tumblrKey} onChange={(e) => setTumblrKey(e.target.value)} placeholder="Paste Tumblr consumer key" />
+                  <div style={{ height: 10 }} />
+                  <label className="small">Tumblr Consumer Secret</label>
+                  <input className="input" value={tumblrSecret} onChange={(e) => setTumblrSecret(e.target.value)} placeholder="Paste Tumblr consumer secret" type="password" />
+                  <div style={{ height: 12 }} />
+                  <div className="row">
+                    <button className="btn" onClick={saveTumblrKeys}>Save</button>
+                    <button className="btn primary" onClick={startTumblrOAuth} disabled={!tumblrKey || (!tumblrSecret && !cfg?.tumblrHasApiSecret)}>Start Tumblr Authorization</button>
+                    <button className="btn danger" onClick={async () => { await window.sq.tumblrLogout(); await refreshAll(); setTumblrBlogs([]); showToast("Tumblr logged out."); }}>Logout Tumblr</button>
+                  </div>
+                  <div className="small" style={{ marginTop: 10 }}>Paste verifier code shown by Tumblr (or oauth_verifier from redirected URL):</div>
+                  <div style={{ height: 10 }} />
+                  <div className="row">
+                    <input className="input" value={tumblrVerifier} onChange={(e) => setTumblrVerifier(e.target.value)} placeholder="Tumblr verifier code" style={{ maxWidth: 240 }} />
+                    <button className="btn primary" onClick={finishTumblrOAuth} disabled={!tumblrVerifier}>Finish Tumblr OAuth</button>
+                  </div>
+
+                  <div style={{ height: 12 }} />
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <div className="small">Tumblr status: {cfg?.tumblrAuthed ? `Authorized${cfg?.tumblrUsername ? ` as ${cfg.tumblrUsername}` : ""}` : "Not authorized"}</div>
+                    <button className="btn" onClick={refreshTumblrBlogs} disabled={!cfg?.tumblrAuthed}>Refresh Blogs</button>
+                  </div>
+                  <div style={{ height: 8 }} />
+                  <label className="small">Tumblr Blog</label>
+                  <select
+                    className="input"
+                    value={tumblrPrimaryBlogId}
+                    disabled={!cfg?.tumblrAuthed || !tumblrBlogs.length}
+                    onChange={(e) => { void selectTumblrBlog(e.target.value); }}
+                  >
+                    {!tumblrBlogs.length ? <option value="">No blogs loaded</option> : null}
+                    {tumblrBlogs.map((b) => (
+                      <option key={b.id} value={b.id}>{b.title || b.name || b.id}</option>
+                    ))}
+                  </select>
+                  <div style={{ height: 12 }} />
+                  <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>When posting to Tumblr...</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="tumblr-post-text-mode"
+                        checked={tumblrPostTextMode === "bold_title_then_description"}
+                        onChange={() => {
+                          const next: TumblrPostTextMode = "bold_title_then_description";
+                          setTumblrPostTextMode(next);
+                          window.sq.setTumblrPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge <b>Title</b> (bolded) and Description into post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="tumblr-post-text-mode"
+                        checked={tumblrPostTextMode === "title_then_description"}
+                        onChange={() => {
+                          const next: TumblrPostTextMode = "title_then_description";
+                          setTumblrPostTextMode(next);
+                          window.sq.setTumblrPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Title and Description into post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="tumblr-post-text-mode"
+                        checked={tumblrPostTextMode === "title_only"}
+                        onChange={() => {
+                          const next: TumblrPostTextMode = "title_only";
+                          setTumblrPostTextMode(next);
+                          window.sq.setTumblrPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use only Title field in post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="tumblr-post-text-mode"
+                        checked={tumblrPostTextMode === "description_only"}
+                        onChange={() => {
+                          const next: TumblrPostTextMode = "description_only";
+                          setTumblrPostTextMode(next);
+                          window.sq.setTumblrPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use only Description in post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+                      <input
+                        type="checkbox"
+                        checked={tumblrUseDescriptionAsImageDescription}
+                        onChange={(e) => {
+                          const next = e.target.checked;
+                          setTumblrUseDescriptionAsImageDescription(next);
+                          window.sq.setTumblrUseDescriptionAsImageDescription(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use Description as "Image description" text for visually impaired users on Tumblr</span>
+                    </label>
+                  </div>
+                  <div className="small" style={{ marginTop: 6 }}>
+                    Tumblr uploads require a selected blog. Friends/family privacy modes are Flickr-only.
+                  </div>
+                </>
+              ) : setupServiceTab === "bluesky" ? (
+                <>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Bluesky Auth + Posting</div>
+                  <div className="small">Bluesky uses your handle/email and an app password. ShutterQueue stores encrypted Bluesky credentials and session tokens locally.</div>
+                  {!((cfg as any)?.blueskyAuthed) ? (
+                    <div className="card" style={{ marginTop: 12, backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
+                      <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>Bluesky Setup Help:</div>
+                      <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+                        <li style={{ marginBottom: 6 }}>
+                          Open Bluesky settings and create an app password in your account settings.
+                        </li>
+                        <li style={{ marginBottom: 6 }}>
+                          Enter your Bluesky handle/email and app password below.
+                        </li>
+                        <li style={{ marginBottom: 6 }}>
+                          Click Save, then click Start Bluesky Authorization.
+                        </li>
+                        <li>
+                          You should see "Authorized as @your-handle" when successful.
+                        </li>
+                      </ol>
+                    </div>
+                  ) : null}
+                  <div style={{ height: 12 }} />
+                  <label className="small">Bluesky Handle or Email</label>
+                  <input className="input" value={blueskyIdentifier} onChange={(e) => { setBlueskyIdentifier(e.target.value); setBlueskyAuthError(""); }} placeholder="e.g. your-handle.bsky.social" />
+                  <div style={{ height: 10 }} />
+                  <label className="small">Bluesky App Password</label>
+                  <input className="input" value={blueskyAppPassword} onChange={(e) => { setBlueskyAppPassword(e.target.value); setBlueskyAuthError(""); }} placeholder="xxxx-xxxx-xxxx-xxxx" type="password" />
+                  <div style={{ height: 12 }} />
+                  {((cfg as any)?.blueskyAuthed) ? (
+                    <div className="row">
+                      <button className="btn danger" onClick={logoutBluesky}>Logout Bluesky</button>
+                    </div>
+                  ) : (
+                    <div className="row">
+                      <button className="btn" onClick={saveBlueskyCredentials}>Save</button>
+                      <button className="btn primary" onClick={startBlueskyAuth} disabled={!blueskyIdentifier || (!blueskyAppPassword && !(cfg as any)?.blueskyHasAppPassword)}>Start Bluesky Authorization</button>
+                    </div>
+                  )}
+                  {blueskyAuthError ? (
+                    <div className="small" style={{ marginTop: 8, color: "var(--bad)" }}>{blueskyAuthError}</div>
+                  ) : null}
+                  <div style={{ height: 12 }} />
+                  <div className="small">Bluesky status: {((cfg as any)?.blueskyAuthed) ? `Authorized${(cfg as any)?.blueskyHandle ? ` as ${(cfg as any).blueskyHandle}` : ""}` : "Not authorized"}</div>
+                  <div style={{ height: 12 }} />
+                  <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>When posting to Bluesky...</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="bluesky-post-text-mode"
+                        checked={blueskyPostTextMode === "merge_title_description_tags"}
+                        onChange={() => {
+                          const next: BlueskyPostTextMode = "merge_title_description_tags";
+                          setBlueskyPostTextMode(next);
+                          window.sq.setBlueskyPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Title, Description, and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="bluesky-post-text-mode"
+                        checked={blueskyPostTextMode === "merge_title_description"}
+                        onChange={() => {
+                          const next: BlueskyPostTextMode = "merge_title_description";
+                          setBlueskyPostTextMode(next);
+                          window.sq.setBlueskyPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Title and Description for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="bluesky-post-text-mode"
+                        checked={blueskyPostTextMode === "merge_title_tags"}
+                        onChange={() => {
+                          const next: BlueskyPostTextMode = "merge_title_tags";
+                          setBlueskyPostTextMode(next);
+                          window.sq.setBlueskyPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Title and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="bluesky-post-text-mode"
+                        checked={blueskyPostTextMode === "merge_description_tags"}
+                        onChange={() => {
+                          const next: BlueskyPostTextMode = "merge_description_tags";
+                          setBlueskyPostTextMode(next);
+                          window.sq.setBlueskyPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Description and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="bluesky-post-text-mode"
+                        checked={blueskyPostTextMode === "title_only"}
+                        onChange={() => {
+                          const next: BlueskyPostTextMode = "title_only";
+                          setBlueskyPostTextMode(next);
+                          window.sq.setBlueskyPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use only Title for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="bluesky-post-text-mode"
+                        checked={blueskyPostTextMode === "description_only"}
+                        onChange={() => {
+                          const next: BlueskyPostTextMode = "description_only";
+                          setBlueskyPostTextMode(next);
+                          window.sq.setBlueskyPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use only Description for post text</span>
+                    </label>
+                  </div>
+                  <div style={{ height: 10 }} />
+                  <div className="small">Bluesky posts are limited to 300 characters</div>
+                  <div className="small" style={{ marginTop: 2, marginBottom: 6 }}>How do you want to handle long posts?</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="bluesky-long-post-mode"
+                        checked={blueskyLongPostMode === "truncate"}
+                        onChange={() => {
+                          const next: BlueskyLongPostMode = "truncate";
+                          setBlueskyLongPostMode(next);
+                          window.sq.setBlueskyLongPostMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Truncate text to fit in a single post</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="bluesky-long-post-mode"
+                        checked={blueskyLongPostMode === "thread"}
+                        onChange={() => {
+                          const next: BlueskyLongPostMode = "thread";
+                          setBlueskyLongPostMode(next);
+                          window.sq.setBlueskyLongPostMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Turn long post text into thread post</span>
+                    </label>
+                  </div>
+                  <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={blueskyUseDescriptionAsAltText}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setBlueskyUseDescriptionAsAltText(next);
+                        window.sq.setBlueskyUseDescriptionAsAltText(next).catch(console.error);
+                      }}
+                    />
+                    <span>Use Description as "alt" descriptive text for visually impaired users on Bluesky</span>
+                  </label>
+                  <div className="small" style={{ marginTop: 6 }}>
+                    Tags included in merged modes are appended as hashtags on a separate line.
+                  </div>
+                </>
+              ) : setupServiceTab === "pixelfed" ? (
+                <>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>PixelFed API Access + Posting</div>
+                  <div className="small">PixelFed uses a personal access token. ShutterQueue stores PixelFed credentials encrypted locally.</div>
+                  {!((cfg as any)?.pixelfedAuthed) ? (
+                    <div className="card" style={{ marginTop: 12, backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
+                      <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>PixelFed Setup Help:</div>
+                      <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+                        <li style={{ marginBottom: 6 }}>Open your PixelFed account settings. Under "Applications", create a personal access token with the name "ShutterQueue" with post/media scopes.</li>
+                        <li style={{ marginBottom: 6 }}>Enter your PixelFed instance URL and access token below, then click Save.</li>
+                        <li style={{ marginBottom: 6 }}>Click Test PixelFed Authorization to verify credentials before uploading.</li>
+                        <li>When successful, you should see "Authorized as @your-handle".</li>
+                      </ol>
+                    </div>
+                  ) : null}
+                  <div style={{ height: 12 }} />
+                  <label className="small">PixelFed Instance URL</label>
+                  <input className="input" value={pixelfedInstanceUrl} onChange={(e) => { setPixelfedInstanceUrl(e.target.value); setPixelfedAuthError(""); }} placeholder="https://pixelfed.social" />
+                  <div style={{ height: 10 }} />
+                  <label className="small">PixelFed Access Token</label>
+                  <input className="input" value={pixelfedAccessToken} onChange={(e) => { setPixelfedAccessToken(e.target.value); setPixelfedAuthError(""); }} placeholder="Paste personal access token" type="password" />
+                  <div style={{ height: 12 }} />
+                  {((cfg as any)?.pixelfedAuthed) ? (
+                    <div className="row">
+                      <button className="btn" onClick={savePixelfedCredentials}>Save</button>
+                      <button className="btn" onClick={testPixelfedAuth}>Re-test Authorization</button>
+                      <button className="btn danger" onClick={logoutPixelfed}>Logout PixelFed</button>
+                    </div>
+                  ) : (
+                    <div className="row">
+                      <button className="btn" onClick={savePixelfedCredentials}>Save</button>
+                      <button className="btn primary" onClick={testPixelfedAuth} disabled={!pixelfedInstanceUrl || (!pixelfedAccessToken && !(cfg as any)?.pixelfedHasAccessToken)}>Test PixelFed Authorization</button>
+                    </div>
+                  )}
+                  {pixelfedAuthError ? (
+                    <div className="small" style={{ marginTop: 8, color: "var(--bad)" }}>{pixelfedAuthError}</div>
+                  ) : null}
+                  <div style={{ height: 12 }} />
+                  <div className="small">PixelFed status: {((cfg as any)?.pixelfedAuthed) ? `Authorized${(cfg as any)?.pixelfedUsername ? ` as @${(cfg as any).pixelfedUsername}` : ""}` : "Not authorized"}</div>
+                  <div style={{ height: 12 }} />
+                  <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>When posting to PixelFed...</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="pixelfed-post-text-mode"
+                        checked={pixelfedPostTextMode === "merge_title_description_tags"}
+                        onChange={() => {
+                          const next: PixelFedPostTextMode = "merge_title_description_tags";
+                          setPixelfedPostTextMode(next);
+                          window.sq.setPixelfedPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Title, Description, and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="pixelfed-post-text-mode"
+                        checked={pixelfedPostTextMode === "merge_title_description"}
+                        onChange={() => {
+                          const next: PixelFedPostTextMode = "merge_title_description";
+                          setPixelfedPostTextMode(next);
+                          window.sq.setPixelfedPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Title and Description for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="pixelfed-post-text-mode"
+                        checked={pixelfedPostTextMode === "merge_title_tags"}
+                        onChange={() => {
+                          const next: PixelFedPostTextMode = "merge_title_tags";
+                          setPixelfedPostTextMode(next);
+                          window.sq.setPixelfedPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Title and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="pixelfed-post-text-mode"
+                        checked={pixelfedPostTextMode === "merge_description_tags"}
+                        onChange={() => {
+                          const next: PixelFedPostTextMode = "merge_description_tags";
+                          setPixelfedPostTextMode(next);
+                          window.sq.setPixelfedPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Description and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="pixelfed-post-text-mode"
+                        checked={pixelfedPostTextMode === "title_only"}
+                        onChange={() => {
+                          const next: PixelFedPostTextMode = "title_only";
+                          setPixelfedPostTextMode(next);
+                          window.sq.setPixelfedPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use only Title for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="pixelfed-post-text-mode"
+                        checked={pixelfedPostTextMode === "description_only"}
+                        onChange={() => {
+                          const next: PixelFedPostTextMode = "description_only";
+                          setPixelfedPostTextMode(next);
+                          window.sq.setPixelfedPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use only Description for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={pixelfedUseDescriptionAsAltText}
+                        onChange={(e) => {
+                          const next = e.target.checked;
+                          setPixelfedUseDescriptionAsAltText(next);
+                          window.sq.setPixelfedUseDescriptionAsAltText(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use Description as "alt" descriptive text for visually impaired users on PixelFed</span>
+                    </label>
+                  </div>
+                  <div className="small" style={{ marginTop: 6 }}>
+                    PixelFed currently supports public/private visibility and accessibility alt text. Friends/family privacy and location tagging are not supported and will be adjusted/ignored when posting.
+                  </div>
+                  <div className="small" style={{ marginTop: 6 }}>
+                    Token scopes: select <b>read</b> and <b>write</b>. You do not need follow/push/admin scopes.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Mastodon API Access + Posting</div>
+                  <div className="small">Mastodon uses a personal access token. ShutterQueue stores Mastodon credentials encrypted locally.</div>
+                  {!((cfg as any)?.mastodonAuthed) ? (
+                    <div className="card" style={{ marginTop: 12, backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
+                      <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>Mastodon Setup Help:</div>
+                      <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+                        <li style={{ marginBottom: 6 }}>Open your Mastodon account settings and create a personal access token with read/write scopes.</li>
+                        <li style={{ marginBottom: 6 }}>Enter your Mastodon instance URL and access token below, then click Save.</li>
+                        <li style={{ marginBottom: 6 }}>Click Test Mastodon Authorization to verify credentials before uploading.</li>
+                        <li>When successful, you should see "Authorized as @your-handle".</li>
+                      </ol>
+                    </div>
+                  ) : null}
+                  <div style={{ height: 12 }} />
+                  <label className="small">Mastodon Instance URL</label>
+                  <input className="input" value={mastodonInstanceUrl} onChange={(e) => { setMastodonInstanceUrl(e.target.value); setMastodonAuthError(""); }} placeholder="https://mastodon.social" />
+                  <div style={{ height: 10 }} />
+                  <label className="small">Mastodon Access Token</label>
+                  <input className="input" value={mastodonAccessToken} onChange={(e) => { setMastodonAccessToken(e.target.value); setMastodonAuthError(""); }} placeholder="Paste personal access token" type="password" />
+                  <div style={{ height: 12 }} />
+                  {((cfg as any)?.mastodonAuthed) ? (
+                    <div className="row">
+                      <button className="btn" onClick={saveMastodonCredentials}>Save</button>
+                      <button className="btn" onClick={testMastodonAuth}>Re-test Authorization</button>
+                      <button className="btn danger" onClick={logoutMastodon}>Logout Mastodon</button>
+                    </div>
+                  ) : (
+                    <div className="row">
+                      <button className="btn" onClick={saveMastodonCredentials}>Save</button>
+                      <button className="btn primary" onClick={testMastodonAuth} disabled={!mastodonInstanceUrl || (!mastodonAccessToken && !(cfg as any)?.mastodonHasAccessToken)}>Test Mastodon Authorization</button>
+                    </div>
+                  )}
+                  {mastodonAuthError ? (
+                    <div className="small" style={{ marginTop: 8, color: "var(--bad)" }}>{mastodonAuthError}</div>
+                  ) : null}
+                  <div style={{ height: 12 }} />
+                  <div className="small">Mastodon status: {((cfg as any)?.mastodonAuthed) ? `Authorized${(cfg as any)?.mastodonUsername ? ` as @${(cfg as any).mastodonUsername}` : ""}` : "Not authorized"}</div>
+                  <div style={{ height: 12 }} />
+                  <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>When posting to Mastodon...</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="mastodon-post-text-mode"
+                        checked={mastodonPostTextMode === "merge_title_description_tags"}
+                        onChange={() => {
+                          const next: MastodonPostTextMode = "merge_title_description_tags";
+                          setMastodonPostTextMode(next);
+                          window.sq.setMastodonPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Title, Description, and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="mastodon-post-text-mode"
+                        checked={mastodonPostTextMode === "merge_title_description"}
+                        onChange={() => {
+                          const next: MastodonPostTextMode = "merge_title_description";
+                          setMastodonPostTextMode(next);
+                          window.sq.setMastodonPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Title and Description for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="mastodon-post-text-mode"
+                        checked={mastodonPostTextMode === "merge_title_tags"}
+                        onChange={() => {
+                          const next: MastodonPostTextMode = "merge_title_tags";
+                          setMastodonPostTextMode(next);
+                          window.sq.setMastodonPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Title and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="mastodon-post-text-mode"
+                        checked={mastodonPostTextMode === "merge_description_tags"}
+                        onChange={() => {
+                          const next: MastodonPostTextMode = "merge_description_tags";
+                          setMastodonPostTextMode(next);
+                          window.sq.setMastodonPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Merge Description and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="mastodon-post-text-mode"
+                        checked={mastodonPostTextMode === "title_only"}
+                        onChange={() => {
+                          const next: MastodonPostTextMode = "title_only";
+                          setMastodonPostTextMode(next);
+                          window.sq.setMastodonPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use only Title for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="mastodon-post-text-mode"
+                        checked={mastodonPostTextMode === "description_only"}
+                        onChange={() => {
+                          const next: MastodonPostTextMode = "description_only";
+                          setMastodonPostTextMode(next);
+                          window.sq.setMastodonPostTextMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use only Description for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={mastodonUseDescriptionAsAltText}
+                        onChange={(e) => {
+                          const next = e.target.checked;
+                          setMastodonUseDescriptionAsAltText(next);
+                          window.sq.setMastodonUseDescriptionAsAltText(next).catch(console.error);
+                        }}
+                      />
+                      <span>Use Description as "alt" descriptive text for visually impaired users on Mastodon</span>
+                    </label>
+                  </div>
+                  <div className="small" style={{ marginTop: 6 }}>
+                    Mastodon supports public/private visibility and accessibility alt text. Friends/family privacy and location tagging are not supported and will be adjusted/ignored when posting.
+                  </div>
+                  <div className="small" style={{ marginTop: 6 }}>
+                    Token scopes: select <b>read</b> and <b>write</b>. You do not need follow/push/admin scopes.
+                  </div>
+                </>
               )}
-              <div style={{ height: 12 }} />
+            </div>
+          </div>
+
+          <div className="card">
+            <h2>General App Settings</h2>
+            <div className="content">
               <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <input type="checkbox" checked={verboseLogging} onChange={(e) => {
                   setVerboseLogging(e.target.checked);
@@ -3232,6 +4470,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 <span className="small">Check for new version on launch</span>
               </label>
               <div style={{ height: 8 }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={addShutterQueueTagToAllUploads} onChange={(e) => {
+                  const next = e.target.checked;
+                  setAddShutterQueueTagToAllUploads(next);
+                  window.sq.setAddShutterQueueTagToAllUploads(next).catch(console.error);
+                }} />
+                <span className="small">Add #ShutterQueue tag to all uploads</span>
+              </label>
+              <div className="hr" />
               <div className="row">
                 <button className="btn" onClick={() => void performUpdateCheck(true, true)} disabled={updateCheckBusy}>
                   {updateCheckBusy ? "Checking..." : "Check for new version now"}
@@ -3247,53 +4494,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               <button className="btn" onClick={async () => { await (window as any).api.openThirdPartyLicenses?.(); }}>
                 View Third-Party Licenses
               </button>
-            </div>
-          </div>
-
-          <div className="card">
-            <h2>Loaded Groups / Albums</h2>
-            <div className="content">
-              <div className="split">
-                <div>
-                  <div className="row" style={{ marginBottom: 8, justifyContent: "space-between" }}>
-                    <button className="btn" onClick={refreshGroups} disabled={!cfg?.flickrAuthed}>Refresh Groups</button>
-                    <div className="small">Groups loaded: {groups.length}</div>
-                  </div>
-                  <div className="small">Groups filter</div>
-                  <input className="input" value={groupsFilter} onChange={(e) => setGroupsFilter(e.target.value)} placeholder="search..." />
-                  <div style={{ height: 8 }} />
-                  <div className="listbox">
-                    {filteredGroups.slice(0, 200).map(g => (
-                      <div key={g.id} className="listrow">
-                        <div className="small">{formatGroupName(g)}</div>
-                      </div>
-                    ))}
-                    {!groups.length && <div className="small">Not loaded yet.</div>}
-                    {!!groups.length && !filteredGroups.length && <div className="small">No groups match this filter.</div>}
-                  </div>
-                </div>
-                <div>
-                  <div className="row" style={{ marginBottom: 8, justifyContent: "space-between" }}>
-                    <button className="btn" onClick={refreshAlbums} disabled={!cfg?.flickrAuthed}>Refresh Albums</button>
-                    <div className="small">Albums loaded: {albums.length}</div>
-                  </div>
-                  <div className="small">Albums filter</div>
-                  <input className="input" value={albumsFilter} onChange={(e) => setAlbumsFilter(e.target.value)} placeholder="search..." />
-                  <div style={{ height: 8 }} />
-                  <div className="listbox">
-                    {filteredAlbums.slice(0, 200).map(a => (
-                      <div key={a.id} className="listrow">
-                        <div className="small">{a.title}</div>
-                      </div>
-                    ))}
-                    {!albums.length && <div className="small">Not loaded yet.</div>}
-                    {!!albums.length && !filteredAlbums.length && <div className="small">No albums match this filter.</div>}
-                  </div>
-                </div>
-              </div>
-              <div className="small" style={{ marginTop: 10 }}>
-                Tip: in Queue, use normal selection (click, shift-click, cmd/ctrl-click) to batch edit.
-              </div>
             </div>
           </div>
 
@@ -3489,7 +4689,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 </div>
               )}
 
-              <div className="queue-scroll-area">
+              <div
+                className="queue-scroll-area"
+                ref={queueScrollAreaRef}
+                onScroll={(e) => {
+                  queueScrollTopRef.current = (e.currentTarget as HTMLDivElement).scrollTop;
+                }}
+              >
                 <div className="queue">
                   {queue.map((it) => {
 	                  const srcs = resolveThumbSrc(it, thumbs, flickrUrls);
@@ -3599,18 +4805,22 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           {it.status === "failed" ? (
                             <span className="badge accent" title="Right-click and choose Retry Upload">Retry available</span>
                           ) : null}
-                          {servicesForBadgeDisplay((it.targetServices as string[] | undefined)).map((svc) => (
+                          {servicesForBadgeDisplay((it.targetServices as string[] | undefined))
+                            .filter((svc) => configuredServiceIds.includes(svc as UploadService))
+                            .map((svc) => (
                             <span key={`${it.id}-svc-${svc}`} style={platformChipStyle(svc)} title={`Target: ${platformLabel(svc)}`}>
                               {PLATFORM_META[svc]?.icon || platformLabel(svc).charAt(0).toUpperCase()}
                             </span>
                           ))}
                           {it.status === "done_warn" && !hasPendingGroupRetries && it.lastError ? (
-                            <span className="badge warn" title={friendlyIdInMessage(it.lastError)}>warnings: see details</span>
+                            visibleItemMessageParts(it.lastError).length > 0
+                              ? <span className="badge warn" title={friendlyIdInMessage(visibleItemMessageParts(it.lastError).join(" | "))}>warnings: see details</span>
+                              : null
                           ) : null}
                           {hasPendingGroupRetries ? (
                             <span className="badge warn" title={pendingGroupsTooltip || ""}>Pending Group Additions</span>
                           ) : (
-                            hasActualErrorText(it.lastError) ? <span className="badge bad" title={friendlyIdInMessage(it.lastError)}>Error</span> : null
+                            hasVisibleActualErrorText(it.lastError) ? <span className="badge bad" title={friendlyIdInMessage(visibleItemMessageParts(it.lastError).join(" | "))}>Error</span> : null
                           )}
                         </div>
                         <div className="qmeta">
@@ -3643,7 +4853,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         </button>
                         <span
                           className="drag"
-                          draggable
+                          onClick={() => { void dismissMessagesEverywhere([msg]); }}
                           title="Drag to reorder"
                           onDragStart={(e) => {
                             e.dataTransfer.setData("text/plain", it.id);
@@ -3767,13 +4977,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   {showPlatformSelector && (
                     <>
-                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Platforms</div>
-                      <div className="small" style={{ marginBottom: 8 }}>
-                        Choose which authorized platforms each selected item should upload to.
-                      </div>
-                      <div className="listbox" style={{ maxWidth: 320, marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+                        <div style={{ fontSize: 16, fontWeight: 700 }}>Platforms:</div>
                         {selectorServiceOptions.map((svc) => (
-                          <label key={svc.id} className="listrow trirow">
+                          <label key={svc.id} className="listrow trirow" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "0 2px", border: "none", minHeight: 0 }}>
                             <TriCheck state={triState("service", svc.id)} onToggle={(next) => setForSelected("service", svc.id, next)} />
                             <span className="small">{svc.label}</span>
                           </label>
@@ -3836,6 +5043,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div className="small" style={{ marginTop: 6 }}>
                     New tags will be <b>added</b> to each selected item (existing tags are kept).
                   </div>
+                  {blueskyCounterInfo ? (
+                    <div className="small" style={{ marginTop: 6 }}>
+                      Bluesky post limit 300 characters. Current count ({blueskyCounterInfo.label}): <b style={blueskyCounterInfo.overLimitInTruncate ? { color: "var(--bad)", fontWeight: 800 } : undefined}>{blueskyCounterInfo.countValue}</b>
+                      {blueskyCounterInfo.showThreadInfo ? <span>{` | threaded posts: ${blueskyCounterInfo.threadValue}`}</span> : null}
+                    </div>
+                  ) : null}
 
                   <div style={{ height: 10 }} />
                   <div className="small">Load saved tag set</div>
@@ -3863,6 +5076,34 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         <option value="friends_family">Friends & Family</option>
                         <option value="private">Private</option>
                       </select>
+                      {tumblrSelectedInEditor && batchPrivacy && (batchPrivacy === "friends" || batchPrivacy === "family" || batchPrivacy === "friends_family") && (
+                        <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 6, marginTop: 8, borderRadius: 3 }}>
+                          <div className="small" style={{ color: "var(--warn)" }}>
+                            ⚠ Tumblr doesn't support "{batchPrivacy === "friends_family" ? "Friends & Family" : batchPrivacy.charAt(0).toUpperCase() + batchPrivacy.slice(1)}" privacy.
+                          </div>
+                        </div>
+                      )}
+                      {blueskySelectedInEditor && batchPrivacy && batchPrivacy !== "public" && (
+                        <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 6, marginTop: 8, borderRadius: 3 }}>
+                          <div className="small" style={{ color: "var(--warn)" }}>
+                            ⚠ Bluesky only supports "Public" privacy. Your post will be public.
+                          </div>
+                        </div>
+                      )}
+                      {pixelfedSelectedInEditor && batchPrivacy && (batchPrivacy === "friends" || batchPrivacy === "family" || batchPrivacy === "friends_family") && (
+                        <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 6, marginTop: 8, borderRadius: 3 }}>
+                          <div className="small" style={{ color: "var(--warn)" }}>
+                            ⚠ PixelFed doesn't support "{batchPrivacy === "friends_family" ? "Friends & Family" : batchPrivacy.charAt(0).toUpperCase() + batchPrivacy.slice(1)}" privacy. It will be posted as "Private".
+                          </div>
+                        </div>
+                      )}
+                      {mastodonSelectedInEditor && batchPrivacy && (batchPrivacy === "friends" || batchPrivacy === "family" || batchPrivacy === "friends_family") && (
+                        <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 6, marginTop: 8, borderRadius: 3 }}>
+                          <div className="small" style={{ color: "var(--warn)" }}>
+                            ⚠ Mastodon doesn't support "{batchPrivacy === "friends_family" ? "Friends & Family" : batchPrivacy.charAt(0).toUpperCase() + batchPrivacy.slice(1)}" privacy. It will be posted as "Private".
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div>
                       <label className="small">Safety level</label>
@@ -3886,7 +5127,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="section-divider" />
 
-                  <div className="split">
+                  {shouldShowFlickrOnlyFields && (
+                  <><div className="split">
                     <div>
                       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
                         <span>Groups</span>
@@ -3959,9 +5201,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       </div>
                     </div>
                   </div>
+                  </>
+                  )}
 
                   <div className="section-divider" />
 
+                  {shouldShowFlickrOnlyFields && (
                   <div>
                     <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
                       <span>Location</span>
@@ -4062,6 +5307,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       Clear Location from Selected
                     </button>
                   </div>
+                  )}
                 </>
               )}
 
@@ -4088,12 +5334,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   {showPlatformSelector && (
                     <>
-                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Platforms</div>
-                      <div className="listbox" style={{ maxWidth: 320, marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+                        <div style={{ fontSize: 16, fontWeight: 700 }}>Platforms:</div>
                         {selectorServiceOptions.map((svc) => {
                           const enabled = normalizeTargetServices(active.targetServices).includes(svc.id);
                           return (
-                            <label key={svc.id} className="listrow">
+                            <label key={svc.id} className="listrow" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "0 2px", border: "none", minHeight: 0 }}>
                               <input
                                 type="checkbox"
                                 checked={enabled}
@@ -4123,8 +5369,14 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <label className="small">Tags (comma-separated)</label>
                   <input className="input" disabled={isUploaded} value={active.tags} onChange={(e) => updateActive({ tags: e.target.value })} placeholder="e.g., travel, street photo, black and white" />
                   <div className="small" style={{ marginTop: 6 }}>
-                    Multi-word tags are supported (we’ll quote them automatically for Flickr).
+                    Multi-word tags are supported. Don't use a '#' - we'll add it for you where needed.
                   </div>
+                  {blueskyCounterInfo ? (
+                    <div className="small" style={{ marginTop: 6 }}>
+                      Bluesky post limit 300 characters. Current count ({blueskyCounterInfo.label}): <b style={blueskyCounterInfo.overLimitInTruncate ? { color: "var(--bad)", fontWeight: 800 } : undefined}>{blueskyCounterInfo.countValue}</b>
+                      {blueskyCounterInfo.showThreadInfo ? <span>{` | threaded posts: ${blueskyCounterInfo.threadValue}`}</span> : null}
+                    </div>
+                  ) : null}
 
                   <div style={{ height: 10 }} />
                   <div className="small">Load saved tag set</div>
@@ -4143,6 +5395,34 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         <option value="friends_family">Friends & Family</option>
                         <option value="private">Private</option>
                       </select>
+                      {tumblrSelectedInEditor && active.privacy && (active.privacy === "friends" || active.privacy === "family" || active.privacy === "friends_family") && (
+                        <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 6, marginTop: 8, borderRadius: 3 }}>
+                          <div className="small" style={{ color: "var(--warn)" }}>
+                            ⚠ Tumblr doesn't support "{active.privacy === "friends_family" ? "Friends & Family" : active.privacy.charAt(0).toUpperCase() + active.privacy.slice(1)}" privacy.
+                          </div>
+                        </div>
+                      )}
+                      {blueskySelectedInEditor && active.privacy && active.privacy !== "public" && (
+                        <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 6, marginTop: 8, borderRadius: 3 }}>
+                          <div className="small" style={{ color: "var(--warn)" }}>
+                            ⚠ Bluesky only supports "Public" privacy. Your post will be public.
+                          </div>
+                        </div>
+                      )}
+                      {pixelfedSelectedInEditor && active.privacy && (active.privacy === "friends" || active.privacy === "family" || active.privacy === "friends_family") && (
+                        <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 6, marginTop: 8, borderRadius: 3 }}>
+                          <div className="small" style={{ color: "var(--warn)" }}>
+                            ⚠ PixelFed doesn't support "{active.privacy === "friends_family" ? "Friends & Family" : active.privacy.charAt(0).toUpperCase() + active.privacy.slice(1)}" privacy. It will be posted as "Private".
+                          </div>
+                        </div>
+                      )}
+                      {mastodonSelectedInEditor && active.privacy && (active.privacy === "friends" || active.privacy === "family" || active.privacy === "friends_family") && (
+                        <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 6, marginTop: 8, borderRadius: 3 }}>
+                          <div className="small" style={{ color: "var(--warn)" }}>
+                            ⚠ Mastodon doesn't support "{active.privacy === "friends_family" ? "Friends & Family" : active.privacy.charAt(0).toUpperCase() + active.privacy.slice(1)}" privacy. It will be posted as "Private".
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div>
                       <label className="small">Safety level</label>
@@ -4161,7 +5441,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="section-divider" />
 
-                  <div className="split">
+                  {shouldShowFlickrOnlyFields && (
+                  <><div className="split">
                     <div>
                       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
                         <span>Groups</span>
@@ -4266,10 +5547,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       />
                     </div>
                   </div>
+                  </>
+                  )}
 
                   <div className="section-divider" />
 
-                  {/* Location Section - Full Width */}
+                  {shouldShowFlickrOnlyFields && (
                   <div>
                     <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
                       <span>Location</span>
@@ -4368,11 +5651,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       </div>
                     )}
                   </div>
+                  )}
 
                   <div style={{ height: 14 }} />
                   {active.lastError ? (() => {
-                    const msg = friendlyIdInMessage(active.lastError) || "";
-                    const parts = msg.split("|").map((s) => s.trim()).filter(Boolean);
+                    const rawParts = visibleItemMessageParts(active.lastError);
+                    const parts = rawParts.map((p) => friendlyIdInMessage(p) || p);
                     
                     // Categorize messages
                     const successMsgs = parts.filter(p => categorizeMessage(p) === "success");
@@ -4385,7 +5669,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           <div>
                             <div className="small" style={{ color: "var(--good)", fontWeight: "bold" }}>Success:</div>
                             <ul className="small" style={{ color: "var(--good)", marginTop: 4, marginBottom: 8, paddingLeft: 18 }}>
-                              {successMsgs.map((p, i) => <li key={i}>{p}</li>)}
+                              {successMsgs.map((p, i) => {
+                                const raw = rawParts.find((rp) => (friendlyIdInMessage(rp) || rp) === p) || p;
+                                return (
+                                  <li key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                    <span>{p}</span>
+                                    <button className="btn" style={{ padding: "0 6px", minHeight: 20 }} onClick={() => { void dismissMessagesEverywhere([raw]); }} title="Dismiss message">x</button>
+                                  </li>
+                                );
+                              })}
                             </ul>
                           </div>
                         )}
@@ -4393,7 +5685,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           <div>
                             <div className="small" style={{ color: "var(--warn)", fontWeight: "bold" }}>Waiting:</div>
                             <ul className="small" style={{ color: "var(--warn)", marginTop: 4, marginBottom: 8, paddingLeft: 18 }}>
-                              {waitingMsgs.map((p, i) => <li key={i}>{p}</li>)}
+                              {waitingMsgs.map((p, i) => {
+                                const raw = rawParts.find((rp) => (friendlyIdInMessage(rp) || rp) === p) || p;
+                                return (
+                                  <li key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                    <span>{p}</span>
+                                    <button className="btn" style={{ padding: "0 6px", minHeight: 20 }} onClick={() => { void dismissMessagesEverywhere([raw]); }} title="Dismiss message">x</button>
+                                  </li>
+                                );
+                              })}
                             </ul>
                           </div>
                         )}
@@ -4401,7 +5701,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           <div>
                             <div className="small" style={{ color: "var(--bad)", fontWeight: "bold" }}>Errors:</div>
                             <ul className="small" style={{ color: "var(--bad)", marginTop: 4, marginBottom: 0, paddingLeft: 18 }}>
-                              {errorMsgs.map((p, i) => <li key={i}>{p}</li>)}
+                              {errorMsgs.map((p, i) => {
+                                const raw = rawParts.find((rp) => (friendlyIdInMessage(rp) || rp) === p) || p;
+                                return (
+                                  <li key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                    <span>{p}</span>
+                                    <button className="btn" style={{ padding: "0 6px", minHeight: 20 }} onClick={() => { void dismissMessagesEverywhere([raw]); }} title="Dismiss message">x</button>
+                                  </li>
+                                );
+                              })}
                             </ul>
                           </div>
                         )}
@@ -4826,6 +6134,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             <div className="small" style={{ marginTop: 8 }}>
               Items in set: {saveSetDialog.ids.length}
             </div>
+                  <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={blueskyUseDescriptionAsAltText}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setBlueskyUseDescriptionAsAltText(next);
+                        window.sq.setBlueskyUseDescriptionAsAltText(next).catch(console.error);
+                      }}
+                    />
+                    <span>Use Description as "alt" descriptive text for visually impaired users on Bluesky</span>
+                  </label>
             <div className="btnrow" style={{ marginTop: 12 }}>
               <button className="btn" onClick={() => setSaveSetDialog(null)}>Cancel</button>
               <button className="btn primary" disabled={!saveSetNameInput.trim()} onClick={saveSetDialogSubmit}>Save</button>

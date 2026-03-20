@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, Tray, nat
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
+const http = require("http");
 const crypto = require("crypto");
 const { pathToFileURL } = require("url");
 const Store = require("electron-store");
@@ -344,6 +345,9 @@ async function checkForAppUpdates({ force = false } = {}) {
 const queue = require("./services/queue.cjs");
 const flickr = require("./services/flickr.cjs");
 const tumblr = require("./services/tumblr.cjs");
+const bluesky = require("./services/bluesky.cjs");
+const pixelfed = require("./services/pixelfed.cjs");
+const mastodon = require("./services/mastodon.cjs");
 const geo = require("./services/geocoding.cjs");
 
 let win = null;
@@ -351,6 +355,15 @@ let tray = null;
 let isQuitting = false;
 let lastTraySchedulerState = null;
 let pendingFilesToOpen = []; // Files to open when the app is ready
+let tumblrOAuthLoopbackServer = null;
+let tumblrOAuthLoopbackCloseTimer = null;
+
+const TUMBLR_OAUTH_LOOPBACK_HOST = "127.0.0.1";
+const TUMBLR_OAUTH_LOOPBACK_CALLBACK_HOST = "localhost";
+const TUMBLR_OAUTH_LOOPBACK_PORT = 38945;
+const TUMBLR_OAUTH_LOOPBACK_PATH = "/tumblr/callback";
+const TUMBLR_OAUTH_LOOPBACK_URL = `http://${TUMBLR_OAUTH_LOOPBACK_CALLBACK_HOST}:${TUMBLR_OAUTH_LOOPBACK_PORT}${TUMBLR_OAUTH_LOOPBACK_PATH}`;
+const TUMBLR_OAUTH_LOOPBACK_MAX_MS = 10 * 60 * 1000;
 
 function getIconPath(active) {
   // Use a monochrome icon when scheduler is off OR there is no pending work.
@@ -440,9 +453,36 @@ const store = new Store({
     tumblrTokenSecretEnc: "",
     tumblrHasToken: false,
     tumblrOauthTmp: null,
+    tumblrPendingVerifier: "",
+    tumblrPendingOauthToken: "",
     tumblrUsername: "",
     tumblrPrimaryBlogId: "",
+    tumblrPostTextMode: "bold_title_then_description",
+    tumblrUseDescriptionAsImageDescription: true,
     tumblrBlogsCache: [],
+    blueskyIdentifier: "",
+    blueskyAppPasswordEnc: "",
+    blueskyHasAppPassword: false,
+    blueskyAccessJwtEnc: "",
+    blueskyRefreshJwtEnc: "",
+    blueskyDid: "",
+    blueskyHandle: "",
+    blueskyServiceUrl: "https://bsky.social",
+    blueskyPostTextMode: "merge_title_description_tags",
+    blueskyLongPostMode: "truncate",
+    blueskyUseDescriptionAsAltText: true,
+    pixelfedInstanceUrl: pixelfed.DEFAULT_PIXELFED_INSTANCE,
+    pixelfedAccessTokenEnc: "",
+    pixelfedHasAccessToken: false,
+    pixelfedUsername: "",
+    pixelfedPostTextMode: "merge_title_description_tags",
+    pixelfedUseDescriptionAsAltText: true,
+    mastodonInstanceUrl: mastodon.DEFAULT_MASTODON_INSTANCE,
+    mastodonAccessTokenEnc: "",
+    mastodonHasAccessToken: false,
+    mastodonUsername: "",
+    mastodonPostTextMode: "merge_title_description_tags",
+    mastodonUseDescriptionAsAltText: true,
     intervalHours: 24,
     schedulerOn: false,
     nextRunAt: null,
@@ -457,6 +497,7 @@ const store = new Store({
     verboseLogging: false,
     minimizeToTray: false,
     checkUpdatesOnLaunch: true,
+    addShutterQueueTagToAllUploads: true,
     updateCheckCache: null
   }
 });
@@ -469,8 +510,20 @@ function isTumblrAuthed() {
   return Boolean(store.get("tumblrApiKey")) && Boolean(store.get("tumblrHasApiSecret")) && Boolean(store.get("tumblrHasToken"));
 }
 
+function isBlueskyAuthed() {
+  return Boolean(store.get("blueskyIdentifier")) && Boolean(store.get("blueskyHasAppPassword")) && Boolean(store.get("blueskyAccessJwtEnc")) && Boolean(store.get("blueskyDid"));
+}
+
+function isPixelfedAuthed() {
+  return Boolean(store.get("pixelfedInstanceUrl")) && Boolean(store.get("pixelfedHasAccessToken")) && Boolean(store.get("pixelfedUsername"));
+}
+
+function isMastodonAuthed() {
+  return Boolean(store.get("mastodonInstanceUrl")) && Boolean(store.get("mastodonHasAccessToken")) && Boolean(store.get("mastodonUsername"));
+}
+
 function isAuthed() {
-  return isFlickrAuthed() || isTumblrAuthed();
+  return isFlickrAuthed() || isTumblrAuthed() || isBlueskyAuthed() || isPixelfedAuthed() || isMastodonAuthed();
 }
 
 // Helper to retrieve decrypted Flickr credentials for API calls
@@ -492,6 +545,98 @@ function getTumblrAuth() {
     username: store.get("tumblrUsername") || "",
     primaryBlogId: store.get("tumblrPrimaryBlogId") || "",
   };
+}
+
+function getBlueskyAuth() {
+  return {
+    identifier: store.get("blueskyIdentifier") || "",
+    appPassword: decryptCredential(store.get("blueskyAppPasswordEnc") || ""),
+    accessJwt: decryptCredential(store.get("blueskyAccessJwtEnc") || ""),
+    refreshJwt: decryptCredential(store.get("blueskyRefreshJwtEnc") || ""),
+    did: store.get("blueskyDid") || "",
+    handle: store.get("blueskyHandle") || "",
+    serviceUrl: store.get("blueskyServiceUrl") || bluesky.DEFAULT_BSKY_SERVICE,
+  };
+}
+
+function getPixelfedAuth() {
+  return {
+    instanceUrl: String(store.get("pixelfedInstanceUrl") || pixelfed.DEFAULT_PIXELFED_INSTANCE),
+    accessToken: decryptCredential(store.get("pixelfedAccessTokenEnc") || ""),
+    username: String(store.get("pixelfedUsername") || ""),
+  };
+}
+
+function getMastodonAuth() {
+  return {
+    instanceUrl: String(store.get("mastodonInstanceUrl") || mastodon.DEFAULT_MASTODON_INSTANCE),
+    accessToken: decryptCredential(store.get("mastodonAccessTokenEnc") || ""),
+    username: String(store.get("mastodonUsername") || ""),
+  };
+}
+
+function stopTumblrOAuthLoopbackServer() {
+  if (tumblrOAuthLoopbackCloseTimer) {
+    clearTimeout(tumblrOAuthLoopbackCloseTimer);
+    tumblrOAuthLoopbackCloseTimer = null;
+  }
+  if (tumblrOAuthLoopbackServer) {
+    try {
+      tumblrOAuthLoopbackServer.close();
+    } catch {
+      // ignore close errors
+    }
+    tumblrOAuthLoopbackServer = null;
+  }
+}
+
+function startTumblrOAuthLoopbackServer() {
+  stopTumblrOAuthLoopbackServer();
+
+  tumblrOAuthLoopbackServer = http.createServer((req, res) => {
+    try {
+      const incomingUrl = new URL(String(req.url || "/"), `http://${TUMBLR_OAUTH_LOOPBACK_HOST}:${TUMBLR_OAUTH_LOOPBACK_PORT}`);
+      if (incomingUrl.pathname !== TUMBLR_OAUTH_LOOPBACK_PATH) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not found");
+        return;
+      }
+
+      const oauthVerifier = String(incomingUrl.searchParams.get("oauth_verifier") || "").trim();
+      const oauthToken = String(incomingUrl.searchParams.get("oauth_token") || "").trim();
+      if (oauthVerifier) {
+        store.set("tumblrPendingVerifier", oauthVerifier);
+        if (oauthToken) store.set("tumblrPendingOauthToken", oauthToken);
+        logEvent("INFO", "Captured Tumblr OAuth verifier from loopback callback", { via: "loopback" });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(`<!doctype html><html><head><meta charset="utf-8"><title>ShutterQueue Authorization</title></head><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;background:#0f1115;color:#e8eef7;"><h2 style="margin:0 0 10px;">Tumblr authorization received</h2><p style="margin:0;color:#aeb8c8;">You can close this tab and return to ShutterQueue.</p></body></html>`);
+        return;
+      }
+
+      res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><meta charset="utf-8"><title>ShutterQueue Authorization</title></head><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;background:#0f1115;color:#e8eef7;"><h2 style="margin:0 0 10px;">Authorization missing verifier</h2><p style="margin:0;color:#aeb8c8;">Return to ShutterQueue and complete authorization manually.</p></body></html>`);
+    } catch (e) {
+      logEvent("WARN", "Tumblr OAuth loopback callback handling failed", { error: String(e?.message || e) });
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Internal error");
+    }
+  });
+
+  tumblrOAuthLoopbackServer.on("error", (e) => {
+    logEvent("WARN", "Tumblr OAuth loopback server error", { error: String(e?.message || e) });
+  });
+
+  tumblrOAuthLoopbackServer.listen(TUMBLR_OAUTH_LOOPBACK_PORT, TUMBLR_OAUTH_LOOPBACK_HOST, () => {
+    logEvent("INFO", "Tumblr OAuth loopback listener started", {
+      host: TUMBLR_OAUTH_LOOPBACK_HOST,
+      port: TUMBLR_OAUTH_LOOPBACK_PORT,
+      path: TUMBLR_OAUTH_LOOPBACK_PATH,
+    });
+  });
+
+  tumblrOAuthLoopbackCloseTimer = setTimeout(() => {
+    stopTumblrOAuthLoopbackServer();
+  }, TUMBLR_OAUTH_LOOPBACK_MAX_MS);
 }
 
 const GROUP_COUNTS_REFRESH_INTERVAL_MS = GROUP_COUNT_REFRESH_MAX_AGE_MS;
@@ -1106,6 +1251,37 @@ function createWindow() {
   // Keep icon in sync (Windows/Linux). Safe no-op on macOS.
   updateWindowIcon();
 
+  // Provide native-style edit context menu (copy/paste/etc.) for all text inputs.
+  win.webContents.on("context-menu", (_event, params) => {
+    const template = [];
+    const canCopy = Boolean(params.selectionText);
+    const canPaste = Boolean(params.isEditable);
+
+    if (params.isEditable) {
+      template.push(
+        { label: "Undo", role: "undo", enabled: Boolean(params.editFlags?.canUndo) },
+        { label: "Redo", role: "redo", enabled: Boolean(params.editFlags?.canRedo) },
+        { type: "separator" },
+        { label: "Cut", role: "cut", enabled: Boolean(params.editFlags?.canCut) },
+        { label: "Copy", role: "copy", enabled: canCopy },
+        { label: "Paste", role: "paste", enabled: canPaste },
+        { label: "Delete", role: "delete", enabled: Boolean(params.editFlags?.canDelete) },
+        { type: "separator" },
+        { label: "Select All", role: "selectAll", enabled: Boolean(params.editFlags?.canSelectAll) }
+      );
+    } else if (canCopy) {
+      template.push(
+        { label: "Copy", role: "copy", enabled: true },
+        { type: "separator" },
+        { label: "Select All", role: "selectAll", enabled: true }
+      );
+    }
+
+    if (!template.length) return;
+    const menu = Menu.buildFromTemplate(template);
+    menu.popup({ window: win });
+  });
+
   // Handle window close: minimize to tray if enabled, otherwise quit
   win.on("close", (event) => {
     if (!isQuitting && store.get("minimizeToTray")) {
@@ -1416,6 +1592,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  stopTumblrOAuthLoopbackServer();
   // Clear global error on graceful exit (keeps errors only for crashes)
   store.set("lastError", "");
 });
@@ -1470,6 +1647,27 @@ ipcMain.handle("cfg:get", async () => ({
   tumblrAuthed: isTumblrAuthed(),
   tumblrUsername: store.get("tumblrUsername") || "",
   tumblrPrimaryBlogId: store.get("tumblrPrimaryBlogId") || "",
+  tumblrPostTextMode: String(store.get("tumblrPostTextMode") || "bold_title_then_description"),
+  tumblrUseDescriptionAsImageDescription: store.get("tumblrUseDescriptionAsImageDescription") !== false,
+  blueskyIdentifier: store.get("blueskyIdentifier") || "",
+  blueskyHasAppPassword: Boolean(store.get("blueskyHasAppPassword")),
+  blueskyAuthed: isBlueskyAuthed(),
+  blueskyHandle: store.get("blueskyHandle") || "",
+  blueskyPostTextMode: String(store.get("blueskyPostTextMode") || "merge_title_description_tags"),
+  blueskyLongPostMode: String(store.get("blueskyLongPostMode") || "truncate"),
+  blueskyUseDescriptionAsAltText: store.get("blueskyUseDescriptionAsAltText") !== false,
+  pixelfedInstanceUrl: String(store.get("pixelfedInstanceUrl") || pixelfed.DEFAULT_PIXELFED_INSTANCE),
+  pixelfedHasAccessToken: Boolean(store.get("pixelfedHasAccessToken")),
+  pixelfedAuthed: isPixelfedAuthed(),
+  pixelfedUsername: String(store.get("pixelfedUsername") || ""),
+  pixelfedPostTextMode: String(store.get("pixelfedPostTextMode") || "merge_title_description_tags"),
+  pixelfedUseDescriptionAsAltText: store.get("pixelfedUseDescriptionAsAltText") !== false,
+  mastodonInstanceUrl: String(store.get("mastodonInstanceUrl") || mastodon.DEFAULT_MASTODON_INSTANCE),
+  mastodonHasAccessToken: Boolean(store.get("mastodonHasAccessToken")),
+  mastodonAuthed: isMastodonAuthed(),
+  mastodonUsername: String(store.get("mastodonUsername") || ""),
+  mastodonPostTextMode: String(store.get("mastodonPostTextMode") || "merge_title_description_tags"),
+  mastodonUseDescriptionAsAltText: store.get("mastodonUseDescriptionAsAltText") !== false,
   authed: isAuthed(),
   username: store.get("username") || "",
   fullname: store.get("fullname") || "",
@@ -1488,6 +1686,7 @@ ipcMain.handle("cfg:get", async () => ({
   verboseLogging: Boolean(store.get("verboseLogging")),
   minimizeToTray: Boolean(store.get("minimizeToTray")),
   checkUpdatesOnLaunch: Boolean(store.get("checkUpdatesOnLaunch")),
+  addShutterQueueTagToAllUploads: store.get("addShutterQueueTagToAllUploads") !== false,
   savedGroupSets: Array.isArray(store.get("savedGroupSets")) ? store.get("savedGroupSets") : [],
   savedAlbumSets: Array.isArray(store.get("savedAlbumSets")) ? store.get("savedAlbumSets") : [],
   savedTagSets: Array.isArray(store.get("savedTagSets")) ? store.get("savedTagSets") : []
@@ -1510,6 +1709,46 @@ ipcMain.handle("cfg:setTumblrKeys", async (_e, { consumerKey, consumerSecret }) 
     const encrypted = encryptCredential(consumerSecret.trim());
     store.set("tumblrApiSecretEnc", encrypted);
     store.set("tumblrHasApiSecret", true);
+  }
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setBlueskyCredentials", async (_e, { identifier, appPassword }) => {
+  if (typeof identifier === "string" && identifier.trim().length) {
+    store.set("blueskyIdentifier", identifier.trim());
+  }
+  if (typeof appPassword === "string" && appPassword.trim().length) {
+    const encrypted = encryptCredential(appPassword.trim());
+    store.set("blueskyAppPasswordEnc", encrypted);
+    store.set("blueskyHasAppPassword", true);
+  }
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setPixelfedCredentials", async (_e, { instanceUrl, accessToken }) => {
+  if (typeof instanceUrl === "string" && instanceUrl.trim().length) {
+    store.set("pixelfedInstanceUrl", pixelfed.normalizeInstanceUrl(instanceUrl.trim()));
+  }
+  if (typeof accessToken === "string" && accessToken.trim().length) {
+    const encrypted = encryptCredential(accessToken.trim());
+    store.set("pixelfedAccessTokenEnc", encrypted);
+    store.set("pixelfedHasAccessToken", true);
+    // Force re-verification with new token.
+    store.set("pixelfedUsername", "");
+  }
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setMastodonCredentials", async (_e, { instanceUrl, accessToken }) => {
+  if (typeof instanceUrl === "string" && instanceUrl.trim().length) {
+    store.set("mastodonInstanceUrl", mastodon.normalizeInstanceUrl(instanceUrl.trim()));
+  }
+  if (typeof accessToken === "string" && accessToken.trim().length) {
+    const encrypted = encryptCredential(accessToken.trim());
+    store.set("mastodonAccessTokenEnc", encrypted);
+    store.set("mastodonHasAccessToken", true);
+    // Force re-verification with new token.
+    store.set("mastodonUsername", "");
   }
   return { ok: true };
 });
@@ -1639,11 +1878,29 @@ ipcMain.handle("tumblr:oauth:start", async () => {
   const consumerSecret = decryptCredential(store.get("tumblrApiSecretEnc") || "");
   if (!consumerKey || !consumerSecret) throw new Error("Missing Tumblr API key/secret");
 
-  const tmp = await tumblr.getRequestToken(consumerKey, consumerSecret);
-  store.set("tumblrOauthTmp", tmp);
-  const url = tumblr.getAuthorizeUrl(tmp.oauthToken);
-  await shell.openExternal(url);
-  return { ok: true };
+  store.set("tumblrPendingVerifier", "");
+  store.set("tumblrPendingOauthToken", "");
+  startTumblrOAuthLoopbackServer();
+  try {
+    const tmp = await tumblr.getRequestToken(consumerKey, consumerSecret, {
+      callbackUrl: TUMBLR_OAUTH_LOOPBACK_URL,
+    });
+    store.set("tumblrOauthTmp", tmp);
+    const url = tumblr.getAuthorizeUrl(tmp.oauthToken);
+    await shell.openExternal(url);
+    return { ok: true };
+  } catch (e) {
+    stopTumblrOAuthLoopbackServer();
+    throw e;
+  }
+});
+
+ipcMain.handle("tumblr:oauth:consumeVerifier", async () => {
+  const verifier = String(store.get("tumblrPendingVerifier") || "").trim();
+  const oauthToken = String(store.get("tumblrPendingOauthToken") || "").trim();
+  store.set("tumblrPendingVerifier", "");
+  store.set("tumblrPendingOauthToken", "");
+  return { verifier, oauthToken };
 });
 
 ipcMain.handle("tumblr:oauth:finish", async (_e, { verifier }) => {
@@ -1665,6 +1922,9 @@ ipcMain.handle("tumblr:oauth:finish", async (_e, { verifier }) => {
   store.set("tumblrHasToken", true);
   store.set("tumblrUsername", tok.name || "");
   store.set("tumblrOauthTmp", null);
+  store.set("tumblrPendingVerifier", "");
+  store.set("tumblrPendingOauthToken", "");
+  stopTumblrOAuthLoopbackServer();
 
   try {
     const blogs = await tumblr.listBlogs({
@@ -1693,6 +1953,9 @@ ipcMain.handle("tumblr:oauth:logout", async () => {
   store.set("tumblrUsername", "");
   store.set("tumblrBlogsCache", []);
   store.set("tumblrPrimaryBlogId", "");
+  store.set("tumblrPendingVerifier", "");
+  store.set("tumblrPendingOauthToken", "");
+  stopTumblrOAuthLoopbackServer();
   store.set("lastError", "");
   return { ok: true };
 });
@@ -2069,6 +2332,76 @@ ipcMain.handle("cfg:setCheckUpdatesOnLaunch", async (_e, { enabled }) => {
   return { ok: true, checkUpdatesOnLaunch: Boolean(enabled) };
 });
 
+ipcMain.handle("cfg:setTumblrPostTextMode", async (_e, { mode }) => {
+  const allowed = new Set(["bold_title_then_description", "title_then_description", "title_only", "description_only"]);
+  const next = allowed.has(String(mode || "").trim()) ? String(mode).trim() : "bold_title_then_description";
+  store.set("tumblrPostTextMode", next);
+  return { ok: true, tumblrPostTextMode: next };
+});
+
+ipcMain.handle("cfg:setBlueskyPostTextMode", async (_e, { mode }) => {
+  const allowed = new Set(["merge_title_description_tags", "merge_title_description", "merge_title_tags", "merge_description_tags", "title_only", "description_only"]);
+  const next = allowed.has(String(mode || "").trim()) ? String(mode).trim() : "merge_title_description_tags";
+  store.set("blueskyPostTextMode", next);
+  return { ok: true, blueskyPostTextMode: next };
+});
+
+ipcMain.handle("cfg:setBlueskyLongPostMode", async (_e, { mode }) => {
+  const allowed = new Set(["truncate", "thread"]);
+  const next = allowed.has(String(mode || "").trim()) ? String(mode).trim() : "truncate";
+  store.set("blueskyLongPostMode", next);
+  return { ok: true, blueskyLongPostMode: next };
+});
+
+ipcMain.handle("cfg:setTumblrUseDescriptionAsImageDescription", async (_e, { enabled }) => {
+  const next = Boolean(enabled);
+  store.set("tumblrUseDescriptionAsImageDescription", next);
+  return { ok: true, tumblrUseDescriptionAsImageDescription: next };
+});
+
+ipcMain.handle("cfg:setBlueskyUseDescriptionAsAltText", async (_e, { enabled }) => {
+  const next = Boolean(enabled);
+  store.set("blueskyUseDescriptionAsAltText", next);
+  return { ok: true, blueskyUseDescriptionAsAltText: next };
+});
+
+ipcMain.handle("cfg:setPixelfedPostTextMode", async (_e, { mode }) => {
+  const allowed = new Set(["merge_title_description_tags", "merge_title_description", "merge_title_tags", "merge_description_tags", "title_only", "description_only"]);
+  const next = allowed.has(String(mode || "").trim()) ? String(mode).trim() : "merge_title_description_tags";
+  store.set("pixelfedPostTextMode", next);
+  return { ok: true, pixelfedPostTextMode: next };
+});
+
+ipcMain.handle("cfg:setPixelfedUseDescriptionAsAltText", async (_e, { enabled }) => {
+  const next = Boolean(enabled);
+  store.set("pixelfedUseDescriptionAsAltText", next);
+  return { ok: true, pixelfedUseDescriptionAsAltText: next };
+});
+
+ipcMain.handle("cfg:setMastodonPostTextMode", async (_e, { mode }) => {
+  const allowed = new Set(["merge_title_description_tags", "merge_title_description", "merge_title_tags", "merge_description_tags", "title_only", "description_only"]);
+  const next = allowed.has(String(mode || "").trim()) ? String(mode).trim() : "merge_title_description_tags";
+  store.set("mastodonPostTextMode", next);
+  return { ok: true, mastodonPostTextMode: next };
+});
+
+ipcMain.handle("cfg:setMastodonUseDescriptionAsAltText", async (_e, { enabled }) => {
+  const next = Boolean(enabled);
+  store.set("mastodonUseDescriptionAsAltText", next);
+  return { ok: true, mastodonUseDescriptionAsAltText: next };
+});
+
+ipcMain.handle("cfg:setAddShutterQueueTagToAllUploads", async (_e, { enabled }) => {
+  const next = Boolean(enabled);
+  store.set("addShutterQueueTagToAllUploads", next);
+  return { ok: true, addShutterQueueTagToAllUploads: next };
+});
+
+ipcMain.handle("cfg:clearLastError", async () => {
+  store.set("lastError", "");
+  return { ok: true };
+});
+
 ipcMain.handle("log:save", async () => {
   try {
     ensureRootDir();
@@ -2237,18 +2570,34 @@ async function ensureAlbumByTitle({ title, primaryPhotoId, auth }) {
 }
 
 function normalizeTargetServicesForItem(item) {
+  const allowedServices = new Set(["flickr", "tumblr", "bluesky", "pixelfed", "mastodon"]);
   const raw = Array.isArray(item?.targetServices) ? item.targetServices : [];
   const out = [];
   const seen = new Set();
   for (const svc of raw) {
     const clean = String(svc || "").trim().toLowerCase();
-    if (clean !== "flickr" && clean !== "tumblr") continue;
+    if (!allowedServices.has(clean)) continue;
     if (seen.has(clean)) continue;
     seen.add(clean);
     out.push(clean);
   }
   if (!out.length) out.push("flickr");
   return out;
+}
+
+function appendImplicitTagCsv(tagsCsv, implicitTag) {
+  const requested = String(implicitTag || "").trim();
+  if (!requested) return String(tagsCsv || "");
+
+  const normalizeTagKey = (v) => String(v || "").trim().toLowerCase().replace(/^#+/, "");
+  const requestedKey = normalizeTagKey(requested);
+  const parts = String(tagsCsv || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const withoutExisting = parts.filter((p) => normalizeTagKey(p) !== requestedKey);
+  withoutExisting.push(requested);
+  return withoutExisting.join(",");
 }
 
 async function uploadNowOneInternal(options = {}) {
@@ -2296,6 +2645,9 @@ async function uploadNowOneInternal(options = {}) {
     let successfulServices = 0;
     const warningParts = [];
     const errorParts = [];
+    const addShutterQueueTag = store.get("addShutterQueueTagToAllUploads") !== false;
+    const hasExplicitLocationData = Boolean(String(next.locationDisplayName || "").trim());
+    const hasLocationSupportingTarget = next.targetServices.includes("flickr");
 
     if (next.targetServices.includes("flickr") && next.serviceStates?.flickr?.status !== "done") {
       if (!isFlickrAuthed()) {
@@ -2315,7 +2667,10 @@ async function uploadNowOneInternal(options = {}) {
                 apiSecret: auth.apiSecret,
                 token: auth.token,
                 tokenSecret: auth.tokenSecret,
-                item: next,
+                item: {
+                  ...next,
+                  tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "ShutterQueue") : next.tags,
+                },
                 onProgress: (loaded, total) => {
                   const minThreshold = 512;
                   if (loaded > lastProgressBytes && (loaded >= minThreshold || loaded === total)) {
@@ -2458,10 +2813,6 @@ async function uploadNowOneInternal(options = {}) {
         const msg = "Tumblr target selected but Tumblr is not authorized.";
         next.serviceStates.tumblr = { status: "failed", lastError: msg };
         errorParts.push(`Tumblr: ${msg}`);
-      } else if (String(next.privacy || "private") === "private") {
-        const msg = "Tumblr does not support private visibility from this app. Change privacy to upload to Tumblr.";
-        next.serviceStates.tumblr = { status: "failed", lastError: msg };
-        errorParts.push(`Tumblr: ${msg}`);
       } else {
         const tauth = getTumblrAuth();
         const blogId = String(store.get("tumblrPrimaryBlogId") || "").trim();
@@ -2471,14 +2822,25 @@ async function uploadNowOneInternal(options = {}) {
           errorParts.push(`Tumblr: ${msg}`);
         } else {
           try {
+            const tumblrPostTextMode = String(store.get("tumblrPostTextMode") || "bold_title_then_description");
+            const tumblrUseDescriptionAsImageDescription = store.get("tumblrUseDescriptionAsImageDescription") !== false;
+            const privacy = String(next.privacy || "private");
+            if (privacy === "friends" || privacy === "family" || privacy === "friends_family") {
+              warningParts.push(`Tumblr: visibility "${privacy}" is not supported and was not applied.`);
+            }
             const postId = await tumblr.createPhotoPost({
               consumerKey: tauth.consumerKey,
               consumerSecret: tauth.consumerSecret,
               token: tauth.token,
               tokenSecret: tauth.tokenSecret,
               blogIdentifier: blogId,
-              item: next,
+              item: {
+                ...next,
+                tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+              },
               markMature: Number(next.safetyLevel || 1) >= 2,
+              postTextMode: tumblrPostTextMode,
+              useDescriptionAsImageDescription: tumblrUseDescriptionAsImageDescription,
             });
             const uploadedAt = new Date().toISOString();
             next.serviceStates.tumblr = {
@@ -2500,6 +2862,168 @@ async function uploadNowOneInternal(options = {}) {
       successfulServices += 1;
     }
 
+    if (next.targetServices.includes("bluesky") && next.serviceStates?.bluesky?.status !== "done") {
+      if (!isBlueskyAuthed()) {
+        const msg = "Bluesky target selected but Bluesky is not authorized.";
+        next.serviceStates.bluesky = { status: "failed", lastError: msg };
+        errorParts.push(`Bluesky: ${msg}`);
+      } else if (String(next.privacy || "private") !== "public") {
+        const msg = `visibility \"${String(next.privacy || "private")}\" is not supported and was not applied.`;
+        warningParts.push(`Bluesky: ${msg}`);
+        const bauth = getBlueskyAuth();
+        try {
+          const blueskyPostTextMode = String(store.get("blueskyPostTextMode") || "merge_title_description_tags");
+          const blueskyLongPostMode = String(store.get("blueskyLongPostMode") || "truncate");
+          const blueskyUseDescriptionAsAltText = store.get("blueskyUseDescriptionAsAltText") !== false;
+          const post = await bluesky.createImagePost({
+            accessJwt: bauth.accessJwt,
+            did: bauth.did,
+            serviceUrl: bauth.serviceUrl,
+            item: {
+              ...next,
+              tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+            },
+            postTextMode: blueskyPostTextMode,
+            longPostMode: blueskyLongPostMode,
+            safetyLevel: next.safetyLevel,
+            useDescriptionAsAltText: blueskyUseDescriptionAsAltText,
+          });
+          next.serviceStates.bluesky = {
+            status: "done",
+            remoteId: post.uri || post.cid || "",
+            uploadedAt: new Date().toISOString(),
+          };
+          successfulServices += 1;
+          store.set("blueskyHandle", String(bauth.handle || store.get("blueskyIdentifier") || ""));
+          logEvent("INFO", "Uploaded to Bluesky", { id: next.id, uri: post.uri || "" });
+        } catch (e) {
+          const msg2 = e?.message ? String(e.message) : String(e);
+          next.serviceStates.bluesky = { status: "failed", lastError: msg2 };
+          errorParts.push(`Bluesky: ${msg2}`);
+          logEvent("WARN", "Bluesky upload failed", { id: next.id, error: msg2 });
+        }
+      } else {
+        const bauth = getBlueskyAuth();
+        try {
+          const blueskyPostTextMode = String(store.get("blueskyPostTextMode") || "merge_title_description_tags");
+          const blueskyLongPostMode = String(store.get("blueskyLongPostMode") || "truncate");
+          const blueskyUseDescriptionAsAltText = store.get("blueskyUseDescriptionAsAltText") !== false;
+          const post = await bluesky.createImagePost({
+            accessJwt: bauth.accessJwt,
+            did: bauth.did,
+            serviceUrl: bauth.serviceUrl,
+            item: {
+              ...next,
+              tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+            },
+            postTextMode: blueskyPostTextMode,
+            longPostMode: blueskyLongPostMode,
+            safetyLevel: next.safetyLevel,
+            useDescriptionAsAltText: blueskyUseDescriptionAsAltText,
+          });
+          next.serviceStates.bluesky = {
+            status: "done",
+            remoteId: post.uri || post.cid || "",
+            uploadedAt: new Date().toISOString(),
+          };
+          successfulServices += 1;
+          store.set("blueskyHandle", String(bauth.handle || store.get("blueskyIdentifier") || ""));
+          logEvent("INFO", "Uploaded to Bluesky", { id: next.id, uri: post.uri || "" });
+        } catch (e) {
+          const msg = e?.message ? String(e.message) : String(e);
+          next.serviceStates.bluesky = { status: "failed", lastError: msg };
+          errorParts.push(`Bluesky: ${msg}`);
+          logEvent("WARN", "Bluesky upload failed", { id: next.id, error: msg });
+        }
+      }
+    } else if (next.targetServices.includes("bluesky")) {
+      successfulServices += 1;
+    }
+
+    if (next.targetServices.includes("pixelfed") && next.serviceStates?.pixelfed?.status !== "done") {
+      if (!isPixelfedAuthed()) {
+        const msg = "PixelFed target selected but PixelFed is not authorized.";
+        next.serviceStates.pixelfed = { status: "failed", lastError: msg };
+        errorParts.push(`PixelFed: ${msg}`);
+      } else {
+        const pauth = getPixelfedAuth();
+        try {
+          const mapped = pixelfed.mapPrivacyToVisibility(String(next.privacy || "private"));
+          if (mapped.warning) warningParts.push(`PixelFed: ${mapped.warning}`);
+          const pixelfedPostTextMode = String(store.get("pixelfedPostTextMode") || "merge_title_description_tags");
+          const pixelfedUseDescriptionAsAltText = store.get("pixelfedUseDescriptionAsAltText") !== false;
+          const post = await pixelfed.createImagePost({
+            instanceUrl: pauth.instanceUrl,
+            accessToken: pauth.accessToken,
+            item: {
+              ...next,
+              tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+            },
+            postTextMode: pixelfedPostTextMode,
+            useDescriptionAsAltText: pixelfedUseDescriptionAsAltText,
+            visibility: mapped.visibility,
+            sensitive: Number(next.safetyLevel || 1) >= 2,
+          });
+          next.serviceStates.pixelfed = {
+            status: "done",
+            remoteId: post.url || post.id || "",
+            uploadedAt: new Date().toISOString(),
+          };
+          successfulServices += 1;
+          logEvent("INFO", "Uploaded to PixelFed", { id: next.id, postId: post.id || "" });
+        } catch (e) {
+          const msg = e?.message ? String(e.message) : String(e);
+          next.serviceStates.pixelfed = { status: "failed", lastError: msg };
+          errorParts.push(`PixelFed: ${msg}`);
+          logEvent("WARN", "PixelFed upload failed", { id: next.id, error: msg });
+        }
+      }
+    } else if (next.targetServices.includes("pixelfed")) {
+      successfulServices += 1;
+    }
+
+    if (next.targetServices.includes("mastodon") && next.serviceStates?.mastodon?.status !== "done") {
+      if (!isMastodonAuthed()) {
+        const msg = "Mastodon target selected but Mastodon is not authorized.";
+        next.serviceStates.mastodon = { status: "failed", lastError: msg };
+        errorParts.push(`Mastodon: ${msg}`);
+      } else {
+        const mauth = getMastodonAuth();
+        try {
+          const mapped = mastodon.mapPrivacyToVisibility(String(next.privacy || "private"));
+          if (mapped.warning) warningParts.push(`Mastodon: ${mapped.warning}`);
+          const mastodonPostTextMode = String(store.get("mastodonPostTextMode") || "merge_title_description_tags");
+          const mastodonUseDescriptionAsAltText = store.get("mastodonUseDescriptionAsAltText") !== false;
+          const post = await mastodon.createImagePost({
+            instanceUrl: mauth.instanceUrl,
+            accessToken: mauth.accessToken,
+            item: {
+              ...next,
+              tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+            },
+            postTextMode: mastodonPostTextMode,
+            useDescriptionAsAltText: mastodonUseDescriptionAsAltText,
+            visibility: mapped.visibility,
+            sensitive: Number(next.safetyLevel || 1) >= 2,
+          });
+          next.serviceStates.mastodon = {
+            status: "done",
+            remoteId: post.url || post.id || "",
+            uploadedAt: new Date().toISOString(),
+          };
+          successfulServices += 1;
+          logEvent("INFO", "Uploaded to Mastodon", { id: next.id, postId: post.id || "" });
+        } catch (e) {
+          const msg = e?.message ? String(e.message) : String(e);
+          next.serviceStates.mastodon = { status: "failed", lastError: msg };
+          errorParts.push(`Mastodon: ${msg}`);
+          logEvent("WARN", "Mastodon upload failed", { id: next.id, error: msg });
+        }
+      }
+    } else if (next.targetServices.includes("mastodon")) {
+      successfulServices += 1;
+    }
+
     if (!next.targetServices.length) {
       const msg = "No target services selected for this item.";
       next.status = "failed";
@@ -2508,8 +3032,14 @@ async function uploadNowOneInternal(options = {}) {
       return { ok: false, error: msg };
     }
 
+    if (hasExplicitLocationData && !hasLocationSupportingTarget) {
+      warningParts.push("Location data was set on this item, but none of the selected platforms support location tagging. The post was uploaded without location data.");
+    }
+
     if (successfulServices > 0) {
       next.scheduledUploadAt = "";
+      // Clear sticky global errors once any target service uploads successfully.
+      store.set("lastError", "");
     }
 
     const combinedMessages = [...warningParts, ...errorParts].filter(Boolean);
@@ -2666,6 +3196,59 @@ ipcMain.handle("sched:start", async (_e, { intervalHours, uploadImmediately, set
     uploadBatchSize: Number(store.get("uploadBatchSize") || 1),
     resumeOnLaunch: Boolean(store.get("resumeOnLaunch")),
   });
+  return { ok: true };
+});
+
+ipcMain.handle("bluesky:auth:start", async () => {
+  const identifier = String(store.get("blueskyIdentifier") || "").trim();
+  const appPassword = decryptCredential(store.get("blueskyAppPasswordEnc") || "");
+  const serviceUrl = String(store.get("blueskyServiceUrl") || bluesky.DEFAULT_BSKY_SERVICE);
+  if (!identifier || !appPassword) throw new Error("Missing Bluesky identifier/app password");
+
+  const session = await bluesky.createSession({ identifier, appPassword, serviceUrl });
+  store.set("blueskyAccessJwtEnc", encryptCredential(session.accessJwt));
+  store.set("blueskyRefreshJwtEnc", encryptCredential(session.refreshJwt));
+  store.set("blueskyDid", session.did || "");
+  store.set("blueskyHandle", session.handle || identifier);
+  store.set("blueskyServiceUrl", session.serviceUrl || serviceUrl);
+  return { ok: true, handle: session.handle || identifier };
+});
+
+ipcMain.handle("bluesky:auth:logout", async () => {
+  store.set("blueskyAccessJwtEnc", "");
+  store.set("blueskyRefreshJwtEnc", "");
+  store.set("blueskyDid", "");
+  store.set("blueskyHandle", "");
+  return { ok: true };
+});
+
+ipcMain.handle("pixelfed:auth:test", async () => {
+  const auth = getPixelfedAuth();
+  if (!auth.instanceUrl || !auth.accessToken) throw new Error("Missing PixelFed instance URL or access token");
+  const acct = await pixelfed.verifyCredentials({ instanceUrl: auth.instanceUrl, accessToken: auth.accessToken });
+  store.set("pixelfedUsername", String(acct.acct || acct.username || ""));
+  return { ok: true, username: String(acct.acct || acct.username || "") };
+});
+
+ipcMain.handle("pixelfed:auth:logout", async () => {
+  store.set("pixelfedAccessTokenEnc", "");
+  store.set("pixelfedHasAccessToken", false);
+  store.set("pixelfedUsername", "");
+  return { ok: true };
+});
+
+ipcMain.handle("mastodon:auth:test", async () => {
+  const auth = getMastodonAuth();
+  if (!auth.instanceUrl || !auth.accessToken) throw new Error("Missing Mastodon instance URL or access token");
+  const acct = await mastodon.verifyCredentials({ instanceUrl: auth.instanceUrl, accessToken: auth.accessToken });
+  store.set("mastodonUsername", String(acct.acct || acct.username || ""));
+  return { ok: true, username: String(acct.acct || acct.username || "") };
+});
+
+ipcMain.handle("mastodon:auth:logout", async () => {
+  store.set("mastodonAccessTokenEnc", "");
+  store.set("mastodonHasAccessToken", false);
+  store.set("mastodonUsername", "");
   return { ok: true };
 });
 

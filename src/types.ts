@@ -4,7 +4,7 @@ export type GeoPrivacy = "public" | "contacts" | "friends" | "family" | "friends
 
 export type QueueStatus = "pending" | "uploading" | "done" | "done_warn" | "failed";
 
-export type UploadService = "flickr" | "tumblr";
+export type UploadService = "flickr" | "tumblr" | "bluesky" | "pixelfed" | "mastodon";
 
 export type ScheduleSettings = {
   intervalHours: number;

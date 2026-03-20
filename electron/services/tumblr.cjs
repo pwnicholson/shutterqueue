@@ -92,21 +92,70 @@ async function tumblrApiGet({ consumerKey, consumerSecret, token, tokenSecret, e
   return parseApiResponse(res.body, res.status).response;
 }
 
-async function getRequestToken(consumerKey, consumerSecret) {
+async function getRequestToken(consumerKey, consumerSecret, options = {}) {
   const oauth = makeOAuth(consumerKey, consumerSecret);
-  const auth = oauth.toHeader(oauth.authorize({ url: TUMBLR_OAUTH_REQUEST, method: "POST", data: { oauth_callback: "oob" } }));
-  const res = await request(
-    TUMBLR_OAUTH_REQUEST,
-    "POST",
-    { ...auth, "Content-Type": "application/x-www-form-urlencoded" },
-    "oauth_callback=oob"
+  const callbackUrl = String(options?.callbackUrl || "").trim();
+
+  // Tumblr may reject the legacy oob callback for some app configurations.
+  // Try oob first for PIN-style auth, then fall back to app-default callback.
+  const attempts = [];
+  if (callbackUrl) {
+    attempts.push({
+      authData: { oauth_callback: callbackUrl },
+      body: `oauth_callback=${encodeURIComponent(callbackUrl)}`,
+      useCallback: true,
+    });
+  }
+  attempts.push(
+    {
+      authData: { oauth_callback: "oob" },
+      body: "oauth_callback=oob",
+      useCallback: true,
+    },
+    {
+      authData: undefined,
+      body: "",
+      useCallback: false,
+    }
   );
-  if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}: ${res.body}`);
-  const params = parseQueryString(res.body);
-  return {
-    oauthToken: params.oauth_token || "",
-    oauthTokenSecret: params.oauth_token_secret || "",
-  };
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    const auth = oauth.toHeader(
+      oauth.authorize(
+        {
+          url: TUMBLR_OAUTH_REQUEST,
+          method: "POST",
+          ...(attempt.useCallback ? { data: attempt.authData } : {}),
+        },
+        undefined
+      )
+    );
+
+    const res = await request(
+      TUMBLR_OAUTH_REQUEST,
+      "POST",
+      { ...auth, "Content-Type": "application/x-www-form-urlencoded" },
+      attempt.body
+    );
+
+    if (res.status >= 200 && res.status < 300) {
+      const params = parseQueryString(res.body);
+      return {
+        oauthToken: params.oauth_token || "",
+        oauthTokenSecret: params.oauth_token_secret || "",
+      };
+    }
+
+    lastError = new Error(`HTTP ${res.status}: ${res.body}`);
+    const bodyLower = String(res.body || "").toLowerCase();
+    const callbackRejected = res.status === 400 && bodyLower.includes("disallowed oauth_callback");
+    if (!callbackRejected || !attempt.useCallback) {
+      throw lastError;
+    }
+  }
+
+  throw lastError || new Error("Failed to request Tumblr OAuth token.");
 }
 
 function getAuthorizeUrl(oauthToken) {
@@ -183,6 +232,32 @@ function normalizeTagsCsv(tagsCsv) {
     .join(",");
 }
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildCaption({ title, description, postTextMode }) {
+  const cleanTitle = String(title || "").trim();
+  const cleanDescription = String(description || "").trim();
+  const mode = String(postTextMode || "bold_title_then_description");
+
+  if (mode === "title_only") return cleanTitle;
+  if (mode === "description_only") return cleanDescription;
+  if (mode === "title_then_description") {
+    return [cleanTitle, cleanDescription].filter(Boolean).join("\n");
+  }
+
+  if (!cleanTitle) return cleanDescription;
+  const boldTitle = `<b>${escapeHtml(cleanTitle)}</b>`;
+  if (!cleanDescription) return boldTitle;
+  return `${boldTitle}\n${cleanDescription}`;
+}
+
 async function createPhotoPost({
   consumerKey,
   consumerSecret,
@@ -191,6 +266,8 @@ async function createPhotoPost({
   blogIdentifier,
   item,
   markMature,
+  postTextMode,
+  useDescriptionAsImageDescription,
 }) {
   const oauth = makeOAuth(consumerKey, consumerSecret);
   const cleanBlog = String(blogIdentifier || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
@@ -200,13 +277,23 @@ async function createPhotoPost({
   const form = new FormData();
 
   const description = String(item?.description || "");
+  const imageDescription = String(item?.description || "").trim();
   const title = String(item?.title || "");
+  const caption = buildCaption({ title, description, postTextMode });
   const tags = normalizeTagsCsv(item?.tags || "");
+  const privacy = String(item?.privacy || "private");
+  const isPrivate = privacy === "private";
 
   form.append("type", "photo");
   form.append("title", title);
-  form.append("caption", description);
+  form.append("caption", caption);
+  if (useDescriptionAsImageDescription && imageDescription) {
+    form.append("description", imageDescription);
+  }
   form.append("tags", tags);
+  if (isPrivate) {
+    form.append("state", "private");
+  }
   if (markMature) {
     form.append("is_nsfw", "true");
     form.append("content_rating", "adult");
@@ -221,8 +308,10 @@ async function createPhotoPost({
   const signatureData = {
     type: "photo",
     title,
-    caption: description,
+    caption,
+    ...(useDescriptionAsImageDescription && imageDescription ? { description: imageDescription } : {}),
     tags,
+    ...(isPrivate ? { state: "private" } : {}),
     ...(markMature ? { is_nsfw: "true", content_rating: "adult" } : {}),
   };
 

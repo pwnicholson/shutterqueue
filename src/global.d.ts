@@ -8,6 +8,9 @@ declare global {
       getConfig: () => Promise<any>;
       setApiKeySecret: (apiKey: string, apiSecret: string) => Promise<any>;
       setTumblrKeySecret: (consumerKey: string, consumerSecret: string) => Promise<any>;
+      setBlueskyCredentials: (identifier: string, appPassword: string) => Promise<any>;
+      setPixelfedCredentials: (instanceUrl: string, accessToken: string) => Promise<any>;
+      setMastodonCredentials: (instanceUrl: string, accessToken: string) => Promise<any>;
       setUploadBatchSize: (uploadBatchSize: number) => Promise<any>;
       setSchedulerSettings: (payload: any) => Promise<any>;
       setSavedSets: (options: { kind: "group" | "album" | "tag"; sets: Array<{ name: string; ids: string[] }> }) => Promise<any>;
@@ -15,10 +18,17 @@ declare global {
       finishOAuth: (verifier: string) => Promise<any>;
       logout: () => Promise<any>;
       startTumblrOAuth: () => Promise<any>;
+      consumeTumblrOAuthVerifier: () => Promise<{ verifier: string; oauthToken?: string }>;
       finishTumblrOAuth: (verifier: string) => Promise<any>;
       tumblrLogout: () => Promise<any>;
       fetchTumblrBlogs: (options?: { force?: boolean }) => Promise<Array<{ id: string; name: string; title: string; url: string; primary?: boolean }>>;
       setTumblrPrimaryBlog: (blogId: string) => Promise<any>;
+      startBlueskyAuth: () => Promise<any>;
+      blueskyLogout: () => Promise<any>;
+      testPixelfedAuth: () => Promise<any>;
+      pixelfedLogout: () => Promise<any>;
+      testMastodonAuth: () => Promise<any>;
+      mastodonLogout: () => Promise<any>;
 
       fetchGroups: (options?: { force?: boolean }) => Promise<Group[]>;
       fetchGroupRefreshStatus: () => Promise<{ inProgress: boolean; total: number; completed: number; startedAt: number }>;
@@ -68,6 +78,17 @@ declare global {
       setVerboseLogging: (enabled: boolean) => Promise<any>;
       setMinimizeToTray: (enabled: boolean) => Promise<any>;
       setCheckUpdatesOnLaunch: (enabled: boolean) => Promise<any>;
+      setTumblrPostTextMode: (mode: "bold_title_then_description" | "title_then_description" | "title_only" | "description_only") => Promise<any>;
+      setBlueskyPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
+      setBlueskyLongPostMode: (mode: "truncate" | "thread") => Promise<any>;
+      setTumblrUseDescriptionAsImageDescription: (enabled: boolean) => Promise<any>;
+      setBlueskyUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
+      setPixelfedPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
+      setPixelfedUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
+      setMastodonPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
+      setMastodonUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
+      setAddShutterQueueTagToAllUploads: (enabled: boolean) => Promise<any>;
+      clearLastError: () => Promise<any>;
       checkForUpdates: (options?: { force?: boolean }) => Promise<{
         ok: boolean;
         checkedAt: number;

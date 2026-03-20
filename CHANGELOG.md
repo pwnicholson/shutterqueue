@@ -2,6 +2,35 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
+## [0.9.5] - 2026-03-19
+
+### Added
+- **New platform support since 0.9.3c: Tumblr, Bluesky, PixelFed, and Mastodon**
+  - Added full setup/auth flows for all four services with encrypted credential storage
+  - Added per-service account verification/logout actions, status indicators, and platform chips
+  - Added Tumblr OAuth/browser callback improvements plus Tumblr blog selection/refresh integration
+- **Multi-platform queue targeting and service-aware upload behavior**
+  - Added target-platform selection in single-item and batch editors
+  - Added per-service upload state tracking so each item can partially succeed across mixed targets
+  - Added normalized target-service handling across queue/main flows so selected platforms are preserved consistently
+- **Capability-aware posting across platforms**
+  - Added service-specific privacy and sensitivity handling, including automatic mapping/warnings when a platform does not support a selected option
+  - Added capability-aware upload warnings, including location warnings only when explicit location data exists and none of the selected targets support location tagging
+  - Added safer mixed-target behavior so capabilities are applied where supported without blocking other selected targets
+- **Per-platform post composition and accessibility controls**
+  - Added post-text composition modes for Tumblr, Bluesky, PixelFed, and Mastodon
+  - Added Bluesky long-post handling modes (truncate vs thread)
+  - Added optional Description -> alt text/image description behavior for supported services
+  - Added optional automatic ShutterQueue hashtag/tag insertion for uploads
+- **Capability-aware editor and setup UX improvements**
+  - Added service-tabbed Setup flows for Flickr/Tumblr/Bluesky/PixelFed/Mastodon
+  - Added clearer Flickr-only field hints and service-aware safety labeling in editors
+  - Added updated tag guidance: "Multi-word tags are supported. Don't use a '#' - we'll add it for you where needed."
+  - Added improved global notice/error banners and update-available notice handling
+- **Test coverage and regression protection**
+  - Added npm test command (`npm test`) for electron service tests
+  - Added Bluesky/PixelFed/Mastodon service tests plus queue target-service normalization regression tests
+
 ## [0.9.3c] - 2026-03-15
 
 ### Added

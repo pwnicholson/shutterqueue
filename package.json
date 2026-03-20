@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently -k \"cross-env NODE_ENV=development vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "build": "vite build",
+    "test": "node --test \"electron/**/*.test.cjs\"",
     "dist": "npm run generate-licenses && npm run build && electron-builder",
     "pack": "npm run generate-licenses && npm run build && electron-builder --dir",
     "generate-licenses": "node scripts/generate-licenses.cjs"
