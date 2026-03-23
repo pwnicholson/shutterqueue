@@ -4316,7 +4316,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     <div className="card" style={{ marginTop: 12, backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
                       <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>Mastodon Setup Help:</div>
                       <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
-                        <li style={{ marginBottom: 6 }}>Open your Mastodon account settings and create a personal access token with read/write scopes.</li>
+                        <li style={{ marginBottom: 6 }}>On your Mastodon instance, go to Account Settings -&gt; Development -&gt; New application.</li>
+                        <li style={{ marginBottom: 6 }}>Set Name to <b>ShutterQueue</b>. Website is optional. For Redirect URI, keep the default (<code>urn:ietf:wg:oauth:2.0:oob</code>) or use any valid HTTPS URL if your instance requires one.</li>
+                        <li style={{ marginBottom: 6 }}>In Scopes, select exactly <b>read:accounts</b>, <b>write:media</b>, and <b>write:statuses</b>, then create/save the app.</li>
+                        <li style={{ marginBottom: 6 }}>Open the app you created and copy the generated access token (or create/copy a token for that app, depending on your instance UI).</li>
                         <li style={{ marginBottom: 6 }}>Enter your Mastodon instance URL and access token below, then click Save.</li>
                         <li style={{ marginBottom: 6 }}>Click Test Mastodon Authorization to verify credentials before uploading.</li>
                         <li>When successful, you should see "Authorized as @your-handle".</li>

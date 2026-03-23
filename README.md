@@ -3,42 +3,61 @@
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
 
+ShutterQueue is a powerful photo batch uploader for photographers and content creators who want to share their work across multiple social platforms simultaneously. Upload to Flickr, Tumblr, Bluesky, Mastodon, PixelFed, or any combination thereof with a single queue.
+
+**Supported platforms:**
+- Flickr (full feature support: groups, albums, location tagging)
+- Tumblr (with blog selection and privacy controls)
+- Bluesky (with threaded long-post support)
+- Mastodon (with instance selection and privacy-aware behavior)
+- PixelFed (currently included but still untested in live use)
+
 Note that this is purely vibe-coded using a combination of different AI tools. I am very open to suggestions, feedback, and help optimizing the tool or adding features.
 
-ShutterQueue is free to use. It requires you generate your own Flickr API key, which is free and easily available from Flickr (see setup instructions below)
-
-As of v0.9.5, ShutterQueue now includes Tumblr, Bluesky, Mastodon, and PixelFed support alongside Flickr. PixelFed support has been added, but it is still untested at this time.
+ShutterQueue is free to use. For Flickr uploads, you'll need to generate your own API key (free from Flickr). Each platform has its own OAuth setup through ShutterQueue's integrated setup flows.
 
 ## Summary of Key Features
 
-- **Multi-platform posting**
-  - Upload to Flickr, Tumblr, Bluesky, Mastodon, and PixelFed from the same queue
-  - Choose one or multiple target platforms per queued item
-  - PixelFed support is currently included but has not yet been fully live-tested
+- **Multi-platform posting with target selection**
+  - Upload to any combination of Flickr, Tumblr, Bluesky, Mastodon, and PixelFed
+  - Choose different platforms for each queued photo
+  - Capability-aware warnings: unsupported features on selected platforms are called out without blocking the upload
+  - Partial success handling: if one platform fails, others still upload
 
-- **Advanced Metadata** - all individually or in batches
-  - Add Title, Tags, Descriptions
-   - Save and recall custom sets of tags that are frequently used together
-  - Add geotagging/location data (at any level of granularity)
-  - Set photo "safety" level for safe, moderate, or restricted photo content
-  - Separate photo and location privacy controls
-  - Import and use file metadata from embedded EXIF/IPTC/XMP when present: title, description, GPS geotags, keywords/tags
-- **Groups and Albums** - all individually or in batches
+- **Rich metadata and content composition**
+  - Add title, description, and tags (individually or in batches)
+  - Save and reuse custom tag sets, group sets, and album sets
+  - Per-platform post-text composition modes (merge title/description/tags, title-only, etc.)
+  - Optional description-as-alt-text for accessibility across platforms
+  - Platform-specific safety/mature content labeling (maps to each platform's conventions)
+  - Automatic hashtag insertion option for all uploads
+
+- **Advanced geotagging and location privacy**
+  - Search and set upload location using OpenStreetMap/Nominatim
+  - Separate privacy controls for photo content and location data
+  - Automatic Flickr geo accuracy mapping
+  - Location-aware warnings when uploading to platforms without location support
+
+- **Flickr-specific features** (Groups & Albums)
   - Quickly add photos to any combination of your albums or groups
   - Save and recall custom sets of frequently used albums and/or groups
-  - See group size (user count) at a glance as you select them
+  - See group size (member/photo count) at a glance
   - Auto-retry for adding photos to groups when user hits the group's limit of photos per day/week/month
-- **Advanced Scheduler**
+
+- **Advanced scheduler with flexible batching**
   - Set photo queue to upload every X number of hours (from 1 hour to 1 week)
-  - Set photo queue to only upload on certain days of the week or certain times
-  - Set photo queue to process in batches of X photos at a time (ex: upload 3 photos at a time every 24 hours)
-  - Set any photo to upload at a specific time and date, regardless of queue status
-  - Queue will catch if you have the same photo duplicated in the queue at the same time (based on file contents, not file name)
-  - Can be minimized to the system tray (Windows) or Menu Bar (Mac) while it runs in the background, using very few resources.
-- **Queue backup and restore**
-  - Export the full queue to JSON and import it later
-  - Choose whether imports replace the current queue or add to it
-  - Duplicate detection runs right after import so collisions are flagged immediately
+  - Only upload on specific days of the week or times of day
+  - Process in batches of X photos at a time (ex: upload 3 photos every 24 hours)
+  - Manually schedule any photo for a specific upload time and date
+  - Queue respects manual scheduling chronologically
+  - Can be minimized to system tray (Windows) or Menu Bar (Mac) and run silently in the background
+
+- **Queue management and reliability**
+  - Content-based duplicate detection warns when adding the same file (by SHA-256 hash, not filename)
+  - Export full queue to JSON for backup; import later with merge or replace options
+  - Duplicate detection runs after import to flag new collisions immediately
+  - Automatic image caching for fast queue navigation with hundreds of photos
+  - Thumbnail auto-regeneration after queue operations
 
 
 

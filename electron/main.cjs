@@ -365,10 +365,17 @@ const TUMBLR_OAUTH_LOOPBACK_PATH = "/tumblr/callback";
 const TUMBLR_OAUTH_LOOPBACK_URL = `http://${TUMBLR_OAUTH_LOOPBACK_CALLBACK_HOST}:${TUMBLR_OAUTH_LOOPBACK_PORT}${TUMBLR_OAUTH_LOOPBACK_PATH}`;
 const TUMBLR_OAUTH_LOOPBACK_MAX_MS = 10 * 60 * 1000;
 
-function getIconPath(active) {
-  // Use a monochrome icon when scheduler is off OR there is no pending work.
-  const name = active ? "icon.png" : "icon-mono.png";
-  return path.join(__dirname, "..", "assets", name);
+function getAppIconPath() {
+  // Full-color app icon used for window and package-level icon usage.
+  return path.join(__dirname, "..", "assets", "icon.png");
+}
+
+function getTrayIconPath(active) {
+  // Windows/Linux tray icon can use a tighter crop than the app icon.
+  const name = active ? "icon-tray-active.png" : "icon-tray-inactive.png";
+  const candidate = path.join(__dirname, "..", "assets", name);
+  if (fs.existsSync(candidate)) return candidate;
+  return getAppIconPath();
 }
 
 function hasPendingWork() {
@@ -411,8 +418,7 @@ function getDueManualScheduledPendingItem(q, nowMs) {
 
 function updateWindowIcon() {
   if (!win || win.isDestroyed()) return;
-  const active = !!store.get("schedulerOn") && hasPendingWork();
-  const iconPath = getIconPath(active);
+  const iconPath = getAppIconPath();
   try {
     // setIcon is supported on Windows/Linux. On macOS it is ignored.
     win.setIcon(iconPath);
@@ -1218,7 +1224,7 @@ function createWindow() {
     width: 1200,
     height: 820,
     backgroundColor: "#0b1020",
-    icon: getIconPath(!!store.get("schedulerOn") && hasPendingWork()),
+    icon: getAppIconPath(),
     webPreferences: {
       preload: path.join(app.getAppPath(), "electron", "preload.cjs"),
       contextIsolation: true,
@@ -1312,13 +1318,13 @@ function createTray() {
       if (menuImage) {
         tray = new Tray(menuImage);
       } else {
-        iconPath = getIconPath(schedulerOn);
+        iconPath = getAppIconPath();
         tray = new Tray(iconPath);
       }
       lastTraySchedulerState = schedulerOn;
     } else {
-      // Windows/Linux: use normal icon sizing (menu bar icon also follows scheduler state)
-      iconPath = getIconPath(!!store.get("schedulerOn"));
+      // Windows/Linux: use dedicated tray icon assets (active/inactive).
+      iconPath = getTrayIconPath(!!store.get("schedulerOn"));
       tray = new Tray(iconPath);
     }
     
@@ -1410,10 +1416,10 @@ function updateTrayIcon() {
       if (menuImage) {
         tray.setImage(menuImage);
       } else {
-        tray.setImage(getIconPath(schedulerOn));
+        tray.setImage(getAppIconPath());
       }
     } else {
-      const iconPath = getIconPath(schedulerOn);
+      const iconPath = getTrayIconPath(schedulerOn);
       tray.setImage(iconPath);
     }
 
