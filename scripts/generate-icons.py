@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,11 +47,24 @@ def save_resized_png(src: Path, out: Path, size: int) -> None:
 
 
 def save_menu_png(src: Path, out_1x: Path, out_2x: Path) -> None:
-    # App currently loads a single filename for menu-bar icons.
-    # We keep 1x at 22x22 to match current assets, and also emit @2x files for macOS retina use.
+    # macOS template icons should be black glyph + transparency only.
+    # If the source has no alpha, interpret dark pixels as glyph and light pixels as transparent background.
     with Image.open(src).convert("RGBA") as im:
-        one_x = im.resize((22, 22), Image.Resampling.LANCZOS)
-        two_x = im.resize((44, 44), Image.Resampling.LANCZOS)
+        alpha = im.getchannel("A")
+        alpha_min, alpha_max = alpha.getextrema()
+
+        if alpha_min == 255 and alpha_max == 255:
+            # Opaque source (e.g., black icon on white background): derive alpha from inverted luminance.
+            luminance = ImageOps.grayscale(im)
+            alpha = ImageOps.invert(luminance)
+
+        template = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        template.putalpha(alpha)
+
+        # App currently loads a single filename for menu-bar icons.
+        # We keep 1x at 22x22 to match current assets, and also emit @2x files for macOS retina use.
+        one_x = template.resize((22, 22), Image.Resampling.LANCZOS)
+        two_x = template.resize((44, 44), Image.Resampling.LANCZOS)
         one_x.save(out_1x, format="PNG", optimize=True)
         two_x.save(out_2x, format="PNG", optimize=True)
 
