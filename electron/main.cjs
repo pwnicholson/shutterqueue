@@ -1225,6 +1225,7 @@ function createWindow() {
     height: 820,
     backgroundColor: "#0b1020",
     icon: getAppIconPath(),
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(app.getAppPath(), "electron", "preload.cjs"),
       contextIsolation: true,
@@ -1542,6 +1543,9 @@ function sendFilesToRenderer() {
 }
 
 app.whenReady().then(() => {
+  // Remove default app menu (File/Edit/View...) on all platforms.
+  Menu.setApplicationMenu(null);
+
   protocol.handle("sqimg", async (request) => {
     try {
       const url = new URL(request.url);

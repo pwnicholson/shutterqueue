@@ -4176,7 +4176,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     <div className="card" style={{ marginTop: 12, backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
                       <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>PixelFed Setup Help:</div>
                       <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
-                        <li style={{ marginBottom: 6 }}>Open your PixelFed account settings. Under "Applications", create a personal access token with the name "ShutterQueue" with post/media scopes.</li>
+                        <li style={{ marginBottom: 6 }}>On your PixelFed instance, go to Account Settings -&gt; Applications -&gt; Create Application.</li>
+                        <li style={{ marginBottom: 6 }}>Set Name to <b>ShutterQueue</b>. No redirect URI is required.</li>
+                        <li style={{ marginBottom: 6 }}>In Scopes, select <b>read</b> and <b>write</b> only. You do not need follow, push, or admin scopes.</li>
+                        <li style={{ marginBottom: 6 }}>Create/save the application, then copy the access token shown.</li>
                         <li style={{ marginBottom: 6 }}>Enter your PixelFed instance URL and access token below, then click Save.</li>
                         <li style={{ marginBottom: 6 }}>Click Test PixelFed Authorization to verify credentials before uploading.</li>
                         <li>When successful, you should see "Authorized as @your-handle".</li>
@@ -6086,7 +6089,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       )}
       <div className="footer-fixed">
         <div className="footer-left">
-          <span>By Paul Nicholson. Not an official Flickr app.</span>
+          <span>By Paul Nicholson. Not an official app for any included service.</span>
         </div>
         <div className="footer-right">
           <span className="mono">v{appVersion || "0.9.5"}</span>
