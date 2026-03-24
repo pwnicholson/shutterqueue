@@ -33,7 +33,7 @@
 * [X] Add sorting options for the queue: sort by original file name (A-Z or Z-A), sort by Title (A-Z or Z-A), or shuffle the queue
 * [X] Implement support for Tumblr
 * [X] Implement support for Bluesky
-* [X] Implement support for PixelFed (added, but currently untested)
+* [X] Implement support for PixelFed (tested and working in v0.9.6)
 * [X] Implement support for Mastodon
 
 ## Soon

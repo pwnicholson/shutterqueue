@@ -14,7 +14,7 @@ ShutterQueue now supports uploading to **five major photo-sharing platforms** fr
 - **Tumblr** — with blog selection, public/private visibility, and mature content tagging
 - **Bluesky** — with optional threaded long-post mode for text-heavy descriptions
 - **Mastodon** — with federated instance selection and privacy-aware posting
-- **PixelFed** — with basic support (currently untested in live use)
+- **PixelFed** — with full OAuth 2.0 browser-based authorization support
 
 **Per-item platform targeting:** Each queued photo can target one or multiple platforms. The queue respects capability differences, so unsupported features on selected platforms are called out without blocking the upload.
 
@@ -39,7 +39,7 @@ Setup tab now uses dedicated tabs for each platform:
 - **Tumblr:** OAuth flow with blog selection and refresh
 - **Bluesky:** Personal access token or app password
 - **Mastodon:** Instance URL + personal access token with scope guidance
-- **PixelFed:** Instance URL + personal access token
+- **PixelFed:** OAuth 2.0 Authorization Code flow with browser sign-in and callback
 
 Each platform shows its auth status, can be logged out independently, and stores encrypted credentials locally.
 
@@ -85,7 +85,6 @@ Each platform shows its auth status, can be logged out independently, and stores
 - All tests pass with `npm test`
 
 #### Known Limitations
-- **PixelFed:** Support has been added but has not yet been tested in live use. Reports of issues or confirmation of working instances are welcome.
 - **Location tagging:** Currently only Flickr supports location metadata in uploads. This is a platform limitation, not a ShutterQueue limitation.
 
 ## Security & Privacy
@@ -115,7 +114,10 @@ Use personal access token or app password from https://bsky.app/settings/app-pas
 3. Enter your instance URL (e.g., mastodon.social) and the token
 
 ### PixelFed Setup
-Similar to Mastodon—your instance URL + personal access token
+1. Enter your PixelFed instance URL on the Setup tab
+2. Click **Connect with PixelFed** to open browser authorization
+3. Approve access on your PixelFed instance
+4. Return to ShutterQueue and click **Complete Authorization**
 
 ## Download & Install
 

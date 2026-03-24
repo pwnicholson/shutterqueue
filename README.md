@@ -10,7 +10,7 @@ ShutterQueue is a powerful photo batch uploader for photographers and content cr
 - Tumblr (with blog selection and privacy controls)
 - Bluesky (with threaded long-post support)
 - Mastodon (with instance selection and privacy-aware behavior)
-- PixelFed (currently included but still untested in live use)
+- PixelFed (tested and working in v0.9.6, with OAuth 2.0 browser authorization)
 
 Note that this is purely vibe-coded using a combination of different AI tools. I am very open to suggestions, feedback, and help optimizing the tool or adding features.
 
@@ -107,7 +107,7 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 - **New platform support**
   - Added Tumblr, Bluesky, PixelFed, and Mastodon support alongside Flickr
   - Queue items can now target one or multiple platforms at once
-  - PixelFed support has been added, but is still untested at this time
+  - PixelFed support is tested and working in v0.9.6
 - **Platform-aware posting behavior**
   - Added per-platform post composition controls, privacy/sensitivity handling, and accessibility text options where supported
   - Added service-aware upload warnings so unsupported capabilities are called out without blocking supported targets
