@@ -1,103 +1,52 @@
 # ShutterQueue v0.9.6 Release Notes
 
-**Release Date:** March 20, 2026
-
-This is a major release introducing comprehensive multi-platform support, turning ShutterQueue from a Flickr-focused uploader into a unified photo-sharing tool for popular decentralized and commercial platforms.
+**Release Date:** March 24, 2026
 
 ## What's New in 0.9.6
 
-### Major Features
+### PixelFed: OAuth 2.0 Browser Authorization
 
-#### 🚀 Multi-Platform Photo Uploading
-ShutterQueue now supports uploading to **five major photo-sharing platforms** from a single queue:
-- **Flickr** — the original platform with full feature support
-- **Tumblr** — with blog selection, public/private visibility, and mature content tagging
-- **Bluesky** — with optional threaded long-post mode for text-heavy descriptions
-- **Mastodon** — with federated instance selection and privacy-aware posting
-- **PixelFed** — with full OAuth 2.0 browser-based authorization support
+PixelFed authorization has been migrated from a manual personal access token flow to a full **OAuth 2.0 Authorization Code flow**:
 
-**Per-item platform targeting:** Each queued photo can target one or multiple platforms. The queue respects capability differences, so unsupported features on selected platforms are called out without blocking the upload.
+- Click **Connect with PixelFed**, approve access in your browser, then click **Complete Authorization** — no manual token copying required
+- ShutterQueue registers itself with your PixelFed instance automatically and handles the token exchange
+- The old manual token entry UI has been removed
 
-#### 🎯 Capability-Aware Upload Behavior
-The app now understands what each platform supports and behaves intelligently:
-- **Privacy mapping:** Automatically maps privacy levels to platform conventions (e.g., Flickr's public/private → Mastodon's public/private/unlisted)
-- **Safety/content warnings:** Maps photo safety levels to each platform's content labeling system (Safe → Bluesky adult flag, Moderate/Restricted → Tumblr/Mastodon mature flags)
-- **Location handling:** Warns only when explicit location data is set and none of the selected targets support location tagging (Flickr is the only location-capable platform currently supported)
-- **Partial success:** If one platform fails, others still upload; you can retry failed targets without re-uploading successful ones
+### Per-Platform Prepend / Append Text
 
-#### 📝 Per-Platform Post Composition
-Each platform has its own posting options:
-- **Post-text modes:** Choose whether to merge title/description/tags, include only title, etc.
-- **Long-post handling (Bluesky):** Truncate text to character limit or split into a thread
-- **Alt-text behavior:** Optional description-as-alt-text for image accessibility where supported
-- **Hashtag insertion:** Optional automatic ShutterQueue hashtag for all uploads
-- **Tags behavior:** Platform-specific hashtag formatting (safe spaces converted to underscores, etc.)
+Each platform's Setup tab now has **prepend** and **append** text fields. Text entered here is added before or after every post body on that platform — useful for consistent disclaimers, signatures, or hashtag lines across all uploads:
 
-#### 🔐 Platform-Aware Setup and Authorization
-Setup tab now uses dedicated tabs for each platform:
-- **Flickr:** OAuth flow with API key/secret setup
-- **Tumblr:** OAuth flow with blog selection and refresh
-- **Bluesky:** Personal access token or app password
-- **Mastodon:** Instance URL + personal access token with scope guidance
-- **PixelFed:** OAuth 2.0 Authorization Code flow with browser sign-in and callback
+- Bluesky: prepend / append text fields
+- Mastodon: prepend / append text fields
+- PixelFed: prepend / append text fields
+- Tumblr: prepend / append text fields
 
-Each platform shows its auth status, can be logged out independently, and stores encrypted credentials locally.
+### Global Tags per Platform
 
-### Key Improvements
+- **Flickr:** A new *"Add these tags to every post on Flickr"* field in Setup appends a fixed comma-separated tag list to every Flickr upload
+- **Tumblr:** A new *"Add these tags to every post on Tumblr"* field does the same for Tumblr
 
-#### Enhanced Queue Management
-- **Target-service selection:** Batch-edit platform selections alongside metadata for multi-select items
-- **Per-service upload state tracking:** Uploading to multiple platforms? Each platform's success/failure is tracked independently
-- **Service normalization:** Robust handling ensures target platforms are preserved correctly across queue save/load
-- **Regression protection:** New queue normalization tests prevent silent breakage as new platforms are added
+### Queue UX Improvements
 
-#### Location Warnings (Refined)
-- Location warnings only appear when you've explicitly set a location AND none of your selected targets support location tagging
-- No warning when mixing Flickr (location-capable) with other platforms that lack location support
-- Clearer warning message: *"Location data was set on this item, but none of the selected platforms support location tagging. The post was uploaded without location data."*
+- **Ctrl+A / ⌘+A in queue tab** selects all items in the queue (when no text input is focused)
+- **"No platform selected" badge** shown on queue items that have no target platform set, making misconfigured items easy to spot
+- **"Flickr Groups with Pending Retries"** section heading clarified to indicate it is Flickr-specific
 
-#### Update Checking
-- New version notices now hotlink directly to the GitHub release page when you click them
-- Notices include icon indicator showing which platforms are currently configured
-- Update check can run automatically on launch or manually from Setup
+### General Settings Additions
 
-#### UI Clarity
-- Platform chips (Flickr "F", Tumblr "T", etc.) appear throughout the app showing target platforms
-- Group/Album/Location sections now show *"Flickr only"* hints when non-Flickr platforms are selected
-- Safety levels shown with platform-specific labels (Moderate/Mature, Restricted/Mature, etc.)
-- Improved tag guidance: *"Multi-word tags are supported. Don't use a '#' — we'll add it for you where needed."*
+- **"Automatically resume scheduler on app restart"** checkbox added under General App Settings
+- **"Clear thumbnail and preview cache"** button added to manually purge cached images when needed
 
-#### Metadata Auto-Prefill
-- Embedded EXIF/IPTC/XMP metadata is automatically read from new queue items
-- Supported fields: title, description, GPS geotags, keywords/tags
-- Falls back to filename for title and leaves description blank if not in metadata
+### Other Fixes and Polish
 
-#### Performance
-- Queue tab stays responsive with hundreds of items thanks to deferred thumbnail loading
-- Real resized thumbnails instead of embedded full images
-- Automatic image-cache cleanup when items are removed
-
-### Testing & Reliability
-
-#### New Test Coverage
-- Service-specific tests for Bluesky, PixelFed, and Mastodon
-- Queue normalization regression tests ensuring platforms are preserved correctly
-- All tests pass with `npm test`
-
-#### Known Limitations
-- **Location tagging:** Currently only Flickr supports location metadata in uploads. This is a platform limitation, not a ShutterQueue limitation.
+- Toast notifications are now **fixed-position** (top-right overlay) instead of shifting page layout
+- Footer disclaimer updated: *"Not an official app for any included service"* (was Flickr-specific)
+- Default Electron application menu removed for a cleaner windowed experience
+- `clearImageCache` exposed to the renderer so cache clearing works end-to-end
 
 ## Security & Privacy
 
 All platform credentials are encrypted at rest using your OS's native credential storage (Windows DPAPI, macOS Keychain, or Linux credential store). OAuth tokens and API secrets are never stored in plain text.
-
-## Getting Started with New Platforms
-
-1. Navigate to the **Setup tab**
-2. Find the platform you want to authorize (Tumblr, Bluesky, Mastodon, or PixelFed)
-3. Enter required credentials and click the platform-specific authorization button
-4. Complete the OAuth flow in your browser (your password is never shared with ShutterQueue)
-5. Once authorized, you can select that platform as a target for queue items
 
 ### Flickr Setup (unchanged)
 Still requires an API key/secret from https://www.flickr.com/services/

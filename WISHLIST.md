@@ -39,8 +39,12 @@
 ## Soon
 
 * \[ ] Fix bug that displays past times for group addition retry attempts and verify that they aren't getting stuck
-* \[ ] Implement support for Pixfed.com
+* \[ ] Implement support for Substack
 * \[ ] Implement support for Lemmy Photo groups
+* \[ ] Implement support for Pixfed.com
+* \[ ] Implement support for Reddit Photo groups? (not likely)
+* \[ ] Implement support for Glass
+* \[ ] Implement support for Foto
 
 ## Nice-to-have
 
