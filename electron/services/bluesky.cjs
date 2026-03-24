@@ -127,36 +127,47 @@ function buildHashtagLine(tagsCsv) {
   return tags.map(toHashtag).filter(Boolean).join(" ");
 }
 
-function buildPostText({ item, postTextMode }) {
+function buildPostText({ item, postTextMode, prependText, appendText }) {
   const mode = String(postTextMode || "merge_title_description_tags");
   const title = String(item?.title || "").trim();
   const description = String(item?.description || "").trim();
   const hashtagLine = buildHashtagLine(item?.tags || "");
 
-  if (mode === "title_only") return title;
-  if (mode === "description_only") return description;
-
-  const lines = [];
-  if (mode === "merge_title_description_tags") {
-    if (title) lines.push(title);
-    if (description) lines.push(description);
-    if (hashtagLine) lines.push(hashtagLine);
-  } else if (mode === "merge_title_description") {
-    if (title) lines.push(title);
-    if (description) lines.push(description);
-  } else if (mode === "merge_title_tags") {
-    if (title) lines.push(title);
-    if (hashtagLine) lines.push(hashtagLine);
-  } else if (mode === "merge_description_tags") {
-    if (description) lines.push(description);
-    if (hashtagLine) lines.push(hashtagLine);
+  let coreText;
+  if (mode === "title_only") {
+    coreText = title;
+  } else if (mode === "description_only") {
+    coreText = description;
   } else {
-    if (title) lines.push(title);
-    if (description) lines.push(description);
-    if (hashtagLine) lines.push(hashtagLine);
+    const lines = [];
+    if (mode === "merge_title_description_tags") {
+      if (title) lines.push(title);
+      if (description) lines.push(description);
+      if (hashtagLine) lines.push(hashtagLine);
+    } else if (mode === "merge_title_description") {
+      if (title) lines.push(title);
+      if (description) lines.push(description);
+    } else if (mode === "merge_title_tags") {
+      if (title) lines.push(title);
+      if (hashtagLine) lines.push(hashtagLine);
+    } else if (mode === "merge_description_tags") {
+      if (description) lines.push(description);
+      if (hashtagLine) lines.push(hashtagLine);
+    } else {
+      if (title) lines.push(title);
+      if (description) lines.push(description);
+      if (hashtagLine) lines.push(hashtagLine);
+    }
+    coreText = lines.join("\n").trim();
   }
 
-  return lines.join("\n").trim();
+  const pre = String(prependText || "").trim();
+  const app = String(appendText || "").trim();
+  const parts = [];
+  if (pre) parts.push(pre);
+  if (coreText) parts.push(coreText);
+  if (app) parts.push(app);
+  return parts.join("\n");
 }
 
 function splitTextForPosts(text, maxLen = MAX_BSKY_TEXT) {
@@ -270,12 +281,12 @@ async function uploadBlob({ accessJwt, photoPath, serviceUrl }) {
   return out?.blob || out;
 }
 
-async function createImagePost({ accessJwt, did, serviceUrl, item, postTextMode, longPostMode, safetyLevel, useDescriptionAsAltText }) {
+async function createImagePost({ accessJwt, did, serviceUrl, item, postTextMode, longPostMode, safetyLevel, useDescriptionAsAltText, prependText, appendText }) {
   if (!String(did || "").trim()) throw new Error("Missing Bluesky DID.");
   if (!item?.photoPath) throw new Error("Missing local photo path for Bluesky upload.");
 
   const blob = await uploadBlob({ accessJwt, photoPath: item.photoPath, serviceUrl });
-  const text = buildPostText({ item, postTextMode });
+  const text = buildPostText({ item, postTextMode, prependText, appendText });
   const mode = String(longPostMode || "truncate");
   const chunks = mode === "thread" ? splitTextForPosts(text, MAX_BSKY_TEXT) : [];
   const descriptionAlt = String(item?.description || "").trim();

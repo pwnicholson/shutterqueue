@@ -62,7 +62,6 @@ function normalizeTargetServices(input) {
     seen.add(svc);
     out.push(svc);
   }
-  if (!out.length) out.push("flickr");
   return out;
 }
 

@@ -1,4 +1,4 @@
-# ShutterQueue — A paced photo uploader (v0.9.5)
+# ShutterQueue — A paced photo uploader (v0.9.6)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
@@ -102,7 +102,7 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 
 
 
-## New to 0.9.5
+## New to 0.9.6
 
 - **New platform support**
   - Added Tumblr, Bluesky, PixelFed, and Mastodon support alongside Flickr

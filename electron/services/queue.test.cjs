@@ -31,7 +31,7 @@ test("normalizeImportedQueue removes unknown services and de-dupes", () => {
   assert.deepEqual(out.items[0].targetServices, ["flickr", "mastodon"]);
 });
 
-test("normalizeImportedQueue defaults to flickr when service list is empty/invalid", () => {
+test("normalizeImportedQueue allows empty service list (no platform selected)", () => {
   const input = [
     {
       id: "a3",
@@ -47,6 +47,6 @@ test("normalizeImportedQueue defaults to flickr when service list is empty/inval
 
   const out = queue.normalizeImportedQueue(input);
   assert.equal(out.items.length, 2);
-  assert.deepEqual(out.items[0].targetServices, ["flickr"]);
-  assert.deepEqual(out.items[1].targetServices, ["flickr"]);
+  assert.deepEqual(out.items[0].targetServices, []);
+  assert.deepEqual(out.items[1].targetServices, []);
 });

@@ -1,10 +1,10 @@
-# ShutterQueue v0.9.5 Release Notes
+# ShutterQueue v0.9.6 Release Notes
 
 **Release Date:** March 20, 2026
 
 This is a major release introducing comprehensive multi-platform support, turning ShutterQueue from a Flickr-focused uploader into a unified photo-sharing tool for popular decentralized and commercial platforms.
 
-## What's New in 0.9.5
+## What's New in 0.9.6
 
 ### Major Features
 

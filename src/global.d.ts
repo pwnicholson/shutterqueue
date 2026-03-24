@@ -27,6 +27,9 @@ declare global {
       blueskyLogout: () => Promise<any>;
       testPixelfedAuth: () => Promise<any>;
       pixelfedLogout: () => Promise<any>;
+      startPixelfedOAuth: (instanceUrl: string) => Promise<{ ok: boolean }>;
+      completePixelfedOAuth: () => Promise<{ ok: boolean; username?: string }>;
+      cancelPixelfedOAuth: () => Promise<{ ok: boolean }>;
       testMastodonAuth: () => Promise<any>;
       mastodonLogout: () => Promise<any>;
 
@@ -36,6 +39,7 @@ declare global {
 
       getThumbSrc: (photoPath: string) => Promise<string | null>;
       getPreviewSrc: (photoPath: string, maxEdge?: number) => Promise<string | null>;
+      clearImageCache: () => Promise<{ ok: boolean; deletedFiles?: number; error?: string }>;
 
       queueGet: () => Promise<QueueItem[]>;
       queueAdd: (paths: string[]) => Promise<QueueItem[]>;
@@ -87,6 +91,16 @@ declare global {
       setPixelfedUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
       setMastodonPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
       setMastodonUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
+      setBlueskyPrependText: (text: string) => Promise<any>;
+      setBlueskyAppendText: (text: string) => Promise<any>;
+      setMastodonPrependText: (text: string) => Promise<any>;
+      setMastodonAppendText: (text: string) => Promise<any>;
+      setPixelfedPrependText: (text: string) => Promise<any>;
+      setPixelfedAppendText: (text: string) => Promise<any>;
+      setTumblrPrependText: (text: string) => Promise<any>;
+      setTumblrAppendText: (text: string) => Promise<any>;
+      setTumblrGlobalTags: (tags: string) => Promise<any>;
+      setFlickrGlobalTags: (tags: string) => Promise<any>;
       setAddShutterQueueTagToAllUploads: (enabled: boolean) => Promise<any>;
       clearLastError: () => Promise<any>;
       checkForUpdates: (options?: { force?: boolean }) => Promise<{

@@ -64,7 +64,6 @@ function normalizeTargetServices(services: UploadService[] | undefined): UploadS
     seen.add(svc);
     out.push(svc as UploadService);
   }
-  if (!out.length) out.push("flickr");
   return out;
 }
 
@@ -103,7 +102,6 @@ function servicesForBadgeDisplay(services: string[] | undefined): string[] {
     seen.add(key);
     out.push(key);
   }
-  if (!out.length) out.push("flickr");
   return out;
 }
 
@@ -228,47 +226,59 @@ function buildBlueskyHashtagLine(tagsCsv: string): string {
   return parseTagsCsv(tagsCsv).map(toBlueskyHashtag).filter(Boolean).join(" ");
 }
 
-function buildBlueskyPostPreviewText(params: { title: string; description: string; tagsCsv: string; mode: BlueskyPostTextMode }) {
+function buildBlueskyPostPreviewText(params: {
+  title: string;
+  description: string;
+  tagsCsv: string;
+  mode: BlueskyPostTextMode;
+  prependText?: string;
+  appendText?: string;
+}) {
   const mode = params.mode;
   const title = String(params.title || "").trim();
   const description = String(params.description || "").trim();
   const hashtagLine = buildBlueskyHashtagLine(params.tagsCsv || "");
+  const prependText = String(params.prependText || "").trim();
+  const appendText = String(params.appendText || "").trim();
   const lines: string[] = [];
+  let label = "Title+Description+Tags";
 
   if (mode === "title_only") {
     if (title) lines.push(title);
-    return { label: "Title", text: lines.join("\n").trim() };
-  }
-  if (mode === "description_only") {
+    label = "Title";
+  } else if (mode === "description_only") {
     if (description) lines.push(description);
-    return { label: "Description", text: lines.join("\n").trim() };
-  }
-  if (mode === "merge_title_description_tags") {
+    label = "Description";
+  } else if (mode === "merge_title_description_tags") {
     if (title) lines.push(title);
     if (description) lines.push(description);
     if (hashtagLine) lines.push(hashtagLine);
-    return { label: "Title+Description+Tags", text: lines.join("\n").trim() };
-  }
-  if (mode === "merge_title_description") {
+    label = "Title+Description+Tags";
+  } else if (mode === "merge_title_description") {
     if (title) lines.push(title);
     if (description) lines.push(description);
-    return { label: "Title+Description", text: lines.join("\n").trim() };
-  }
-  if (mode === "merge_title_tags") {
+    label = "Title+Description";
+  } else if (mode === "merge_title_tags") {
     if (title) lines.push(title);
     if (hashtagLine) lines.push(hashtagLine);
-    return { label: "Title+Tags", text: lines.join("\n").trim() };
-  }
-  if (mode === "merge_description_tags") {
+    label = "Title+Tags";
+  } else if (mode === "merge_description_tags") {
     if (description) lines.push(description);
     if (hashtagLine) lines.push(hashtagLine);
-    return { label: "Description+Tags", text: lines.join("\n").trim() };
+    label = "Description+Tags";
+  } else {
+    if (title) lines.push(title);
+    if (description) lines.push(description);
+    if (hashtagLine) lines.push(hashtagLine);
+    label = "Title+Description+Tags";
   }
 
-  if (title) lines.push(title);
-  if (description) lines.push(description);
-  if (hashtagLine) lines.push(hashtagLine);
-  return { label: "Title+Description+Tags", text: lines.join("\n").trim() };
+  const bodyText = lines.join("\n").trim();
+  const postLines: string[] = [];
+  if (prependText) postLines.push(prependText);
+  if (bodyText) postLines.push(bodyText);
+  if (appendText) postLines.push(appendText);
+  return { label, text: postLines.join("\n") };
 }
 
 function estimateBlueskyThreadPostCount(text: string, maxLen = 300): number {
@@ -478,10 +488,21 @@ export default function App() {
   const [pixelfedPostTextMode, setPixelfedPostTextMode] = useState<PixelFedPostTextMode>("merge_title_description_tags");
   const [pixelfedUseDescriptionAsAltText, setPixelfedUseDescriptionAsAltText] = useState(true);
   const [pixelfedAuthError, setPixelfedAuthError] = useState("");
+  const [pixelfedOAuthPending, setPixelfedOAuthPending] = useState(false);
   const [mastodonInstanceUrl, setMastodonInstanceUrl] = useState("https://mastodon.social");
   const [mastodonAccessToken, setMastodonAccessToken] = useState("");
   const [mastodonPostTextMode, setMastodonPostTextMode] = useState<MastodonPostTextMode>("merge_title_description_tags");
   const [mastodonUseDescriptionAsAltText, setMastodonUseDescriptionAsAltText] = useState(true);
+  const [blueskyPrependText, setBlueskyPrependText] = useState("");
+  const [blueskyAppendText, setBlueskyAppendText] = useState("");
+  const [mastodonPrependText, setMastodonPrependText] = useState("");
+  const [mastodonAppendText, setMastodonAppendText] = useState("");
+  const [pixelfedPrependText, setPixelfedPrependText] = useState("");
+  const [pixelfedAppendText, setPixelfedAppendText] = useState("");
+  const [tumblrPrependText, setTumblrPrependText] = useState("");
+  const [tumblrAppendText, setTumblrAppendText] = useState("");
+  const [tumblrGlobalTags, setTumblrGlobalTags] = useState("");
+  const [flickrGlobalTags, setFlickrGlobalTags] = useState("");
   const [mastodonAuthError, setMastodonAuthError] = useState("");
   const [showSetupAdvanced, setShowSetupAdvanced] = useState(false);
   const [setupServiceTab, setSetupServiceTab] = useState<UploadService>("flickr");
@@ -1004,6 +1025,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         description: String(it.description || ""),
         tagsCsv: String(it.tags || ""),
         mode: blueskyPostTextMode,
+        prependText: blueskyPrependText,
+        appendText: blueskyAppendText,
       });
       return {
         label: preview.label,
@@ -1025,7 +1048,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       showThreadInfo: blueskyLongPostMode === "thread",
       overLimitInTruncate: blueskyLongPostMode === "truncate" && maxCount > 300,
     };
-  }, [blueskySelectedInEditor, selectedIds.length, selectedItems, active, blueskyPostTextMode, blueskyLongPostMode]);
+  }, [blueskySelectedInEditor, selectedIds.length, selectedItems, active, blueskyPostTextMode, blueskyLongPostMode, blueskyPrependText, blueskyAppendText]);
 
   const shouldShowFlickrOnlyFields = useMemo(() => {
     // Show Flickr-specific fields (groups, albums, location) only when Flickr is selected
@@ -1283,6 +1306,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         : "merge_title_description_tags";
     setMastodonPostTextMode(mastodonMode);
     setMastodonUseDescriptionAsAltText((c as any).mastodonUseDescriptionAsAltText !== false);
+    setBlueskyPrependText(String((c as any).blueskyPrependText || ""));
+    setBlueskyAppendText(String((c as any).blueskyAppendText || ""));
+    setMastodonPrependText(String((c as any).mastodonPrependText || ""));
+    setMastodonAppendText(String((c as any).mastodonAppendText || ""));
+    setPixelfedPrependText(String((c as any).pixelfedPrependText || ""));
+    setPixelfedAppendText(String((c as any).pixelfedAppendText || ""));
+    setTumblrPrependText(String((c as any).tumblrPrependText || ""));
+    setTumblrAppendText(String((c as any).tumblrAppendText || ""));
+    setTumblrGlobalTags(String((c as any).tumblrGlobalTags || ""));
+    setFlickrGlobalTags(String((c as any).flickrGlobalTags || ""));
     const nextSavedGroupSets = normalizeSavedIdSets((c as any).savedGroupSets);
     const nextSavedAlbumSets = normalizeSavedIdSets((c as any).savedAlbumSets);
     const nextSavedTagSets = normalizeSavedIdSets((c as any).savedTagSets);
@@ -1865,8 +1898,41 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     }
   };
 
+  const startPixelfedOAuth = async () => {
+    try {
+      setPixelfedAuthError("");
+      await window.sq.startPixelfedOAuth(pixelfedInstanceUrl);
+      setPixelfedOAuthPending(true);
+    } catch (e: any) {
+      setPixelfedAuthError(`Failed to start PixelFed authorization: ${String(e?.message || e)}`);
+    }
+  };
+
+  const completePixelfedOAuth = async () => {
+    try {
+      setPixelfedAuthError("");
+      const out = await window.sq.completePixelfedOAuth();
+      setPixelfedOAuthPending(false);
+      await refreshAll();
+      showToast(`PixelFed authorization complete${out?.username ? ` as @${out.username}` : "."}`);
+    } catch (e: any) {
+      setPixelfedAuthError(String(e?.message || e || "PixelFed OAuth error"));
+    }
+  };
+
+  const cancelPixelfedOAuth = async () => {
+    try {
+      await window.sq.cancelPixelfedOAuth();
+    } catch {
+      // ignore
+    }
+    setPixelfedOAuthPending(false);
+    setPixelfedAuthError("");
+  };
+
   const logoutPixelfed = async () => {
     await window.sq.pixelfedLogout();
+    setPixelfedOAuthPending(false);
     await refreshAll();
     showToast("PixelFed logged out.");
   };
@@ -2047,8 +2113,51 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     showToast(message);
   };
 
+  const clearThumbnailCache = async () => {
+    const confirmed = window.confirm("Permanently delete all cached thumbnails and preview images now?");
+    if (!confirmed) return;
+    const result = await window.sq.clearImageCache();
+    if (!result?.ok) {
+      showToast(`Failed to clear image cache${result?.error ? `: ${result.error}` : "."}`);
+      return;
+    }
+
+    // Invalidate renderer-side thumbnail URLs so queue view repopulates all thumbs.
+    setThumbs({});
+    thumbsRef.current = {};
+
+    showToast(`Cleared ${result.deletedFiles || 0} cached image file(s).`);
+  };
+
   const selectAll = () => setSelectedIds(queue.map(q => q.id));
   const clearSelection = () => setSelectedIds([]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const isSelectAll = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a";
+      if (!isSelectAll || displayTab !== "queue") return;
+
+      const target = e.target as HTMLElement | null;
+      if (target && (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable
+      )) {
+        return;
+      }
+
+      e.preventDefault();
+      if (!queue.length) return;
+      setSelectedIds(queue.map((q) => q.id));
+      if (!activeId) setActiveId(queue[0].id);
+      if (!anchorId) setAnchorId(queue[0].id);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [displayTab, queue, activeId, anchorId]);
+
   const manuallyScheduledCount = useMemo(
     () => queue.filter(it => it.status === "pending" && !!it.scheduledUploadAt).length,
     [queue]
@@ -3623,7 +3732,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       </div>
 
       {toast ? (
-        <div className="badge" style={{ borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <div className="badge" style={{ position: "fixed", top: 12, right: 12, zIndex: 200, borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
           <span
             style={{ cursor: toast.actionUrl ? "pointer" : "default" }}
             title={toast.actionUrl ? "Open release page" : undefined}
@@ -3845,6 +3954,21 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       </div>
                     </div>
                   </div>
+                  <div style={{ height: 12 }} />
+                  <label className="small">Add these tags to every post on Flickr:</label>
+                  <input
+                    className="input"
+                    value={flickrGlobalTags}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setFlickrGlobalTags(next);
+                      window.sq.setFlickrGlobalTags(next).catch(console.error);
+                    }}
+                    placeholder="tag1,tag2"
+                  />
+                  <div className="small" style={{ marginTop: 4 }}>
+                    Comma-separated. These are appended to each Flickr upload's tags.
+                  </div>
                 </>
               ) : setupServiceTab === "tumblr" ? (
                 <>
@@ -3990,6 +4114,42 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <span>Use Description as "Image description" text for visually impaired users on Tumblr</span>
                     </label>
                   </div>
+                  <div style={{ height: 12 }} />
+                  <label className="small">Prepend every Tumblr post with:</label>
+                  <input
+                    className="input"
+                    value={tumblrPrependText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setTumblrPrependText(next);
+                      window.sq.setTumblrPrependText(next).catch(console.error);
+                    }}
+                    placeholder="Optional text added above post body"
+                  />
+                  <div style={{ height: 8 }} />
+                  <label className="small">Add to the end of each post on Tumblr:</label>
+                  <input
+                    className="input"
+                    value={tumblrAppendText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setTumblrAppendText(next);
+                      window.sq.setTumblrAppendText(next).catch(console.error);
+                    }}
+                    placeholder="Optional text added below post body"
+                  />
+                  <div style={{ height: 8 }} />
+                  <label className="small">Add these tags to every post on Tumblr:</label>
+                  <input
+                    className="input"
+                    value={tumblrGlobalTags}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setTumblrGlobalTags(next);
+                      window.sq.setTumblrGlobalTags(next).catch(console.error);
+                    }}
+                    placeholder="tag1,tag2"
+                  />
                   <div className="small" style={{ marginTop: 6 }}>
                     Tumblr uploads require a selected blog. Friends/family privacy modes are Flickr-only.
                   </div>
@@ -4121,6 +4281,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <span>Use only Description for post text</span>
                     </label>
                   </div>
+                  <div style={{ height: 12 }} />
+                  <label className="small">Prepend every Bluesky post with:</label>
+                  <input
+                    className="input"
+                    value={blueskyPrependText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setBlueskyPrependText(next);
+                      window.sq.setBlueskyPrependText(next).catch(console.error);
+                    }}
+                    placeholder="Optional text added above post body"
+                  />
+                  <div style={{ height: 8 }} />
+                  <label className="small">Add to the end of each post on Bluesky:</label>
+                  <input
+                    className="input"
+                    value={blueskyAppendText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setBlueskyAppendText(next);
+                      window.sq.setBlueskyAppendText(next).catch(console.error);
+                    }}
+                    placeholder="Optional text added below post body"
+                  />
                   <div style={{ height: 10 }} />
                   <div className="small">Bluesky posts are limited to 300 characters</div>
                   <div className="small" style={{ marginTop: 2, marginBottom: 6 }}>How do you want to handle long posts?</div>
@@ -4170,40 +4354,35 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 </>
               ) : setupServiceTab === "pixelfed" ? (
                 <>
-                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>PixelFed API Access + Posting</div>
-                  <div className="small">PixelFed uses a personal access token. ShutterQueue stores PixelFed credentials encrypted locally.</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>PixelFed OAuth Authorization</div>
+                  <div className="small">ShutterQueue connects to PixelFed using OAuth 2.0. Your credentials are stored encrypted locally.</div>
                   {!((cfg as any)?.pixelfedAuthed) ? (
-                    <div className="card" style={{ marginTop: 12, backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
-                      <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>PixelFed Setup Help:</div>
-                      <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
-                        <li style={{ marginBottom: 6 }}>On your PixelFed instance, go to Account Settings -&gt; Applications -&gt; Create Application.</li>
-                        <li style={{ marginBottom: 6 }}>Set Name to <b>ShutterQueue</b>. No redirect URI is required.</li>
-                        <li style={{ marginBottom: 6 }}>In Scopes, select <b>read</b> and <b>write</b> only. You do not need follow, push, or admin scopes.</li>
-                        <li style={{ marginBottom: 6 }}>Create/save the application, then copy the access token shown.</li>
-                        <li style={{ marginBottom: 6 }}>Enter your PixelFed instance URL and access token below, then click Save.</li>
-                        <li style={{ marginBottom: 6 }}>Click Test PixelFed Authorization to verify credentials before uploading.</li>
-                        <li>When successful, you should see "Authorized as @your-handle".</li>
-                      </ol>
-                    </div>
-                  ) : null}
-                  <div style={{ height: 12 }} />
-                  <label className="small">PixelFed Instance URL</label>
-                  <input className="input" value={pixelfedInstanceUrl} onChange={(e) => { setPixelfedInstanceUrl(e.target.value); setPixelfedAuthError(""); }} placeholder="https://pixelfed.social" />
-                  <div style={{ height: 10 }} />
-                  <label className="small">PixelFed Access Token</label>
-                  <input className="input" value={pixelfedAccessToken} onChange={(e) => { setPixelfedAccessToken(e.target.value); setPixelfedAuthError(""); }} placeholder="Paste personal access token" type="password" />
-                  <div style={{ height: 12 }} />
-                  {((cfg as any)?.pixelfedAuthed) ? (
-                    <div className="row">
-                      <button className="btn" onClick={savePixelfedCredentials}>Save</button>
-                      <button className="btn" onClick={testPixelfedAuth}>Re-test Authorization</button>
-                      <button className="btn danger" onClick={logoutPixelfed}>Logout PixelFed</button>
-                    </div>
+                    !pixelfedOAuthPending ? (
+                      <>
+                        <div style={{ height: 12 }} />
+                        <label className="small">PixelFed Instance URL</label>
+                        <input className="input" value={pixelfedInstanceUrl} onChange={(e) => { setPixelfedInstanceUrl(e.target.value); setPixelfedAuthError(""); }} placeholder="https://pixelfed.social" />
+                        <div style={{ height: 12 }} />
+                        <button className="btn primary" onClick={startPixelfedOAuth} disabled={!pixelfedInstanceUrl}>Connect with PixelFed</button>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ height: 12 }} />
+                        <div className="small" style={{ color: "var(--accent)" }}>Authorization page opened in your browser. Approve access and return here, then click "Complete Authorization".</div>
+                        <div style={{ height: 12 }} />
+                        <div className="row">
+                          <button className="btn primary" onClick={completePixelfedOAuth}>Complete Authorization</button>
+                          <button className="btn" onClick={cancelPixelfedOAuth}>Cancel</button>
+                        </div>
+                      </>
+                    )
                   ) : (
-                    <div className="row">
-                      <button className="btn" onClick={savePixelfedCredentials}>Save</button>
-                      <button className="btn primary" onClick={testPixelfedAuth} disabled={!pixelfedInstanceUrl || (!pixelfedAccessToken && !(cfg as any)?.pixelfedHasAccessToken)}>Test PixelFed Authorization</button>
-                    </div>
+                    <>
+                      <div style={{ height: 12 }} />
+                      <div className="small">Instance: {String((cfg as any)?.pixelfedInstanceUrl || pixelfedInstanceUrl)}</div>
+                      <div style={{ height: 8 }} />
+                      <button className="btn danger" onClick={logoutPixelfed}>Logout PixelFed</button>
+                    </>
                   )}
                   {pixelfedAuthError ? (
                     <div className="small" style={{ marginTop: 8, color: "var(--bad)" }}>{pixelfedAuthError}</div>
@@ -4304,11 +4483,32 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <span>Use Description as "alt" descriptive text for visually impaired users on PixelFed</span>
                     </label>
                   </div>
+                  <div style={{ height: 12 }} />
+                  <label className="small">Prepend every PixelFed post with:</label>
+                  <input
+                    className="input"
+                    value={pixelfedPrependText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setPixelfedPrependText(next);
+                      window.sq.setPixelfedPrependText(next).catch(console.error);
+                    }}
+                    placeholder="Optional text added above post body"
+                  />
+                  <div style={{ height: 8 }} />
+                  <label className="small">Add to the end of each post on PixelFed:</label>
+                  <input
+                    className="input"
+                    value={pixelfedAppendText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setPixelfedAppendText(next);
+                      window.sq.setPixelfedAppendText(next).catch(console.error);
+                    }}
+                    placeholder="Optional text added below post body"
+                  />
                   <div className="small" style={{ marginTop: 6 }}>
                     PixelFed currently supports public/private visibility and accessibility alt text. Friends/family privacy and location tagging are not supported and will be adjusted/ignored when posting.
-                  </div>
-                  <div className="small" style={{ marginTop: 6 }}>
-                    Token scopes: select <b>read</b> and <b>write</b>. You do not need follow/push/admin scopes.
                   </div>
                 </>
               ) : (
@@ -4447,6 +4647,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <span>Use Description as "alt" descriptive text for visually impaired users on Mastodon</span>
                     </label>
                   </div>
+                  <div style={{ height: 12 }} />
+                  <label className="small">Prepend every Mastodon post with:</label>
+                  <input
+                    className="input"
+                    value={mastodonPrependText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setMastodonPrependText(next);
+                      window.sq.setMastodonPrependText(next).catch(console.error);
+                    }}
+                    placeholder="Optional text added above post body"
+                  />
+                  <div style={{ height: 8 }} />
+                  <label className="small">Add to the end of each post on Mastodon:</label>
+                  <input
+                    className="input"
+                    value={mastodonAppendText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setMastodonAppendText(next);
+                      window.sq.setMastodonAppendText(next).catch(console.error);
+                    }}
+                    placeholder="Optional text added below post body"
+                  />
                   <div className="small" style={{ marginTop: 6 }}>
                     Mastodon supports public/private visibility and accessibility alt text. Friends/family privacy and location tagging are not supported and will be adjusted/ignored when posting.
                   </div>
@@ -4461,6 +4685,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <div className="card">
             <h2>General App Settings</h2>
             <div className="content">
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={resumeOnLaunch} onChange={(e) => {
+                  const checked = e.target.checked;
+                  setResumeOnLaunch(checked);
+                  persistScheduler({ resumeOnLaunch: checked });
+                }} />
+                <span className="small">Automatically resume scheduler when app restarts</span>
+              </label>
+              <div style={{ height: 8 }} />
               <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <input type="checkbox" checked={verboseLogging} onChange={(e) => {
                   setVerboseLogging(e.target.checked);
@@ -4498,6 +4731,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 }} />
                 <span className="small">Add #ShutterQueue tag to all uploads</span>
               </label>
+              <div style={{ height: 8 }} />
+              <button className="btn" onClick={() => { void clearThumbnailCache(); }}>
+                Clear thumbnail and preview cache
+              </button>
               <div className="hr" />
               <div className="row">
                 <button className="btn" onClick={() => void performUpdateCheck(true, true)} disabled={updateCheckBusy}>
@@ -4521,6 +4758,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   {updateCheckStatus}
                 </div>
               )}
+              <div className="hr" />
               <div style={{ height: 8 }} />
               <button className="btn" onClick={async () => { await (window as any).api.openThirdPartyLicenses?.(); }}>
                 View Third-Party Licenses
@@ -4835,6 +5073,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           {(it.albumIds?.length || 0) > 0 ? <span className="badge">{it.albumIds.length} albums</span> : null}
                           {it.status === "failed" ? (
                             <span className="badge accent" title="Right-click and choose Retry Upload">Retry available</span>
+                          ) : null}
+                          {normalizeTargetServices(it.targetServices as UploadService[] | undefined).length === 0 ? (
+                            <span className="badge bad">no platform selected</span>
                           ) : null}
                           {servicesForBadgeDisplay((it.targetServices as string[] | undefined))
                             .filter((svc) => configuredServiceIds.includes(svc as UploadService))
@@ -5911,7 +6152,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
 
           <div className="card" style={{ gridColumn: "1 / -1" }}>
-            <h2>Groups With Pending Retries</h2>
+            <h2>Flickr Groups with Pending Retries</h2>
             <div className="content">
               {!pendingRetryGroups.length ? (
                 <div className="small">No groups currently have pending retries.</div>
@@ -6092,7 +6333,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official app for any included service.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.9.5"}</span>
+          <span className="mono">v{appVersion || "0.9.6"}</span>
         </div>
       </div>
 
@@ -6165,18 +6406,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             <div className="small" style={{ marginTop: 8 }}>
               Items in set: {saveSetDialog.ids.length}
             </div>
-                  <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-                    <input
-                      type="checkbox"
-                      checked={blueskyUseDescriptionAsAltText}
-                      onChange={(e) => {
-                        const next = e.target.checked;
-                        setBlueskyUseDescriptionAsAltText(next);
-                        window.sq.setBlueskyUseDescriptionAsAltText(next).catch(console.error);
-                      }}
-                    />
-                    <span>Use Description as "alt" descriptive text for visually impaired users on Bluesky</span>
-                  </label>
             <div className="btnrow" style={{ marginTop: 12 }}>
               <button className="btn" onClick={() => setSaveSetDialog(null)}>Cancel</button>
               <button className="btn primary" disabled={!saveSetNameInput.trim()} onClick={saveSetDialogSubmit}>Save</button>

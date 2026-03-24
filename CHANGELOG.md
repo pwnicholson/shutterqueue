@@ -2,7 +2,7 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
-## [0.9.5] - 2026-03-19
+## [0.9.6] - 2026-03-24
 
 ### Added
 - **New platform support since 0.9.3c: Tumblr, Bluesky, PixelFed, and Mastodon**

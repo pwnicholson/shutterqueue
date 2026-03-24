@@ -86,6 +86,23 @@ function getPhotoPathHash(photoPath) {
   return crypto.createHash("sha1").update(p).digest("hex").slice(0, 16);
 }
 
+function deleteScratchFilePermanently(filePath) {
+  const fp = String(filePath || "");
+  if (!fp) return false;
+  const allowed = isPathInside(THUMB_CACHE_DIR, fp) || isPathInside(PREVIEW_CACHE_DIR, fp);
+  if (!allowed) {
+    logEvent("WARN", "Blocked scratch delete outside cache dirs", { filePath: fp });
+    return false;
+  }
+  try {
+    // Use filesystem deletion directly so cache cleanup never uses OS trash/recycle flows.
+    fs.rmSync(fp, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const thumbBuildsInFlight = new Map();
 const previewBuildsInFlight = new Map();
 
@@ -100,8 +117,9 @@ function deleteCacheFilesForPathHash(pathHash) {
       for (const f of files) {
         if (!f.startsWith(`${pathHash}-`)) continue;
         try {
-          fs.unlinkSync(path.join(dir, f));
-          deleted++;
+          if (deleteScratchFilePermanently(path.join(dir, f))) {
+            deleted++;
+          }
         } catch {
           // ignore per-file errors
         }
@@ -137,6 +155,25 @@ function pruneImageCacheForRemovedItems(beforeQueue, afterQueue) {
   }
 }
 
+function clearAllImageCacheFiles() {
+  ensureImageCacheDirs();
+  let deletedFiles = 0;
+  for (const dir of [THUMB_CACHE_DIR, PREVIEW_CACHE_DIR]) {
+    try {
+      const files = fs.readdirSync(dir);
+      for (const f of files) {
+        const fullPath = path.join(dir, f);
+        if (deleteScratchFilePermanently(fullPath)) {
+          deletedFiles++;
+        }
+      }
+    } catch {
+      // Ignore per-dir errors and continue with best-effort cleanup.
+    }
+  }
+  return { deletedFiles };
+}
+
 async function getOrCreateThumbPath(photoPath) {
   const p = String(photoPath || "");
   if (!p) return null;
@@ -150,17 +187,7 @@ async function getOrCreateThumbPath(photoPath) {
   if (existing) return existing;
 
   const work = (async () => {
-    let image = null;
-    if (typeof nativeImage.createThumbnailFromPath === "function") {
-      try {
-        image = await nativeImage.createThumbnailFromPath(p, { width: 192, height: 192 });
-      } catch {
-        image = null;
-      }
-    }
-    if (!image || image.isEmpty()) {
-      image = nativeImage.createFromPath(p);
-    }
+    const image = nativeImage.createFromPath(p);
     if (!image || image.isEmpty()) return null;
     const { width, height } = image.getSize();
     const side = Math.max(1, Math.min(width, height));
@@ -365,6 +392,15 @@ const TUMBLR_OAUTH_LOOPBACK_PATH = "/tumblr/callback";
 const TUMBLR_OAUTH_LOOPBACK_URL = `http://${TUMBLR_OAUTH_LOOPBACK_CALLBACK_HOST}:${TUMBLR_OAUTH_LOOPBACK_PORT}${TUMBLR_OAUTH_LOOPBACK_PATH}`;
 const TUMBLR_OAUTH_LOOPBACK_MAX_MS = 10 * 60 * 1000;
 
+let pixelfedOAuthLoopbackServer = null;
+let pixelfedOAuthLoopbackCloseTimer = null;
+
+const PIXELFED_OAUTH_LOOPBACK_HOST = "127.0.0.1";
+const PIXELFED_OAUTH_LOOPBACK_PORT = 38946;
+const PIXELFED_OAUTH_LOOPBACK_PATH = "/pixelfed/callback";
+const PIXELFED_OAUTH_REDIRECT_URI = `http://${PIXELFED_OAUTH_LOOPBACK_HOST}:${PIXELFED_OAUTH_LOOPBACK_PORT}${PIXELFED_OAUTH_LOOPBACK_PATH}`;
+const PIXELFED_OAUTH_LOOPBACK_MAX_MS = 10 * 60 * 1000;
+
 function getAppIconPath() {
   // Full-color app icon used for window and package-level icon usage.
   return path.join(__dirname, "..", "assets", "icon.png");
@@ -483,12 +519,27 @@ const store = new Store({
     pixelfedUsername: "",
     pixelfedPostTextMode: "merge_title_description_tags",
     pixelfedUseDescriptionAsAltText: true,
+    pixelfedClientId: "",
+    pixelfedClientSecretEnc: "",
+    pixelfedHasClientSecret: false,
+    pixelfedOauthInstanceUrl: "",
+    pixelfedPendingCode: "",
     mastodonInstanceUrl: mastodon.DEFAULT_MASTODON_INSTANCE,
     mastodonAccessTokenEnc: "",
     mastodonHasAccessToken: false,
     mastodonUsername: "",
     mastodonPostTextMode: "merge_title_description_tags",
     mastodonUseDescriptionAsAltText: true,
+    blueskyPrependText: "",
+    blueskyAppendText: "",
+    mastodonPrependText: "",
+    mastodonAppendText: "",
+    pixelfedPrependText: "",
+    pixelfedAppendText: "",
+    tumblrPrependText: "",
+    tumblrAppendText: "",
+    tumblrGlobalTags: "",
+    flickrGlobalTags: "",
     intervalHours: 24,
     schedulerOn: false,
     nextRunAt: null,
@@ -504,9 +555,31 @@ const store = new Store({
     minimizeToTray: false,
     checkUpdatesOnLaunch: true,
     addShutterQueueTagToAllUploads: true,
-    updateCheckCache: null
+    updateCheckCache: null,
+    fileDialogLastDir: "",
+    queueJsonDialogDir: ""
   }
 });
+
+function getLastFileDialogDir() {
+  const stored = String(store.get("fileDialogLastDir") || store.get("queueJsonDialogDir") || "").trim();
+  if (stored && fs.existsSync(stored)) return stored;
+  return path.join(os.homedir(), "Downloads");
+}
+
+function rememberLastFileDialogDir(filePath) {
+  const fp = String(filePath || "").trim();
+  if (!fp) return;
+  try {
+    const dir = path.dirname(fp);
+    if (dir && fs.existsSync(dir)) {
+      store.set("fileDialogLastDir", dir);
+      store.set("queueJsonDialogDir", dir);
+    }
+  } catch {
+    // Ignore invalid path values.
+  }
+}
 
 function isFlickrAuthed() {
   return Boolean(store.get("apiKey")) && Boolean(store.get("hasApiSecret")) && Boolean(store.get("hasToken"));
@@ -643,6 +716,71 @@ function startTumblrOAuthLoopbackServer() {
   tumblrOAuthLoopbackCloseTimer = setTimeout(() => {
     stopTumblrOAuthLoopbackServer();
   }, TUMBLR_OAUTH_LOOPBACK_MAX_MS);
+}
+
+function stopPixelfedOAuthLoopbackServer() {
+  if (pixelfedOAuthLoopbackCloseTimer) {
+    clearTimeout(pixelfedOAuthLoopbackCloseTimer);
+    pixelfedOAuthLoopbackCloseTimer = null;
+  }
+  if (pixelfedOAuthLoopbackServer) {
+    try {
+      pixelfedOAuthLoopbackServer.close();
+    } catch {
+      // ignore close errors
+    }
+    pixelfedOAuthLoopbackServer = null;
+  }
+}
+
+function startPixelfedOAuthLoopbackServer() {
+  stopPixelfedOAuthLoopbackServer();
+  store.set("pixelfedPendingCode", "");
+
+  pixelfedOAuthLoopbackServer = http.createServer((req, res) => {
+    try {
+      const incomingUrl = new URL(String(req.url || "/"), `http://${PIXELFED_OAUTH_LOOPBACK_HOST}:${PIXELFED_OAUTH_LOOPBACK_PORT}`);
+      if (incomingUrl.pathname !== PIXELFED_OAUTH_LOOPBACK_PATH) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not found");
+        return;
+      }
+
+      const code = String(incomingUrl.searchParams.get("code") || "").trim();
+      if (code) {
+        store.set("pixelfedPendingCode", code);
+        logEvent("INFO", "Captured PixelFed OAuth code from loopback callback");
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(`<!doctype html><html><head><meta charset="utf-8"><title>ShutterQueue Authorization</title></head><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;background:#0f1115;color:#e8eef7;"><h2 style="margin:0 0 10px;">PixelFed authorization received</h2><p style="margin:0;color:#aeb8c8;">You can close this tab and return to ShutterQueue, then click "Complete Authorization".</p></body></html>`);
+        return;
+      }
+
+      const error = String(incomingUrl.searchParams.get("error") || "").trim();
+      const errorDesc = String(incomingUrl.searchParams.get("error_description") || "").trim();
+      res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><meta charset="utf-8"><title>ShutterQueue Authorization</title></head><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;background:#0f1115;color:#e8eef7;"><h2 style="margin:0 0 10px;">Authorization failed</h2><p style="margin:0;color:#aeb8c8;">${error ? `${error}: ${errorDesc}` : "No authorization code received."} Return to ShutterQueue.</p></body></html>`);
+    } catch (e) {
+      logEvent("WARN", "PixelFed OAuth loopback callback handling failed", { error: String(e?.message || e) });
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Internal error");
+    }
+  });
+
+  pixelfedOAuthLoopbackServer.on("error", (e) => {
+    logEvent("WARN", "PixelFed OAuth loopback server error", { error: String(e?.message || e) });
+  });
+
+  pixelfedOAuthLoopbackServer.listen(PIXELFED_OAUTH_LOOPBACK_PORT, PIXELFED_OAUTH_LOOPBACK_HOST, () => {
+    logEvent("INFO", "PixelFed OAuth loopback listener started", {
+      host: PIXELFED_OAUTH_LOOPBACK_HOST,
+      port: PIXELFED_OAUTH_LOOPBACK_PORT,
+      path: PIXELFED_OAUTH_LOOPBACK_PATH,
+    });
+  });
+
+  pixelfedOAuthLoopbackCloseTimer = setTimeout(() => {
+    stopPixelfedOAuthLoopbackServer();
+  }, PIXELFED_OAUTH_LOOPBACK_MAX_MS);
 }
 
 const GROUP_COUNTS_REFRESH_INTERVAL_MS = GROUP_COUNT_REFRESH_MAX_AGE_MS;
@@ -1678,6 +1816,16 @@ ipcMain.handle("cfg:get", async () => ({
   mastodonUsername: String(store.get("mastodonUsername") || ""),
   mastodonPostTextMode: String(store.get("mastodonPostTextMode") || "merge_title_description_tags"),
   mastodonUseDescriptionAsAltText: store.get("mastodonUseDescriptionAsAltText") !== false,
+  blueskyPrependText: String(store.get("blueskyPrependText") || ""),
+  blueskyAppendText: String(store.get("blueskyAppendText") || ""),
+  mastodonPrependText: String(store.get("mastodonPrependText") || ""),
+  mastodonAppendText: String(store.get("mastodonAppendText") || ""),
+  pixelfedPrependText: String(store.get("pixelfedPrependText") || ""),
+  pixelfedAppendText: String(store.get("pixelfedAppendText") || ""),
+  tumblrPrependText: String(store.get("tumblrPrependText") || ""),
+  tumblrAppendText: String(store.get("tumblrAppendText") || ""),
+  tumblrGlobalTags: String(store.get("tumblrGlobalTags") || ""),
+  flickrGlobalTags: String(store.get("flickrGlobalTags") || ""),
   authed: isAuthed(),
   username: store.get("username") || "",
   fullname: store.get("fullname") || "",
@@ -2138,6 +2286,17 @@ ipcMain.handle("image:getPreviewSrc", async (_e, { photoPath, maxEdge }) => {
   }
 });
 
+ipcMain.handle("cache:clearImageCache", async () => {
+  try {
+    const result = clearAllImageCacheFiles();
+    logEvent("INFO", "Cleared image cache files", result);
+    return { ok: true, ...result };
+  } catch (e) {
+    logEvent("ERROR", "Failed to clear image cache files", { error: String(e) });
+    return { ok: false, error: String(e) };
+  }
+});
+
 ipcMain.handle("queue:get", async () => queue.loadQueue());
 ipcMain.handle("queue:add", async (_e, { paths }) => {
   const list = Array.isArray(paths) ? paths : [];
@@ -2187,7 +2346,7 @@ ipcMain.handle("queue:exportToFile", async () => {
     const defaultFileName = `ShutterQueue Queue ${dateStr} ${timeStr}.json`;
 
     const result = await dialog.showSaveDialog(win, {
-      defaultPath: path.join(os.homedir(), "Downloads", defaultFileName),
+      defaultPath: path.join(getLastFileDialogDir(), defaultFileName),
       filters: [{ name: "JSON Files", extensions: ["json"] }],
     });
     if (result.canceled || !result.filePath) return { ok: false, canceled: true };
@@ -2200,6 +2359,7 @@ ipcMain.handle("queue:exportToFile", async () => {
       queue: q,
     };
     fs.writeFileSync(result.filePath, JSON.stringify(payload, null, 2), "utf-8");
+    rememberLastFileDialogDir(result.filePath);
     logEvent("INFO", "Exported queue to file", { filePath: result.filePath, itemCount: q.length });
     return { ok: true, filePath: result.filePath, itemCount: q.length };
   } catch (e) {
@@ -2211,12 +2371,14 @@ ipcMain.handle("queue:importFromFile", async (_e, { mode } = {}) => {
   try {
     const result = await dialog.showOpenDialog(win, {
       title: "Import queue backup",
+      defaultPath: getLastFileDialogDir(),
       properties: ["openFile"],
       filters: [{ name: "JSON Files", extensions: ["json"] }],
     });
     if (result.canceled || !result.filePaths?.[0]) return { ok: false, canceled: true };
 
     const filePath = result.filePaths[0];
+    rememberLastFileDialogDir(filePath);
     const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
     const { items, skipped } = queue.normalizeImportedQueue(raw);
     const before = queue.loadQueue();
@@ -2401,6 +2563,56 @@ ipcMain.handle("cfg:setMastodonUseDescriptionAsAltText", async (_e, { enabled })
   return { ok: true, mastodonUseDescriptionAsAltText: next };
 });
 
+ipcMain.handle("cfg:setBlueskyPrependText", async (_e, { text }) => {
+  store.set("blueskyPrependText", String(text || ""));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setBlueskyAppendText", async (_e, { text }) => {
+  store.set("blueskyAppendText", String(text || ""));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setMastodonPrependText", async (_e, { text }) => {
+  store.set("mastodonPrependText", String(text || ""));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setMastodonAppendText", async (_e, { text }) => {
+  store.set("mastodonAppendText", String(text || ""));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setPixelfedPrependText", async (_e, { text }) => {
+  store.set("pixelfedPrependText", String(text || ""));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setPixelfedAppendText", async (_e, { text }) => {
+  store.set("pixelfedAppendText", String(text || ""));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setTumblrPrependText", async (_e, { text }) => {
+  store.set("tumblrPrependText", String(text || ""));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setTumblrAppendText", async (_e, { text }) => {
+  store.set("tumblrAppendText", String(text || ""));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setTumblrGlobalTags", async (_e, { tags }) => {
+  store.set("tumblrGlobalTags", String(tags || ""));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setFlickrGlobalTags", async (_e, { tags }) => {
+  store.set("flickrGlobalTags", String(tags || ""));
+  return { ok: true };
+});
+
 ipcMain.handle("cfg:setAddShutterQueueTagToAllUploads", async (_e, { enabled }) => {
   const next = Boolean(enabled);
   store.set("addShutterQueueTagToAllUploads", next);
@@ -2427,13 +2639,14 @@ ipcMain.handle("log:save", async () => {
     const defaultFileName = `ShutterQueue Log ${dateStr} ${timeStr}.txt`;
     
     const result = await dialog.showSaveDialog(win, {
-      defaultPath: path.join(os.homedir(), "Downloads", defaultFileName),
+      defaultPath: path.join(getLastFileDialogDir(), defaultFileName),
       filters: [{ name: "Text Files", extensions: ["txt"] }]
     });
     
     if (!result.canceled && result.filePath) {
       const content = `ShutterQueue v${version}\n\n${lines}`;
       fs.writeFileSync(result.filePath, content, "utf-8");
+      rememberLastFileDialogDir(result.filePath);
       return { ok: true, filePath: result.filePath };
     }
     return { ok: false };
@@ -2448,9 +2661,13 @@ ipcMain.handle("log:save", async () => {
 ipcMain.handle("ui:pickPhotos", async () => {
   const res = await dialog.showOpenDialog(win, {
     title: "Add photos",
+    defaultPath: getLastFileDialogDir(),
     properties: ["openFile", "multiSelections"],
     filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "webp", "gif", "tif", "tiff", "heic"] }]
   });
+  if (!res.canceled && Array.isArray(res.filePaths) && res.filePaths[0]) {
+    rememberLastFileDialogDir(res.filePaths[0]);
+  }
   return res.canceled ? [] : (res.filePaths || []);
 });
 
@@ -2610,6 +2827,15 @@ function appendImplicitTagCsv(tagsCsv, implicitTag) {
   return withoutExisting.join(",");
 }
 
+function appendGlobalTagsCsv(tagsCsv, globalTagsCsv) {
+  const globals = String(globalTagsCsv || "").split(",").map((t) => t.trim()).filter(Boolean);
+  let result = String(tagsCsv || "");
+  for (const g of globals) {
+    result = appendImplicitTagCsv(result, g);
+  }
+  return result;
+}
+
 async function uploadNowOneInternal(options = {}) {
   const maxUploadAttempts = 2;
 
@@ -2669,9 +2895,12 @@ async function uploadNowOneInternal(options = {}) {
         try {
           let photoId = "";
           let lastUploadErr = null;
+          const flickrGlobalTags = String(store.get("flickrGlobalTags") || "");
           for (let attempt = 1; attempt <= maxUploadAttempts; attempt++) {
             try {
               let lastProgressBytes = 0;
+              let flickrItemTags = addShutterQueueTag ? appendImplicitTagCsv(next.tags, "ShutterQueue") : next.tags;
+              if (flickrGlobalTags) flickrItemTags = appendGlobalTagsCsv(flickrItemTags, flickrGlobalTags);
               photoId = await flickr.uploadPhoto({
                 apiKey: auth.apiKey,
                 apiSecret: auth.apiSecret,
@@ -2679,7 +2908,7 @@ async function uploadNowOneInternal(options = {}) {
                 tokenSecret: auth.tokenSecret,
                 item: {
                   ...next,
-                  tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "ShutterQueue") : next.tags,
+                  tags: flickrItemTags,
                 },
                 onProgress: (loaded, total) => {
                   const minThreshold = 512;
@@ -2834,10 +3063,15 @@ async function uploadNowOneInternal(options = {}) {
           try {
             const tumblrPostTextMode = String(store.get("tumblrPostTextMode") || "bold_title_then_description");
             const tumblrUseDescriptionAsImageDescription = store.get("tumblrUseDescriptionAsImageDescription") !== false;
+            const tumblrPrependText = String(store.get("tumblrPrependText") || "");
+            const tumblrAppendText = String(store.get("tumblrAppendText") || "");
+            const tumblrGlobalTags = String(store.get("tumblrGlobalTags") || "");
             const privacy = String(next.privacy || "private");
             if (privacy === "friends" || privacy === "family" || privacy === "friends_family") {
               warningParts.push(`Tumblr: visibility "${privacy}" is not supported and was not applied.`);
             }
+            let tumblrItemTags = addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags;
+            if (tumblrGlobalTags) tumblrItemTags = appendGlobalTagsCsv(tumblrItemTags, tumblrGlobalTags);
             const postId = await tumblr.createPhotoPost({
               consumerKey: tauth.consumerKey,
               consumerSecret: tauth.consumerSecret,
@@ -2846,11 +3080,13 @@ async function uploadNowOneInternal(options = {}) {
               blogIdentifier: blogId,
               item: {
                 ...next,
-                tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+                tags: tumblrItemTags,
               },
               markMature: Number(next.safetyLevel || 1) >= 2,
               postTextMode: tumblrPostTextMode,
               useDescriptionAsImageDescription: tumblrUseDescriptionAsImageDescription,
+              prependText: tumblrPrependText,
+              appendText: tumblrAppendText,
             });
             const uploadedAt = new Date().toISOString();
             next.serviceStates.tumblr = {
@@ -2885,6 +3121,8 @@ async function uploadNowOneInternal(options = {}) {
           const blueskyPostTextMode = String(store.get("blueskyPostTextMode") || "merge_title_description_tags");
           const blueskyLongPostMode = String(store.get("blueskyLongPostMode") || "truncate");
           const blueskyUseDescriptionAsAltText = store.get("blueskyUseDescriptionAsAltText") !== false;
+          const blueskyPrependText = String(store.get("blueskyPrependText") || "");
+          const blueskyAppendText = String(store.get("blueskyAppendText") || "");
           const post = await bluesky.createImagePost({
             accessJwt: bauth.accessJwt,
             did: bauth.did,
@@ -2897,6 +3135,8 @@ async function uploadNowOneInternal(options = {}) {
             longPostMode: blueskyLongPostMode,
             safetyLevel: next.safetyLevel,
             useDescriptionAsAltText: blueskyUseDescriptionAsAltText,
+            prependText: blueskyPrependText,
+            appendText: blueskyAppendText,
           });
           next.serviceStates.bluesky = {
             status: "done",
@@ -2918,6 +3158,8 @@ async function uploadNowOneInternal(options = {}) {
           const blueskyPostTextMode = String(store.get("blueskyPostTextMode") || "merge_title_description_tags");
           const blueskyLongPostMode = String(store.get("blueskyLongPostMode") || "truncate");
           const blueskyUseDescriptionAsAltText = store.get("blueskyUseDescriptionAsAltText") !== false;
+          const blueskyPrependText = String(store.get("blueskyPrependText") || "");
+          const blueskyAppendText = String(store.get("blueskyAppendText") || "");
           const post = await bluesky.createImagePost({
             accessJwt: bauth.accessJwt,
             did: bauth.did,
@@ -2930,6 +3172,8 @@ async function uploadNowOneInternal(options = {}) {
             longPostMode: blueskyLongPostMode,
             safetyLevel: next.safetyLevel,
             useDescriptionAsAltText: blueskyUseDescriptionAsAltText,
+            prependText: blueskyPrependText,
+            appendText: blueskyAppendText,
           });
           next.serviceStates.bluesky = {
             status: "done",
@@ -2962,6 +3206,8 @@ async function uploadNowOneInternal(options = {}) {
           if (mapped.warning) warningParts.push(`PixelFed: ${mapped.warning}`);
           const pixelfedPostTextMode = String(store.get("pixelfedPostTextMode") || "merge_title_description_tags");
           const pixelfedUseDescriptionAsAltText = store.get("pixelfedUseDescriptionAsAltText") !== false;
+          const pixelfedPrependText = String(store.get("pixelfedPrependText") || "");
+          const pixelfedAppendText = String(store.get("pixelfedAppendText") || "");
           const post = await pixelfed.createImagePost({
             instanceUrl: pauth.instanceUrl,
             accessToken: pauth.accessToken,
@@ -2973,6 +3219,8 @@ async function uploadNowOneInternal(options = {}) {
             useDescriptionAsAltText: pixelfedUseDescriptionAsAltText,
             visibility: mapped.visibility,
             sensitive: Number(next.safetyLevel || 1) >= 2,
+            prependText: pixelfedPrependText,
+            appendText: pixelfedAppendText,
           });
           next.serviceStates.pixelfed = {
             status: "done",
@@ -3004,6 +3252,8 @@ async function uploadNowOneInternal(options = {}) {
           if (mapped.warning) warningParts.push(`Mastodon: ${mapped.warning}`);
           const mastodonPostTextMode = String(store.get("mastodonPostTextMode") || "merge_title_description_tags");
           const mastodonUseDescriptionAsAltText = store.get("mastodonUseDescriptionAsAltText") !== false;
+          const mastodonPrependText = String(store.get("mastodonPrependText") || "");
+          const mastodonAppendText = String(store.get("mastodonAppendText") || "");
           const post = await mastodon.createImagePost({
             instanceUrl: mauth.instanceUrl,
             accessToken: mauth.accessToken,
@@ -3015,6 +3265,8 @@ async function uploadNowOneInternal(options = {}) {
             useDescriptionAsAltText: mastodonUseDescriptionAsAltText,
             visibility: mapped.visibility,
             sensitive: Number(next.safetyLevel || 1) >= 2,
+            prependText: mastodonPrependText,
+            appendText: mastodonAppendText,
           });
           next.serviceStates.mastodon = {
             status: "done",
@@ -3244,6 +3496,81 @@ ipcMain.handle("pixelfed:auth:logout", async () => {
   store.set("pixelfedAccessTokenEnc", "");
   store.set("pixelfedHasAccessToken", false);
   store.set("pixelfedUsername", "");
+  store.set("pixelfedPendingCode", "");
+  stopPixelfedOAuthLoopbackServer();
+  return { ok: true };
+});
+
+ipcMain.handle("pixelfed:oauth:start", async (_e, { instanceUrl }) => {
+  const normalizedUrl = pixelfed.normalizeInstanceUrl(instanceUrl);
+
+  // Re-register the app if the instance has changed or we have no client credentials.
+  const storedOauthInstanceUrl = String(store.get("pixelfedOauthInstanceUrl") || "");
+  const storedClientId = String(store.get("pixelfedClientId") || "");
+  const hasClientSecret = Boolean(store.get("pixelfedHasClientSecret"));
+
+  let clientId = storedClientId;
+
+  if (!storedClientId || !hasClientSecret || storedOauthInstanceUrl !== normalizedUrl) {
+    const { clientId: newClientId, clientSecret: newClientSecret } = await pixelfed.registerApp({
+      instanceUrl: normalizedUrl,
+      redirectUri: PIXELFED_OAUTH_REDIRECT_URI,
+    });
+    clientId = newClientId;
+    store.set("pixelfedClientId", clientId);
+    store.set("pixelfedClientSecretEnc", encryptCredential(newClientSecret));
+    store.set("pixelfedHasClientSecret", true);
+    store.set("pixelfedOauthInstanceUrl", normalizedUrl);
+    store.set("pixelfedInstanceUrl", normalizedUrl);
+  }
+
+  startPixelfedOAuthLoopbackServer();
+
+  const authUrl = pixelfed.buildAuthorizationUrl({
+    instanceUrl: normalizedUrl,
+    clientId,
+    redirectUri: PIXELFED_OAUTH_REDIRECT_URI,
+  });
+
+  await shell.openExternal(authUrl);
+  logEvent("INFO", "PixelFed OAuth flow started", { instanceUrl: normalizedUrl });
+  return { ok: true };
+});
+
+ipcMain.handle("pixelfed:oauth:complete", async () => {
+  const code = String(store.get("pixelfedPendingCode") || "").trim();
+  if (!code) throw new Error("No authorization code received yet. Please complete the authorization in your browser first, then click Complete Authorization.");
+
+  const instanceUrl = String(store.get("pixelfedOauthInstanceUrl") || store.get("pixelfedInstanceUrl") || "");
+  const clientId = String(store.get("pixelfedClientId") || "");
+  const clientSecret = decryptCredential(store.get("pixelfedClientSecretEnc") || "");
+
+  if (!instanceUrl || !clientId || !clientSecret) throw new Error("OAuth state is incomplete. Please restart the authorization flow.");
+
+  const { accessToken } = await pixelfed.exchangeCodeForToken({
+    instanceUrl,
+    clientId,
+    clientSecret,
+    code,
+    redirectUri: PIXELFED_OAUTH_REDIRECT_URI,
+  });
+
+  const acct = await pixelfed.verifyCredentials({ instanceUrl, accessToken });
+  const username = String(acct.acct || acct.username || "");
+
+  store.set("pixelfedAccessTokenEnc", encryptCredential(accessToken));
+  store.set("pixelfedHasAccessToken", true);
+  store.set("pixelfedUsername", username);
+  store.set("pixelfedPendingCode", "");
+  stopPixelfedOAuthLoopbackServer();
+
+  logEvent("INFO", "PixelFed OAuth completed", { username });
+  return { ok: true, username };
+});
+
+ipcMain.handle("pixelfed:oauth:cancel", async () => {
+  store.set("pixelfedPendingCode", "");
+  stopPixelfedOAuthLoopbackServer();
   return { ok: true };
 });
 

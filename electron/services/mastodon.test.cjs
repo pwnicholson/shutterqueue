@@ -21,6 +21,16 @@ test("Mastodon buildPostText appends hashtags on separate line", () => {
   assert.equal(text, "Title\nDescription\n#tagone #TagTwo");
 });
 
+test("Mastodon buildPostText includes prepend and append lines", () => {
+  const text = buildPostText({
+    item: { title: "Title", description: "Description", tags: "" },
+    postTextMode: "merge_title_description",
+    prependText: "Prefix",
+    appendText: "Suffix",
+  });
+  assert.equal(text, "Prefix\nTitle\nDescription\nSuffix");
+});
+
 test("Mastodon unsupported privacy maps to private with warning", () => {
   const out = mapPrivacyToVisibility("friends");
   assert.equal(out.visibility, "private");

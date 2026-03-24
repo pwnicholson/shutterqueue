@@ -183,36 +183,47 @@ function buildHashtagLine(tagsCsv) {
   return tags.map(toHashtag).filter(Boolean).join(" ");
 }
 
-function buildPostText({ item, postTextMode }) {
+function buildPostText({ item, postTextMode, prependText, appendText }) {
   const mode = String(postTextMode || "merge_title_description_tags");
   const title = String(item?.title || "").trim();
   const description = String(item?.description || "").trim();
   const hashtagLine = buildHashtagLine(item?.tags || "");
 
-  if (mode === "title_only") return title;
-  if (mode === "description_only") return description;
-
-  const lines = [];
-  if (mode === "merge_title_description_tags") {
-    if (title) lines.push(title);
-    if (description) lines.push(description);
-    if (hashtagLine) lines.push(hashtagLine);
-  } else if (mode === "merge_title_description") {
-    if (title) lines.push(title);
-    if (description) lines.push(description);
-  } else if (mode === "merge_title_tags") {
-    if (title) lines.push(title);
-    if (hashtagLine) lines.push(hashtagLine);
-  } else if (mode === "merge_description_tags") {
-    if (description) lines.push(description);
-    if (hashtagLine) lines.push(hashtagLine);
+  let coreText;
+  if (mode === "title_only") {
+    coreText = title;
+  } else if (mode === "description_only") {
+    coreText = description;
   } else {
-    if (title) lines.push(title);
-    if (description) lines.push(description);
-    if (hashtagLine) lines.push(hashtagLine);
+    const lines = [];
+    if (mode === "merge_title_description_tags") {
+      if (title) lines.push(title);
+      if (description) lines.push(description);
+      if (hashtagLine) lines.push(hashtagLine);
+    } else if (mode === "merge_title_description") {
+      if (title) lines.push(title);
+      if (description) lines.push(description);
+    } else if (mode === "merge_title_tags") {
+      if (title) lines.push(title);
+      if (hashtagLine) lines.push(hashtagLine);
+    } else if (mode === "merge_description_tags") {
+      if (description) lines.push(description);
+      if (hashtagLine) lines.push(hashtagLine);
+    } else {
+      if (title) lines.push(title);
+      if (description) lines.push(description);
+      if (hashtagLine) lines.push(hashtagLine);
+    }
+    coreText = lines.join("\n").trim();
   }
 
-  return lines.join("\n").trim();
+  const pre = String(prependText || "").trim();
+  const app = String(appendText || "").trim();
+  const parts = [];
+  if (pre) parts.push(pre);
+  if (coreText) parts.push(coreText);
+  if (app) parts.push(app);
+  return parts.join("\n");
 }
 
 function mapPrivacyToVisibility(privacy) {
@@ -261,7 +272,7 @@ async function uploadMedia({ instanceUrl, accessToken, photoPath, description })
   return mediaId;
 }
 
-async function createImagePost({ instanceUrl, accessToken, item, postTextMode, useDescriptionAsAltText, visibility, sensitive }) {
+async function createImagePost({ instanceUrl, accessToken, item, postTextMode, useDescriptionAsAltText, visibility, sensitive, prependText, appendText }) {
   const alt = useDescriptionAsAltText ? String(item?.description || "").trim() : "";
   const mediaId = await uploadMedia({
     instanceUrl,
@@ -270,7 +281,7 @@ async function createImagePost({ instanceUrl, accessToken, item, postTextMode, u
     description: alt,
   });
 
-  const status = buildPostText({ item, postTextMode }) || "Photo";
+  const status = buildPostText({ item, postTextMode, prependText, appendText }) || "Photo";
   const out = await requestFormUrlEncoded({
     instanceUrl,
     pathName: "/api/v1/statuses",

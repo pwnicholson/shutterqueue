@@ -241,21 +241,34 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function buildCaption({ title, description, postTextMode }) {
+function buildCaption({ title, description, postTextMode, prependText, appendText }) {
   const cleanTitle = String(title || "").trim();
   const cleanDescription = String(description || "").trim();
   const mode = String(postTextMode || "bold_title_then_description");
 
-  if (mode === "title_only") return cleanTitle;
-  if (mode === "description_only") return cleanDescription;
-  if (mode === "title_then_description") {
-    return [cleanTitle, cleanDescription].filter(Boolean).join("\n");
+  let coreCaption;
+  if (mode === "title_only") {
+    coreCaption = cleanTitle;
+  } else if (mode === "description_only") {
+    coreCaption = cleanDescription;
+  } else if (mode === "title_then_description") {
+    coreCaption = [cleanTitle, cleanDescription].filter(Boolean).join("\n");
+  } else {
+    if (!cleanTitle) {
+      coreCaption = cleanDescription;
+    } else {
+      const boldTitle = `<b>${escapeHtml(cleanTitle)}</b>`;
+      coreCaption = cleanDescription ? `${boldTitle}\n${cleanDescription}` : boldTitle;
+    }
   }
 
-  if (!cleanTitle) return cleanDescription;
-  const boldTitle = `<b>${escapeHtml(cleanTitle)}</b>`;
-  if (!cleanDescription) return boldTitle;
-  return `${boldTitle}\n${cleanDescription}`;
+  const pre = String(prependText || "").trim();
+  const app = String(appendText || "").trim();
+  const parts = [];
+  if (pre) parts.push(pre);
+  if (coreCaption) parts.push(coreCaption);
+  if (app) parts.push(app);
+  return parts.join("\n");
 }
 
 async function createPhotoPost({
@@ -268,6 +281,8 @@ async function createPhotoPost({
   markMature,
   postTextMode,
   useDescriptionAsImageDescription,
+  prependText,
+  appendText,
 }) {
   const oauth = makeOAuth(consumerKey, consumerSecret);
   const cleanBlog = String(blogIdentifier || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
@@ -279,7 +294,7 @@ async function createPhotoPost({
   const description = String(item?.description || "");
   const imageDescription = String(item?.description || "").trim();
   const title = String(item?.title || "");
-  const caption = buildCaption({ title, description, postTextMode });
+  const caption = buildCaption({ title, description, postTextMode, prependText, appendText });
   const tags = normalizeTagsCsv(item?.tags || "");
   const privacy = String(item?.privacy || "private");
   const isPrivate = privacy === "private";
@@ -345,4 +360,8 @@ module.exports = {
   getUserInfo,
   listBlogs,
   createPhotoPost,
+  __test__: {
+    buildCaption,
+    normalizeTagsCsv,
+  },
 };

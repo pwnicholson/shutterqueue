@@ -14,6 +14,17 @@ test("buildPostText merges title + description with newline", () => {
   assert.equal(text, "Title line\nDescription line");
 });
 
+test("buildPostText includes prepend and append lines when provided", () => {
+  const text = buildPostText({
+    item: { title: "Title line", description: "Description line", tags: "" },
+    postTextMode: "merge_title_description",
+    prependText: "Prefix",
+    appendText: "Suffix",
+  });
+
+  assert.equal(text, "Prefix\nTitle line\nDescription line\nSuffix");
+});
+
 test("truncateTextWholeWords preserves newline between title and description", () => {
   const source = "Title line\nDescription line";
   const out = truncateTextWholeWords(source, 300);
