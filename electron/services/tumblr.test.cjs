@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 
 const tumblr = require("./tumblr.cjs");
 
-const { buildCaption, normalizeTagsCsv } = tumblr.__test__;
+const { buildCaption, normalizeTagsCsv, resolveTumblrPostState } = tumblr.__test__;
 
 test("Tumblr buildCaption merges bold title and description", () => {
   const caption = buildCaption({
@@ -30,4 +30,14 @@ test("Tumblr buildCaption includes prepend and append lines", () => {
 test("Tumblr normalizeTagsCsv trims and removes blanks", () => {
   const tags = normalizeTagsCsv(" one, , two ,three ");
   assert.equal(tags, "one,two,three");
+});
+
+test("Tumblr resolveTumblrPostState maps setup timing mode for non-private posts", () => {
+  assert.equal(resolveTumblrPostState({ privacy: "public", postTimingMode: "publish_now" }), "published");
+  assert.equal(resolveTumblrPostState({ privacy: "public", postTimingMode: "add_to_queue" }), "queue");
+});
+
+test("Tumblr resolveTumblrPostState keeps private visibility as private", () => {
+  assert.equal(resolveTumblrPostState({ privacy: "private", postTimingMode: "publish_now" }), "private");
+  assert.equal(resolveTumblrPostState({ privacy: "private", postTimingMode: "add_to_queue" }), "private");
 });

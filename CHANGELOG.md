@@ -2,6 +2,38 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
+## [0.9.6a] - 2026-03-24
+
+### Added
+- **Tumblr post timing preference in Setup**
+  - Added a Setup option to publish immediately or send uploads to the selected Tumblr blog queue
+- **Queue reorder shortcuts in item context menu**
+  - Added `Move to Top` and `Move to Bottom` actions to the queue item context menu
+- **Dev-only runtime session badge**
+  - Added a small `DEV HH:MM:SS` footer badge when running via `npm run dev`
+
+### Changed
+- **Local development version rev and metadata alignment**
+  - Bumped local app version to `0.9.6a` in package/build metadata and UI fallback version display
+- **Queue reorder UX feedback**
+  - Queue drag targets now show a clearer insertion line and a count badge during multi-item moves
+
+### Fixed
+- **Major bug fix: queue reordering now applies reliably and stays visually in sync**
+  - Fixed queue drag-and-drop so moves now apply reliably and the visible order stays in sync with the real queue order
+  - Manual reordering, sorting, shuffle, and schedule-driven moves now stay visually consistent
+- **Queue drag/drop visual reliability**
+  - Fixed drag indicators so the multi-item count badge stays visible during reordering
+- **Update-available notice stale-cache behavior after app upgrade**
+  - Fixed stale cached update notices after upgrading so the app reports the correct current version
+- **Loose semver comparison for local letter-suffix versions**
+  - Added support for local version strings like `0.9.6a` in update checks
+
+### Tests
+- Added update-check regression tests covering:
+  - stale cached update notices after version change
+  - local letter-suffix version comparisons (for example `0.9.6a`)
+
 ## [0.9.6] - 2026-03-24
 
 ### Added

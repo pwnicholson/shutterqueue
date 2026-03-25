@@ -8,6 +8,7 @@ type DuplicateGroup = { hash: string; members: DuplicateMember[]; removeCandidat
 type LogFilterMode = "all" | "activity" | "warn_error" | "api";
 type AlbumEditorEntry = Album & { isPendingNew?: boolean; pendingTitle?: string; state?: "all" | "some" | "none" };
 type TumblrPostTextMode = "bold_title_then_description" | "title_then_description" | "title_only" | "description_only";
+type TumblrPostTimingMode = "publish_now" | "add_to_queue";
 type BlueskyPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
 type BlueskyLongPostMode = "truncate" | "thread";
 type PixelFedPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
@@ -476,6 +477,7 @@ export default function App() {
   const [tumblrBlogs, setTumblrBlogs] = useState<Array<{ id: string; name: string; title: string; url: string; primary?: boolean }>>([]);
   const [tumblrPrimaryBlogId, setTumblrPrimaryBlogId] = useState("");
   const [tumblrPostTextMode, setTumblrPostTextMode] = useState<TumblrPostTextMode>("bold_title_then_description");
+  const [tumblrPostTimingMode, setTumblrPostTimingMode] = useState<TumblrPostTimingMode>("publish_now");
   const [tumblrUseDescriptionAsImageDescription, setTumblrUseDescriptionAsImageDescription] = useState(true);
   const [blueskyIdentifier, setBlueskyIdentifier] = useState("");
   const [blueskyAppPassword, setBlueskyAppPassword] = useState("");
@@ -661,6 +663,11 @@ const matchesLogFilter = (line: string, mode: LogFilterMode) => {
 
   const [appVersion, setAppVersion] = useState<string>("");
   const [isUploadingNow, setIsUploadingNow] = useState(false);
+  const isDevRuntime = Boolean(import.meta.env.DEV);
+  const devSessionStamp = useMemo(
+    () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }),
+    []
+  );
 
     const [showSetup, setShowSetup] = useState(true);
 const [queue, setQueue] = useState<QueueItem[]>([]);
@@ -1282,6 +1289,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         ? rawTumblrMode
         : "bold_title_then_description";
     setTumblrPostTextMode(tumblrMode);
+    const rawTumblrTimingMode = String((c as any).tumblrPostTimingMode || "publish_now");
+    setTumblrPostTimingMode(rawTumblrTimingMode === "add_to_queue" ? "add_to_queue" : "publish_now");
     const rawBlueskyMode = String((c as any).blueskyPostTextMode || "merge_title_description_tags");
     const blueskyMode: BlueskyPostTextMode =
       rawBlueskyMode === "merge_title_description" || rawBlueskyMode === "merge_title_tags" || rawBlueskyMode === "merge_description_tags" || rawBlueskyMode === "title_only" || rawBlueskyMode === "description_only"
@@ -2267,7 +2276,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
     setQueue(reorderedQueue);
     await window.sq.queueUpdate(changed);
-    await window.sq.queueReorder(reorderedQueue.map(it => it.id));
+    await syncQueueOrder(reorderedQueue.map(it => it.id));
     
     setScheduleDialogOpen(false);
     showToast(`Scheduled ${changed.length} item(s) for ${formatLocal(iso)}.`);
@@ -2456,6 +2465,32 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     }
   };
 
+  const moveContextMenuItems = async (position: "top" | "bottom") => {
+    const idsToMove = selectedIds.length > 0 ? selectedIds : (contextMenu ? [contextMenu.itemId] : []);
+    setContextMenu(null);
+    if (!idsToMove.length) return;
+
+    const movingSet = new Set(idsToMove);
+    const movingItems = queue.filter((it) => movingSet.has(it.id));
+    if (!movingItems.length) return;
+
+    const remaining = queue.filter((it) => !movingSet.has(it.id));
+    const nextQueue = position === "top"
+      ? [...movingItems, ...remaining]
+      : [...remaining, ...movingItems];
+
+    const isSameOrder = nextQueue.length === queue.length && nextQueue.every((it, idx) => it.id === queue[idx]?.id);
+    if (isSameOrder) return;
+
+    setQueue(nextQueue);
+    await syncQueueOrder(nextQueue.map((it) => it.id));
+    showToast(
+      position === "top"
+        ? `Moved ${movingItems.length} item(s) to top.`
+        : `Moved ${movingItems.length} item(s) to bottom.`
+    );
+  };
+
   const removeSelected = async () => {
     const ids = selectedIds.length ? selectedIds : (activeId ? [activeId] : []);
     if (!ids.length) return;
@@ -2538,7 +2573,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       });
 
       setQueue(result);
-      await window.sq.queueReorder(result.map(it => it.id));
+      await syncQueueOrder(result.map(it => it.id));
       const direction = reverse ? "Z to A" : "A to Z";
       showToast(`Sorted selected items by filename (${direction}).`);
     } else {
@@ -2550,7 +2585,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       });
 
       setQueue(sorted);
-      await window.sq.queueReorder(sorted.map(it => it.id));
+      await syncQueueOrder(sorted.map(it => it.id));
       const direction = reverse ? "Z to A" : "A to Z";
       showToast(`Sorted queue by filename (${direction}).`);
     }
@@ -2582,7 +2617,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       });
 
       setQueue(result);
-      await window.sq.queueReorder(result.map(it => it.id));
+      await syncQueueOrder(result.map(it => it.id));
       const direction = reverse ? "Z to A" : "A to Z";
       showToast(`Sorted selected items by title (${direction}).`);
     } else {
@@ -2594,7 +2629,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       });
 
       setQueue(sorted);
-      await window.sq.queueReorder(sorted.map(it => it.id));
+      await syncQueueOrder(sorted.map(it => it.id));
       const direction = reverse ? "Z to A" : "A to Z";
       showToast(`Sorted queue by title (${direction}).`);
     }
@@ -2635,13 +2670,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       });
 
       setQueue(result);
-      await window.sq.queueReorder(result.map(it => it.id));
+      await syncQueueOrder(result.map(it => it.id));
       const direction = reverse ? "Newest to oldest" : "Oldest to newest";
       showToast(`Sorted selected items by date taken (${direction}).`);
     } else {
       const sorted = applySortToQueueItems(queue, compareByDateTaken);
       setQueue(sorted);
-      await window.sq.queueReorder(sorted.map(it => it.id));
+      await syncQueueOrder(sorted.map(it => it.id));
       const direction = reverse ? "Newest to oldest" : "Oldest to newest";
       showToast(`Sorted queue by date taken (${direction}).`);
     }
@@ -2672,13 +2707,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       // Shuffle entire queue
       const shuffled = shuffleQueueItems(queue);
       setQueue(shuffled);
-      await window.sq.queueReorder(shuffled.map(it => it.id));
+      await syncQueueOrder(shuffled.map(it => it.id));
       showToast("Shuffled queue.");
       return;
     }
 
     setQueue(result);
-    await window.sq.queueReorder(result.map(it => it.id));
+    await syncQueueOrder(result.map(it => it.id));
     showToast("Shuffled selected items.");
   };
 
@@ -2915,25 +2950,70 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const [dragOver, setDragOver] = useState<{ id: string; pos: "top" | "bottom" } | null>(null);
   const [pendingRetryDragOver, setPendingRetryDragOver] = useState<{ id: string; pos: "top" | "bottom" } | null>(null);
+  const [queueDragCount, setQueueDragCount] = useState(0);
+  const queueDragIdsRef = useRef<string[]>([]);
+  const queueDragPrimaryIdRef = useRef<string>("");
+  const queueDropHandledRef = useRef(false);
+  const queueLastDragOverRef = useRef<{ id: string; pos: "top" | "bottom" } | null>(null);
 
-  const onDropReorder = async (fromId: string, toId: string, pos: "top" | "bottom") => {
-    const from = queue.findIndex(x => x.id === fromId);
-    const to = queue.findIndex(x => x.id === toId);
-    if (from < 0 || to < 0 || from === to) return;
+  const syncQueueOrder = async (idsInOrder: string[]) => {
+    const canonical = await window.sq.queueReorder(idsInOrder);
+    if (Array.isArray(canonical)) setQueue(canonical);
+    return canonical;
+  };
 
-    const copy = [...queue];
-    const [it] = copy.splice(from, 1);
-
-    let insertAt = to;
-    if (from < to) insertAt -= 1;
-    if (pos === "bottom") insertAt += 1;
-
-    insertAt = Math.max(0, Math.min(copy.length, insertAt));
-    copy.splice(insertAt, 0, it);
-
-    setQueue(copy);
+  const clearQueueDragState = () => {
     setDragOver(null);
-    await window.sq.queueReorder(copy.map(x => x.id));
+    setQueueDragCount(0);
+    queueDragIdsRef.current = [];
+    queueDragPrimaryIdRef.current = "";
+    queueDropHandledRef.current = false;
+    queueLastDragOverRef.current = null;
+  };
+
+  const onDropReorder = async (fromId: string, toId: string, pos: "top" | "bottom", sourceIdsOverride?: string[]) => {
+    const sourceIds = Array.isArray(sourceIdsOverride) && sourceIdsOverride.length
+      ? sourceIdsOverride
+      : (selectedIds.length > 1 && selectedIds.includes(fromId))
+        ? selectedIds.filter((id) => queue.some((item) => item.id === id))
+        : [fromId];
+    if (!sourceIds.length) {
+      clearQueueDragState();
+      return;
+    }
+
+    const movingSet = new Set(sourceIds);
+    if (movingSet.has(toId)) {
+      clearQueueDragState();
+      return;
+    }
+
+    const movingItems = queue.filter((item) => movingSet.has(item.id));
+    const remaining = queue.filter((item) => !movingSet.has(item.id));
+    const targetIdx = remaining.findIndex((item) => item.id === toId);
+    if (targetIdx < 0) {
+      clearQueueDragState();
+      return;
+    }
+
+    let insertAt = targetIdx + (pos === "bottom" ? 1 : 0);
+    insertAt = Math.max(0, Math.min(remaining.length, insertAt));
+
+    const nextQueue = [
+      ...remaining.slice(0, insertAt),
+      ...movingItems,
+      ...remaining.slice(insertAt),
+    ];
+
+    const isSameOrder = nextQueue.length === queue.length && nextQueue.every((item, idx) => item.id === queue[idx]?.id);
+    if (isSameOrder) {
+      clearQueueDragState();
+      return;
+    }
+
+    setQueue(nextQueue);
+    clearQueueDragState();
+    await syncQueueOrder(nextQueue.map(x => x.id));
   };
 
   const onDropPendingRetryReorder = async (fromId: string, toId: string, pos: "top" | "bottom") => {
@@ -4047,6 +4127,36 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     ))}
                   </select>
                   <div style={{ height: 12 }} />
+                  <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>Tumblr post timing</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="tumblr-post-timing-mode"
+                        checked={tumblrPostTimingMode === "publish_now"}
+                        onChange={() => {
+                          const next: TumblrPostTimingMode = "publish_now";
+                          setTumblrPostTimingMode(next);
+                          window.sq.setTumblrPostTimingMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Publish immediately</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="radio"
+                        name="tumblr-post-timing-mode"
+                        checked={tumblrPostTimingMode === "add_to_queue"}
+                        onChange={() => {
+                          const next: TumblrPostTimingMode = "add_to_queue";
+                          setTumblrPostTimingMode(next);
+                          window.sq.setTumblrPostTimingMode(next).catch(console.error);
+                        }}
+                      />
+                      <span>Add to Tumblr queue for selected blog</span>
+                    </label>
+                  </div>
+                  <div style={{ height: 12 }} />
                   <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>When posting to Tumblr...</div>
                   <div style={{ display: "grid", gap: 6 }}>
                     <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -5003,10 +5113,25 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     dragOver?.id === it.id
                       ? (dragOver.pos === "top" ? "drag-over-top" : "drag-over-bottom")
                       : "";
+                  const showDropCount = dragOver?.id === it.id && queueDragCount > 1;
                   return (
                     <div
                       key={it.id}
                       className={`qitem ${isSelected ? "selected" : ""} ${dragClass}`}
+                      onDragStartCapture={(e) => {
+                        const t = e.target as HTMLElement;
+                        if (!t.closest(".drag")) return;
+                        queueDropHandledRef.current = false;
+                        queueLastDragOverRef.current = null;
+                        const sourceIds = selectedIds.length > 1 && selectedIds.includes(it.id)
+                          ? queue.filter((item) => selectedIds.includes(item.id)).map((item) => item.id)
+                          : [it.id];
+                        queueDragIdsRef.current = sourceIds;
+                        queueDragPrimaryIdRef.current = it.id;
+                        setQueueDragCount(Math.max(1, sourceIds.length));
+                        e.dataTransfer.setData("text/plain", it.id);
+                        e.dataTransfer.effectAllowed = "move";
+                      }}
                       onMouseDown={(e) => {
                         const t = e.target as HTMLElement;
                         if (t.closest("button, input, textarea, select, .drag")) return;
@@ -5026,14 +5151,22 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         e.preventDefault();
                         const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
                         const pos = (e.clientY - rect.top) < rect.height / 2 ? "top" : "bottom";
-                        setDragOver({ id: it.id, pos });
+                        const next = { id: it.id, pos } as const;
+                        queueLastDragOverRef.current = next;
+                        setDragOver(next);
                       }}
                       onDragLeave={() => setDragOver(null)}
                       onDrop={(e) => {
                         e.preventDefault();
-                        const fromId = e.dataTransfer.getData("text/plain");
-                        const pos = dragOver?.id === it.id ? dragOver.pos : "top";
-                        onDropReorder(fromId, it.id, pos);
+                        queueDropHandledRef.current = true;
+                        const fromId = e.dataTransfer.getData("text/plain") || queueDragPrimaryIdRef.current;
+                        const sourceIds = queueDragIdsRef.current.length
+                          ? queueDragIdsRef.current
+                          : (fromId ? [fromId] : []);
+                        if (!fromId || !sourceIds.length) return;
+                        const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+                        const pos = (e.clientY - rect.top) < rect.height / 2 ? "top" : "bottom";
+                        onDropReorder(fromId, it.id, pos, sourceIds);
                       }}
                       onContextMenu={(e) => handleContextMenu(e, it.id)}
                       onMouseUp={(e) => {
@@ -5043,6 +5176,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         }
                       }}
                     >
+                      {showDropCount && (
+                        <span
+                          className={`drop-count-badge ${dragOver?.pos === "bottom" ? "bottom" : "top"}`}
+                          aria-label={`${queueDragCount} items`}
+                          title={`${queueDragCount} items`}
+                        >
+                          {queueDragCount}
+                        </span>
+                      )}
                       <img
                         className={`thumb ${thumb ? "" : "empty"}`}
                         src={thumb || ""}
@@ -5125,11 +5267,19 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         </button>
                         <span
                           className="drag"
-                          onClick={() => { void dismissMessagesEverywhere([msg]); }}
+                          draggable
                           title="Drag to reorder"
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData("text/plain", it.id);
-                            e.dataTransfer.effectAllowed = "move";
+                          onDragEnd={() => {
+                            if (!queueDropHandledRef.current) {
+                              const fromId = queueDragPrimaryIdRef.current;
+                              const sourceIds = queueDragIdsRef.current.length ? queueDragIdsRef.current : (fromId ? [fromId] : []);
+                              const fallbackTarget = queueLastDragOverRef.current;
+                              if (fromId && sourceIds.length && fallbackTarget) {
+                                void onDropReorder(fromId, fallbackTarget.id, fallbackTarget.pos, sourceIds);
+                                return;
+                              }
+                            }
+                            clearQueueDragState();
                           }}
                         >
                           ↕
@@ -5232,6 +5382,31 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           </div>
                         </>
                       )}
+                      <div
+                        className="context-menu-item"
+                        onClick={() => { void moveContextMenuItems("top"); }}
+                        style={{
+                          padding: "8px 12px",
+                          cursor: "pointer",
+                          borderTop: (hasPending || hasFailed) ? "1px solid var(--border)" : "none",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        Move to Top
+                      </div>
+                      <div
+                        className="context-menu-item"
+                        onClick={() => { void moveContextMenuItems("bottom"); }}
+                        style={{
+                          padding: "8px 12px",
+                          cursor: "pointer",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        Move to Bottom
+                      </div>
                     </>
                   );
                 })()}
@@ -6333,7 +6508,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <span>By Paul Nicholson. Not an official app for any included service.</span>
         </div>
         <div className="footer-right">
-          <span className="mono">v{appVersion || "0.9.6"}</span>
+          {isDevRuntime && <span className="dev-runtime-badge">DEV {devSessionStamp}</span>}
+          <span className="mono">v{appVersion || "0.9.6a"}</span>
         </div>
       </div>
 

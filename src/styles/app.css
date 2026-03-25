@@ -287,8 +287,6 @@ body{
   padding:10px 12px;
   background: rgba(255,255,255,0.02);
   user-select:none;
-  content-visibility:auto;
-  contain-intrinsic-size: 88px;
 }
 .qitem.selected { border-color: rgba(139,211,255,0.55); box-shadow: 0 0 0 2px rgba(139,211,255,0.18) inset; }
 
@@ -320,7 +318,7 @@ body{
 .footer{margin-top:16px; opacity:0.8}
 
 /* Drag insertion indicator */
-.qitem.drag-over-top { position: relative; }
+.qitem.drag-over-top { position: relative; z-index: 6; }
 .qitem.drag-over-top::before {
   content: "";
   position: absolute;
@@ -329,8 +327,9 @@ body{
   height: 3px;
   border-radius: 999px;
   background: rgba(139,211,255,0.75);
+  z-index: 6;
 }
-.qitem.drag-over-bottom { position: relative; }
+.qitem.drag-over-bottom { position: relative; z-index: 6; }
 .qitem.drag-over-bottom::after {
   content: "";
   position: absolute;
@@ -339,6 +338,33 @@ body{
   height: 3px;
   border-radius: 999px;
   background: rgba(139,211,255,0.75);
+  z-index: 6;
+}
+
+.drop-count-badge {
+  position: absolute;
+  right: 12px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(139,211,255,0.55);
+  background: rgba(12, 15, 28, 0.95);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
+  z-index: 8;
+}
+
+.drop-count-badge.top {
+  top: 6px;
+}
+
+.drop-count-badge.bottom {
+  bottom: 6px;
 }
 
 .listrow.drag-over-top { position: relative; }
@@ -406,6 +432,17 @@ body{
 }
 .footer-left, .footer-right { display:flex; align-items:center; gap:8px; }
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace}
+.dev-runtime-badge{
+  font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(46,229,157,0.45);
+  color: #7ff0c2;
+  background: rgba(46,229,157,0.12);
+}
 
 /* Make room so content doesn't sit under footer */
 .app{ padding-bottom: 52px; }

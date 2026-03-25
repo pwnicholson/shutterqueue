@@ -83,6 +83,7 @@ declare global {
       setMinimizeToTray: (enabled: boolean) => Promise<any>;
       setCheckUpdatesOnLaunch: (enabled: boolean) => Promise<any>;
       setTumblrPostTextMode: (mode: "bold_title_then_description" | "title_then_description" | "title_only" | "description_only") => Promise<any>;
+      setTumblrPostTimingMode: (mode: "publish_now" | "add_to_queue") => Promise<any>;
       setBlueskyPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
       setBlueskyLongPostMode: (mode: "truncate" | "thread") => Promise<any>;
       setTumblrUseDescriptionAsImageDescription: (enabled: boolean) => Promise<any>;

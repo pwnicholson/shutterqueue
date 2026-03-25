@@ -271,6 +271,12 @@ function buildCaption({ title, description, postTextMode, prependText, appendTex
   return parts.join("\n");
 }
 
+function resolveTumblrPostState({ privacy, postTimingMode }) {
+  const normalizedPrivacy = String(privacy || "private").trim().toLowerCase();
+  if (normalizedPrivacy === "private") return "private";
+  return String(postTimingMode || "").trim() === "add_to_queue" ? "queue" : "published";
+}
+
 async function createPhotoPost({
   consumerKey,
   consumerSecret,
@@ -283,6 +289,7 @@ async function createPhotoPost({
   useDescriptionAsImageDescription,
   prependText,
   appendText,
+  postTimingMode,
 }) {
   const oauth = makeOAuth(consumerKey, consumerSecret);
   const cleanBlog = String(blogIdentifier || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
@@ -297,7 +304,7 @@ async function createPhotoPost({
   const caption = buildCaption({ title, description, postTextMode, prependText, appendText });
   const tags = normalizeTagsCsv(item?.tags || "");
   const privacy = String(item?.privacy || "private");
-  const isPrivate = privacy === "private";
+  const postState = resolveTumblrPostState({ privacy, postTimingMode });
 
   form.append("type", "photo");
   form.append("title", title);
@@ -306,9 +313,7 @@ async function createPhotoPost({
     form.append("description", imageDescription);
   }
   form.append("tags", tags);
-  if (isPrivate) {
-    form.append("state", "private");
-  }
+  form.append("state", postState);
   if (markMature) {
     form.append("is_nsfw", "true");
     form.append("content_rating", "adult");
@@ -326,7 +331,7 @@ async function createPhotoPost({
     caption,
     ...(useDescriptionAsImageDescription && imageDescription ? { description: imageDescription } : {}),
     tags,
-    ...(isPrivate ? { state: "private" } : {}),
+    state: postState,
     ...(markMature ? { is_nsfw: "true", content_rating: "adult" } : {}),
   };
 
@@ -363,5 +368,6 @@ module.exports = {
   __test__: {
     buildCaption,
     normalizeTagsCsv,
+    resolveTumblrPostState,
   },
 };

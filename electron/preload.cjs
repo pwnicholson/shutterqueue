@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld("sq", {
   setMinimizeToTray: (enabled) => ipcRenderer.invoke("cfg:setMinimizeToTray", { enabled }),
   setCheckUpdatesOnLaunch: (enabled) => ipcRenderer.invoke("cfg:setCheckUpdatesOnLaunch", { enabled }),
   setTumblrPostTextMode: (mode) => ipcRenderer.invoke("cfg:setTumblrPostTextMode", { mode }),
+  setTumblrPostTimingMode: (mode) => ipcRenderer.invoke("cfg:setTumblrPostTimingMode", { mode }),
   setBlueskyPostTextMode: (mode) => ipcRenderer.invoke("cfg:setBlueskyPostTextMode", { mode }),
   setBlueskyLongPostMode: (mode) => ipcRenderer.invoke("cfg:setBlueskyLongPostMode", { mode }),
   setTumblrUseDescriptionAsImageDescription: (enabled) => ipcRenderer.invoke("cfg:setTumblrUseDescriptionAsImageDescription", { enabled }),

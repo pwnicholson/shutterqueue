@@ -6,6 +6,7 @@ const http = require("http");
 const crypto = require("crypto");
 const { pathToFileURL } = require("url");
 const Store = require("electron-store");
+const update = require("./services/update.cjs");
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -275,29 +276,6 @@ function logApiCallVerbose(methodName, params, result, error) {
   logLine(`${ts} [API ${status}] ${methodName} - ${JSON.stringify(details)}`);
 }
 
-function parseSemverLoose(v) {
-  const s = String(v || "").trim();
-  const m = s.match(/^v?(\d+(?:\.\d+){0,3})(?:[-+].*)?$/i);
-  if (!m) return null;
-  const parts = m[1].split(".").map((x) => Number(x));
-  if (parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
-  while (parts.length < 4) parts.push(0);
-  return parts;
-}
-
-function compareSemverLoose(a, b) {
-  const pa = parseSemverLoose(a);
-  const pb = parseSemverLoose(b);
-  if (!pa || !pb) return 0;
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const av = pa[i] || 0;
-    const bv = pb[i] || 0;
-    if (av > bv) return 1;
-    if (av < bv) return -1;
-  }
-  return 0;
-}
-
 function fetchLatestReleaseFromGitHub() {
   return new Promise((resolve, reject) => {
     const req = https.request(
@@ -344,12 +322,21 @@ async function checkForAppUpdates({ force = false } = {}) {
   const currentVersion = app.getVersion();
   const cached = store.get("updateCheckCache") || null;
   if (!force && cached && Number(cached.checkedAt || 0) > 0 && (now - Number(cached.checkedAt)) < UPDATE_CHECK_CACHE_MS) {
-    return { ...cached, cacheHit: true };
+    const cachedResult = update.deriveCachedUpdateResult(cached, currentVersion);
+    if (cachedResult) {
+      if (
+        String(cached.currentVersion || "") !== String(cachedResult.currentVersion || "") ||
+        Boolean(cached.updateAvailable) !== Boolean(cachedResult.updateAvailable)
+      ) {
+        store.set("updateCheckCache", { ...cachedResult, cacheHit: false });
+      }
+      return cachedResult;
+    }
   }
 
   const latest = await fetchLatestReleaseFromGitHub();
   const latestVersion = String(latest.tagName || "").replace(/^v/i, "");
-  const cmp = compareSemverLoose(currentVersion, latestVersion);
+  const cmp = update.compareSemverLoose(currentVersion, latestVersion);
   const isUpdateAvailable = cmp < 0;
 
   const result = {
@@ -500,6 +487,7 @@ const store = new Store({
     tumblrUsername: "",
     tumblrPrimaryBlogId: "",
     tumblrPostTextMode: "bold_title_then_description",
+    tumblrPostTimingMode: "publish_now",
     tumblrUseDescriptionAsImageDescription: true,
     tumblrBlogsCache: [],
     blueskyIdentifier: "",
@@ -1796,6 +1784,7 @@ ipcMain.handle("cfg:get", async () => ({
   tumblrUsername: store.get("tumblrUsername") || "",
   tumblrPrimaryBlogId: store.get("tumblrPrimaryBlogId") || "",
   tumblrPostTextMode: String(store.get("tumblrPostTextMode") || "bold_title_then_description"),
+  tumblrPostTimingMode: String(store.get("tumblrPostTimingMode") || "publish_now"),
   tumblrUseDescriptionAsImageDescription: store.get("tumblrUseDescriptionAsImageDescription") !== false,
   blueskyIdentifier: store.get("blueskyIdentifier") || "",
   blueskyHasAppPassword: Boolean(store.get("blueskyHasAppPassword")),
@@ -2511,6 +2500,13 @@ ipcMain.handle("cfg:setTumblrPostTextMode", async (_e, { mode }) => {
   return { ok: true, tumblrPostTextMode: next };
 });
 
+ipcMain.handle("cfg:setTumblrPostTimingMode", async (_e, { mode }) => {
+  const allowed = new Set(["publish_now", "add_to_queue"]);
+  const next = allowed.has(String(mode || "").trim()) ? String(mode).trim() : "publish_now";
+  store.set("tumblrPostTimingMode", next);
+  return { ok: true, tumblrPostTimingMode: next };
+});
+
 ipcMain.handle("cfg:setBlueskyPostTextMode", async (_e, { mode }) => {
   const allowed = new Set(["merge_title_description_tags", "merge_title_description", "merge_title_tags", "merge_description_tags", "title_only", "description_only"]);
   const next = allowed.has(String(mode || "").trim()) ? String(mode).trim() : "merge_title_description_tags";
@@ -3062,6 +3058,7 @@ async function uploadNowOneInternal(options = {}) {
         } else {
           try {
             const tumblrPostTextMode = String(store.get("tumblrPostTextMode") || "bold_title_then_description");
+            const tumblrPostTimingMode = String(store.get("tumblrPostTimingMode") || "publish_now");
             const tumblrUseDescriptionAsImageDescription = store.get("tumblrUseDescriptionAsImageDescription") !== false;
             const tumblrPrependText = String(store.get("tumblrPrependText") || "");
             const tumblrAppendText = String(store.get("tumblrAppendText") || "");
@@ -3084,6 +3081,7 @@ async function uploadNowOneInternal(options = {}) {
               },
               markMature: Number(next.safetyLevel || 1) >= 2,
               postTextMode: tumblrPostTextMode,
+              postTimingMode: tumblrPostTimingMode,
               useDescriptionAsImageDescription: tumblrUseDescriptionAsImageDescription,
               prependText: tumblrPrependText,
               appendText: tumblrAppendText,
