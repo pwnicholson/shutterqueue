@@ -10,7 +10,7 @@ test("compareSemverLoose handles v-prefix and patch versions", () => {
 });
 
 test("compareSemverLoose accepts local letter suffix versions", () => {
-  assert.equal(update.compareSemverLoose("0.9.6a", "v0.9.6"), 0);
+  assert.equal(update.compareSemverLoose("0.9.6a", "v0.9.6"), 1);
   assert.equal(update.compareSemverLoose("v0.9.6a", "0.9.7"), -1);
 });
 

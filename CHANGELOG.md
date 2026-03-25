@@ -27,7 +27,8 @@ All notable changes to ShutterQueue will be documented in this file.
 - **Update-available notice stale-cache behavior after app upgrade**
   - Fixed stale cached update notices after upgrading so the app reports the correct current version
 - **Loose semver comparison for local letter-suffix versions**
-  - Added support for local version strings like `0.9.6a` in update checks
+  - Fixed version comparison logic so versions like `0.9.6a` are correctly recognized as newer than `0.9.6` in update checks
+  - The semver parser now captures and compares letter suffixes, enabling proper ordering of pre-release and local version strings
 
 ### Tests
 - Added update-check regression tests covering:

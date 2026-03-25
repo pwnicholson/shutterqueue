@@ -32,8 +32,8 @@ When running with `npm run dev`, the footer now shows a small **DEV** runtime ba
 
 ### Update Check Fixes
 
-- Fixed stale cached update notices after upgrading
-- Added support for local version strings like `0.9.6a` in update checks
+- Fixed stale cached update notices after upgrading so the app reports the correct current version
+- **Fixed version comparison for local letter-suffix versions** — The update checker now correctly recognizes versions like `0.9.6a` as newer than `0.9.6` when checking for available updates
 
 ## Download & Install
 
