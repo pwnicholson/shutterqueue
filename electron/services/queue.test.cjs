@@ -50,3 +50,15 @@ test("normalizeImportedQueue allows empty service list (no platform selected)", 
   assert.deepEqual(out.items[0].targetServices, []);
   assert.deepEqual(out.items[1].targetServices, []);
 });
+
+test("parseDateTakenToMs parses EXIF colon datetime", () => {
+  const ms = queue.parseDateTakenToMs("2026:03:25 07:08:09");
+  assert.equal(Number.isFinite(ms), true);
+  assert.equal(new Date(ms).toISOString(), "2026-03-25T07:08:09.000Z");
+});
+
+test("parseDateTakenToMs applies explicit timezone offsets", () => {
+  const ms = queue.parseDateTakenToMs("2026:03:25 07:08:09+02:30");
+  assert.equal(Number.isFinite(ms), true);
+  assert.equal(new Date(ms).toISOString(), "2026-03-25T04:38:09.000Z");
+});

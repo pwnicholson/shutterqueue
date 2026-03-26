@@ -14,6 +14,65 @@ type BlueskyLongPostMode = "truncate" | "thread";
 type PixelFedPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
 type MastodonPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
 
+type UndoEditableField =
+  | "title"
+  | "description"
+  | "tags"
+  | "targetServices"
+  | "groupIds"
+  | "albumIds"
+  | "createAlbums"
+  | "privacy"
+  | "safetyLevel"
+  | "latitude"
+  | "longitude"
+  | "accuracy"
+  | "geoPrivacy"
+  | "locationDisplayName"
+  | "dateTaken"
+  | "scheduledUploadAt";
+
+type QueueUndoItemPatch = {
+  id: string;
+  previous: Partial<Pick<QueueItem, UndoEditableField>>;
+};
+
+type QueueUndoEntry = {
+  label: string;
+  itemPatches: QueueUndoItemPatch[];
+  previousOrder: string[] | null;
+  coalesceKey: string | null;
+};
+
+const UNDO_STACK_LIMIT = 10;
+const UNDO_EDITABLE_FIELDS: UndoEditableField[] = [
+  "title",
+  "description",
+  "tags",
+  "targetServices",
+  "groupIds",
+  "albumIds",
+  "createAlbums",
+  "privacy",
+  "safetyLevel",
+  "latitude",
+  "longitude",
+  "accuracy",
+  "geoPrivacy",
+  "locationDisplayName",
+  "dateTaken",
+  "scheduledUploadAt",
+];
+
+const UNDO_COALESCIBLE_TEXT_FIELDS = new Set<UndoEditableField>([
+  "title",
+  "description",
+  "tags",
+  "locationDisplayName",
+  "dateTaken",
+  "scheduledUploadAt",
+]);
+
 const PRIVACY_LABEL: Record<Privacy, string> = {
   public: "Public",
   friends: "Friends only",
@@ -671,6 +730,12 @@ const matchesLogFilter = (line: string, mode: LogFilterMode) => {
 
     const [showSetup, setShowSetup] = useState(true);
 const [queue, setQueue] = useState<QueueItem[]>([]);
+  const queueRef = useRef<QueueItem[]>([]);
+  const [undoStack, setUndoStack] = useState<QueueUndoEntry[]>([]);
+  const undoStackRef = useRef<QueueUndoEntry[]>([]);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const undoBusyRef = useRef(false);
+  const applyingUndoRef = useRef(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [anchorId, setAnchorId] = useState<string | null>(null);
@@ -706,6 +771,218 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const queueScrollTopRef = useRef(0);
 
   const [pendingGroupFocus, setPendingGroupFocus] = useState<string>("");
+
+  const valueEquals = (a: unknown, b: unknown) => {
+    if (Array.isArray(a) || Array.isArray(b)) {
+      if (!Array.isArray(a) || !Array.isArray(b)) return false;
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) return false;
+      }
+      return true;
+    }
+    return a === b;
+  };
+
+  const cloneEditableValue = <T,>(value: T): T => {
+    if (Array.isArray(value)) return [...value] as T;
+    return value;
+  };
+
+  const patchFieldNames = (patch: QueueUndoItemPatch): UndoEditableField[] => {
+    return Object.keys(patch.previous) as UndoEditableField[];
+  };
+
+  const buildUndoCoalesceKey = (label: string, itemPatches: QueueUndoItemPatch[], previousOrder: string[] | null): string | null => {
+    if (previousOrder) return null;
+    if (!itemPatches.length) return null;
+
+    const normalized = itemPatches
+      .map((patch) => {
+        const fields = patchFieldNames(patch).sort();
+        if (!fields.length) return null;
+        if (!fields.every((field) => UNDO_COALESCIBLE_TEXT_FIELDS.has(field))) return null;
+        return `${patch.id}:${fields.join(",")}`;
+      })
+      .filter((value): value is string => Boolean(value))
+      .sort();
+
+    if (!normalized.length || normalized.length !== itemPatches.length) return null;
+    return `${label}|${normalized.join("|")}`;
+  };
+
+  const mergeUndoEntries = (earlier: QueueUndoEntry, later: QueueUndoEntry): QueueUndoEntry => {
+    const mergedById = new Map<string, QueueUndoItemPatch>();
+
+    for (const patch of earlier.itemPatches) {
+      const previous: Partial<Pick<QueueItem, UndoEditableField>> = {};
+      for (const field of patchFieldNames(patch)) {
+        previous[field] = cloneEditableValue(patch.previous[field]) as any;
+      }
+      mergedById.set(patch.id, { id: patch.id, previous });
+    }
+
+    for (const patch of later.itemPatches) {
+      const existing = mergedById.get(patch.id);
+      if (!existing) {
+        const previous: Partial<Pick<QueueItem, UndoEditableField>> = {};
+        for (const field of patchFieldNames(patch)) {
+          previous[field] = cloneEditableValue(patch.previous[field]) as any;
+        }
+        mergedById.set(patch.id, { id: patch.id, previous });
+        continue;
+      }
+
+      for (const field of patchFieldNames(patch)) {
+        if (Object.prototype.hasOwnProperty.call(existing.previous, field)) continue;
+        existing.previous[field] = cloneEditableValue(patch.previous[field]) as any;
+      }
+    }
+
+    return {
+      label: later.label,
+      itemPatches: Array.from(mergedById.values()),
+      previousOrder: later.previousOrder,
+      coalesceKey: later.coalesceKey,
+    };
+  };
+
+  const buildUndoEntry = (beforeQueue: QueueItem[], afterQueue: QueueItem[], label: string): QueueUndoEntry | null => {
+    const beforeById = new Map(beforeQueue.map((it) => [it.id, it]));
+    const afterById = new Map(afterQueue.map((it) => [it.id, it]));
+
+    const itemPatches: QueueUndoItemPatch[] = [];
+    for (const after of afterQueue) {
+      const before = beforeById.get(after.id);
+      if (!before) continue;
+
+      const previous: Partial<Pick<QueueItem, UndoEditableField>> = {};
+      for (const field of UNDO_EDITABLE_FIELDS) {
+        const beforeVal = before[field];
+        const afterVal = after[field];
+        if (valueEquals(beforeVal, afterVal)) continue;
+        previous[field] = cloneEditableValue(beforeVal) as any;
+      }
+      if (Object.keys(previous).length > 0) itemPatches.push({ id: after.id, previous });
+    }
+
+    const beforeIds = beforeQueue.map((it) => it.id);
+    const afterIds = afterQueue.map((it) => it.id);
+    const sameOrder =
+      beforeIds.length === afterIds.length &&
+      beforeIds.every((id, index) => id === afterIds[index]);
+
+    if (!itemPatches.length && sameOrder) return null;
+
+    const previousOrder = sameOrder ? null : beforeIds;
+    return {
+      label,
+      itemPatches,
+      previousOrder,
+      coalesceKey: buildUndoCoalesceKey(label, itemPatches, previousOrder),
+    };
+  };
+
+  const pushUndoEntry = (entry: QueueUndoEntry | null) => {
+    if (!entry) return;
+    setUndoStack((prev) => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      if (last && entry.coalesceKey && last.coalesceKey === entry.coalesceKey) {
+        next[next.length - 1] = mergeUndoEntries(last, entry);
+      } else {
+        next.push(entry);
+      }
+      const trimmed = next.slice(-UNDO_STACK_LIMIT);
+      undoStackRef.current = trimmed;
+      return trimmed;
+    });
+  };
+
+  const recordUndoFromQueues = (beforeQueue: QueueItem[], afterQueue: QueueItem[], label: string) => {
+    if (applyingUndoRef.current) return;
+    pushUndoEntry(buildUndoEntry(beforeQueue, afterQueue, label));
+  };
+
+  const applyUndoEntry = async (entry: QueueUndoEntry) => {
+    const patchById = new Map(entry.itemPatches.map((p) => [p.id, p.previous]));
+    const current = queueRef.current;
+    const changedItems: QueueItem[] = [];
+
+    let nextQueue = current.map((it) => {
+      const patch = patchById.get(it.id);
+      if (!patch) return it;
+      const next: QueueItem = {
+        ...it,
+        ...patch,
+        ...(patch.targetServices ? { targetServices: normalizeTargetServices(patch.targetServices as UploadService[]) } : {}),
+      };
+      changedItems.push(next);
+      return next;
+    });
+
+    let orderChanged = false;
+    if (Array.isArray(entry.previousOrder) && entry.previousOrder.length) {
+      const byId = new Map(nextQueue.map((it) => [it.id, it]));
+      const seen = new Set<string>();
+      const reordered: QueueItem[] = [];
+      for (const id of entry.previousOrder) {
+        const it = byId.get(id);
+        if (!it) continue;
+        reordered.push(it);
+        seen.add(id);
+      }
+      for (const it of nextQueue) {
+        if (seen.has(it.id)) continue;
+        reordered.push(it);
+      }
+      orderChanged = reordered.some((it, index) => it.id !== nextQueue[index]?.id);
+      nextQueue = reordered;
+    }
+
+    applyingUndoRef.current = true;
+    try {
+      setQueue(nextQueue);
+      let canonical: QueueItem[] | null = null;
+      if (changedItems.length) {
+        canonical = await window.sq.queueUpdate(changedItems);
+        if (Array.isArray(canonical)) setQueue(canonical);
+      }
+      if (orderChanged) {
+        const ids = (canonical || nextQueue).map((it) => it.id);
+        const reordered = await window.sq.queueReorder(ids);
+        if (Array.isArray(reordered)) setQueue(reordered);
+      }
+    } finally {
+      applyingUndoRef.current = false;
+    }
+  };
+
+  const undoLastUserEdit = async () => {
+    if (undoBusyRef.current) return;
+    const stack = undoStackRef.current;
+    if (!stack.length) return;
+
+    const entry = stack[stack.length - 1];
+    const nextStack = stack.slice(0, -1);
+    undoStackRef.current = nextStack;
+    setUndoStack(nextStack);
+
+    undoBusyRef.current = true;
+    setUndoBusy(true);
+    try {
+      await applyUndoEntry(entry);
+      showToast(`Undo: ${entry.label}`);
+    } catch {
+      // If undo failed, preserve stack consistency and notify user.
+      undoStackRef.current = [...nextStack, entry].slice(-UNDO_STACK_LIMIT);
+      setUndoStack(undoStackRef.current);
+      showToast("Undo failed.");
+    } finally {
+      undoBusyRef.current = false;
+      setUndoBusy(false);
+    }
+  };
 
   const pendingRetryGroups = useMemo(() => {
     // Build list of groups that currently have at least one pending retry.
@@ -769,6 +1046,14 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   }, [queue, pendingGroupFocus]);
 
   useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+
+  useEffect(() => {
+    undoStackRef.current = undoStack;
+  }, [undoStack]);
+
+  useEffect(() => {
     if (!pendingRetryGroups.length) return;
     const exists = pendingRetryGroups.some(g => g.groupId === pendingGroupFocus);
     if (!pendingGroupFocus || !exists) setPendingGroupFocus(pendingRetryGroups[0].groupId);
@@ -808,14 +1093,6 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     return /\bgroup\b|\balbum\b/i.test(String(s));
   };
 
-  const hasActualErrorText = (s?: string | null) => {
-    if (!s) return false;
-    const parts = String(s).split("|").map(p => p.trim()).filter(Boolean);
-    if (!parts.length) return false;
-    return parts.some(p => /\b(fail|failed|error|gave up|gave_up|will be retried|retry|limit reached|user limit)\b/i.test(p));
-  };
-
-  
   const removeGroupRetryAndSelection = (it: QueueItem, groupId: string): QueueItem => {
     const gid = String(groupId);
 
@@ -1093,7 +1370,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       .map((it) => ({ ...it, targetServices: [only] as UploadService[] }));
     if (!changed.length) return;
     setQueue((prev) => prev.map((it) => changed.find((x) => x.id === it.id) || it));
-    void updateItems(changed);
+    void updateItems(changed, { recordUndo: false });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configuredServiceIds.join("|"), queue.length]);
 
@@ -1193,11 +1470,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [verboseLogging, setVerboseLogging] = useState(false);
   const [minimizeToTray, setMinimizeToTray] = useState(false);
   const [checkUpdatesOnLaunch, setCheckUpdatesOnLaunch] = useState(true);
+  const [useLargeThumbnails, setUseLargeThumbnails] = useState(true);
   const [addShutterQueueTagToAllUploads, setAddShutterQueueTagToAllUploads] = useState(true);
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
   const [updateCheckStatus, setUpdateCheckStatus] = useState("");
   const [updateAvailableNotice, setUpdateAvailableNotice] = useState<{ message: string; releaseUrl?: string } | null>(null);
   const [didAutoCheckUpdates, setDidAutoCheckUpdates] = useState(false);
+  const thumbVariant = useLargeThumbnails ? "wide" as const : "square" as const;
 
   const showToast = (message: string, options?: { actionUrl?: string }) => {
     setToast({ message, actionUrl: options?.actionUrl });
@@ -1252,10 +1531,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return splitBannerMessages(s).filter((msg) => !dismissedMessages.includes(msg));
   };
 
-  const hasVisibleActualErrorText = (s?: string | null) => {
-    const parts = visibleItemMessageParts(s);
-    if (!parts.length) return false;
-    return parts.some((p) => /\b(fail|failed|error|gave up|gave_up|will be retried|retry|limit reached|user limit)\b/i.test(p));
+  const hasVisibleActualErrorText = (s?: string | null): boolean => {
+    return visibleItemMessageParts(s).some((msg) => categorizeMessage(msg) === "error");
   };
 
   const filteredLogLines = useMemo(() => {
@@ -1282,6 +1559,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setVerboseLogging(Boolean(c.verboseLogging));
     setMinimizeToTray(Boolean(c.minimizeToTray));
     setCheckUpdatesOnLaunch(Boolean((c as any).checkUpdatesOnLaunch));
+    setUseLargeThumbnails(Boolean((c as any).useLargeThumbnails));
     setAddShutterQueueTagToAllUploads((c as any).addShutterQueueTagToAllUploads !== false);
     const rawTumblrMode = String((c as any).tumblrPostTextMode || "bold_title_then_description");
     const tumblrMode: TumblrPostTextMode =
@@ -1599,12 +1877,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     if (thumbLoadsInFlightRef.current.has(photoPath)) return;
     thumbLoadsInFlightRef.current.add(photoPath);
     try {
-      const nextSrc = await window.sq.getThumbSrc(photoPath);
+      const nextSrc = await window.sq.getThumbSrc(photoPath, thumbVariant);
       setThumbs((prev) => ({ ...prev, [photoPath]: nextSrc }));
     } finally {
       thumbLoadsInFlightRef.current.delete(photoPath);
     }
-  }, []);
+  }, [thumbVariant]);
+
+  useEffect(() => {
+    setThumbs({});
+    thumbsRef.current = {};
+    thumbLoadsInFlightRef.current.clear();
+  }, [thumbVariant]);
 
   useEffect(() => {
     const activePaths = new Set(queue.map((it) => String(it.photoPath || "")).filter(Boolean));
@@ -1646,7 +1930,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       batch.forEach(photoPath => thumbLoadsInFlightRef.current.add(photoPath));
       const results = await Promise.all(batch.map(async (photoPath) => {
         try {
-          return [photoPath, await window.sq.getThumbSrc(photoPath)] as const;
+          return [photoPath, await window.sq.getThumbSrc(photoPath, thumbVariant)] as const;
         } finally {
           thumbLoadsInFlightRef.current.delete(photoPath);
         }
@@ -1736,7 +2020,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return () => {
       cancelled = true;
     };
-  }, [queue, displayTab, activeId, selectedIds]);
+  }, [queue, displayTab, activeId, selectedIds, thumbVariant]);
 
   // Close dropdown menus when clicking outside them
   useEffect(() => {
@@ -1881,17 +2165,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     await window.sq.blueskyLogout();
     await refreshAll();
     showToast("Bluesky logged out.");
-  };
-
-  const savePixelfedCredentials = async () => {
-    try {
-      setPixelfedAuthError("");
-      await window.sq.setPixelfedCredentials(pixelfedInstanceUrl, pixelfedAccessToken);
-      await refreshAll();
-      showToast("Saved PixelFed settings.");
-    } catch (e: any) {
-      setPixelfedAuthError(`Failed to save PixelFed settings: ${String(e?.message || e)}`);
-    }
   };
 
   const testPixelfedAuth = async () => {
@@ -2143,18 +2416,26 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const isSelectAll = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a";
-      if (!isSelectAll || displayTab !== "queue") return;
-
       const target = e.target as HTMLElement | null;
-      if (target && (
+      const isTextEditingTarget = Boolean(target && (
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA" ||
         target.tagName === "SELECT" ||
         target.isContentEditable
-      )) {
+      ));
+
+      const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z";
+      if (isUndo && displayTab === "queue") {
+        e.preventDefault();
+        e.stopPropagation();
+        void undoLastUserEdit();
         return;
       }
+
+      const isSelectAll = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a";
+      if (!isSelectAll || displayTab !== "queue") return;
+
+      if (isTextEditingTarget) return;
 
       e.preventDefault();
       if (!queue.length) return;
@@ -2165,7 +2446,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [displayTab, queue, activeId, anchorId]);
+  }, [displayTab, queue, activeId, anchorId, undoBusy, undoStack]);
 
   const manuallyScheduledCount = useMemo(
     () => queue.filter(it => it.status === "pending" && !!it.scheduledUploadAt).length,
@@ -2636,9 +2917,31 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   };
 
   const sortQueueByDateTaken = async (reverse: boolean = false) => {
+    const dateTakenToMs = (value: unknown): number => {
+      if (value == null) return Number.NaN;
+      if (value instanceof Date) return value.getTime();
+
+      const text = String(value || "").trim();
+      if (!text) return Number.NaN;
+
+      const parsed = Date.parse(text);
+      if (Number.isFinite(parsed)) return parsed;
+
+      const exif = text.match(/^(\d{4}):(\d{2}):(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+      if (!exif) return Number.NaN;
+
+      const year = Number(exif[1]);
+      const month = Number(exif[2]);
+      const day = Number(exif[3]);
+      const hour = Number(exif[4] || 0);
+      const minute = Number(exif[5] || 0);
+      const second = Number(exif[6] || 0);
+      return Date.UTC(year, month - 1, day, hour, minute, second, 0);
+    };
+
     const compareByDateTaken = (a: QueueItem, b: QueueItem) => {
-      const aMsRaw = Date.parse(String(a.dateTaken || ""));
-      const bMsRaw = Date.parse(String(b.dateTaken || ""));
+      const aMsRaw = dateTakenToMs(a.dateTaken);
+      const bMsRaw = dateTakenToMs(b.dateTaken);
       const aHas = Number.isFinite(aMsRaw);
       const bHas = Number.isFinite(bMsRaw);
 
@@ -2717,9 +3020,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     showToast("Shuffled selected items.");
   };
 
-  const updateItems = async (items: QueueItem[]) => {
+  const updateItems = async (
+    items: QueueItem[],
+    options?: { recordUndo?: boolean; label?: string; beforeQueue?: QueueItem[] }
+  ) => {
+    const beforeQueue = options?.beforeQueue || queueRef.current;
     const q = await window.sq.queueUpdate(items);
     setQueue(q);
+    if (options?.recordUndo !== false) {
+      recordUndoFromQueues(beforeQueue, q, options?.label || "Edited queue items");
+    }
   };
 
   const searchLocation = async () => {
@@ -2956,9 +3266,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const queueDropHandledRef = useRef(false);
   const queueLastDragOverRef = useRef<{ id: string; pos: "top" | "bottom" } | null>(null);
 
-  const syncQueueOrder = async (idsInOrder: string[]) => {
+  const syncQueueOrder = async (
+    idsInOrder: string[],
+    options?: { recordUndo?: boolean; label?: string; beforeQueue?: QueueItem[] }
+  ) => {
+    const beforeQueue = options?.beforeQueue || queueRef.current;
     const canonical = await window.sq.queueReorder(idsInOrder);
-    if (Array.isArray(canonical)) setQueue(canonical);
+    if (Array.isArray(canonical)) {
+      setQueue(canonical);
+      if (options?.recordUndo !== false) {
+        recordUndoFromQueues(beforeQueue, canonical, options?.label || "Reordered queue");
+      }
+    }
     return canonical;
   };
 
@@ -3230,6 +3549,38 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   }, [selectedIds.join("|")]);
 
   useEffect(() => {
+    if (selectedIds.length < 2) return;
+    const selected = queue.filter((it) => selectedIds.includes(it.id));
+    if (selected.length < 2) return;
+
+    const first = selected[0];
+    const samePrivacy = selected.every((it) => it.privacy === first.privacy);
+    const sameSafety = selected.every((it) => it.safetyLevel === first.safetyLevel);
+
+    setBatchPrivacy(samePrivacy ? first.privacy : "");
+    setBatchSafety(sameSafety ? first.safetyLevel : "");
+  }, [queue, selectedIds.join("|")]);
+
+  useEffect(() => {
+    if (selectedIds.length < 2) return;
+    const selected = queue.filter((it) => selectedIds.includes(it.id));
+    if (selected.length < 2) return;
+
+    const first = selected[0];
+    const sameTitle = selected.every((it) => it.title === first.title);
+    const sameDescription = selected.every((it) => it.description === first.description);
+
+    if (!batchTitleDirty) {
+      setBatchTitle(sameTitle ? first.title : "");
+      setBatchTitleWasMixed(!sameTitle);
+    }
+    if (!batchDescriptionDirty) {
+      setBatchDescription(sameDescription ? first.description : "");
+      setBatchDescriptionWasMixed(!sameDescription);
+    }
+  }, [queue, selectedIds.join("|"), batchTitleDirty, batchDescriptionDirty]);
+
+  useEffect(() => {
     return () => {
       if (batchTitleDebounceRef.current) clearTimeout(batchTitleDebounceRef.current);
       if (batchDescriptionDebounceRef.current) clearTimeout(batchDescriptionDebounceRef.current);
@@ -3247,9 +3598,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       const next: QueueItem = { ...it, title: value };
       changed.push(next);
     }
-    if (!changed.length) return;
+    if (!changed.length) {
+      setBatchTitleDirty(false);
+      return;
+    }
     setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
     await updateItems(changed);
+    setBatchTitleDirty(false);
   };
 
   const applyBatchDescriptionNow = async (value: string) => {
@@ -3263,9 +3618,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       const next: QueueItem = { ...it, description: value };
       changed.push(next);
     }
-    if (!changed.length) return;
+    if (!changed.length) {
+      setBatchDescriptionDirty(false);
+      return;
+    }
     setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
     await updateItems(changed);
+    setBatchDescriptionDirty(false);
   };
 
   useEffect(() => {
@@ -4842,6 +5201,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 <span className="small">Add #ShutterQueue tag to all uploads</span>
               </label>
               <div style={{ height: 8 }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={!useLargeThumbnails} onChange={(e) => {
+                  const next = !e.target.checked;
+                  setUseLargeThumbnails(next);
+                  window.sq.setUseLargeThumbnails(next).catch(console.error);
+                }} />
+                <span className="small">Use Small Thumbnails</span>
+              </label>
+              <div style={{ height: 8 }} />
               <button className="btn" onClick={() => { void clearThumbnailCache(); }}>
                 Clear thumbnail and preview cache
               </button>
@@ -4935,6 +5303,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 <div className="btnrow">
                   <button className="btn primary" onClick={addPhotos} disabled={!cfg?.authed}>Add Photos</button>
                   <button className="btn danger" onClick={removeSelected} disabled={!selectedIds.length}>Remove Selected</button>
+                  <button className="btn" onClick={() => { void undoLastUserEdit(); }} disabled={undoBusy || undoStack.length === 0}>Undo</button>
                   <button className="btn" onClick={async () => { const q = await window.sq.queueClearUploaded(); setQueue(q); showToast("Cleared successfully uploaded photos."); }} disabled={!queue.length}>Clear Uploaded</button>
                 </div>
                 <div className="btnrow">
@@ -4998,11 +5367,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         onChange={(e) => setScheduleAtLocal(e.target.value)}
                       />
                       <div className="btnrow" style={{ justifyContent: "space-between", marginTop: 10 }}>
-                        <div>
-                          {isSingleItem && (
-                            <button className="btn" onClick={() => clearManualScheduleForItem(schedulingItemIds[0])}>Clear Manual Schedule</button>
-                          )}
-                        </div>
                         <div className="btnrow" style={{ justifyContent: "flex-end" }}>
                           <button className="btn" onClick={() => setScheduleDialogOpen(false)}>Cancel</button>
                           <button className="btn primary" onClick={scheduleSelectedAt}>Schedule</button>
@@ -5117,7 +5481,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   return (
                     <div
                       key={it.id}
-                      className={`qitem ${isSelected ? "selected" : ""} ${dragClass}`}
+                      className={`qitem ${useLargeThumbnails ? "large-thumbs" : ""} ${isSelected ? "selected" : ""} ${dragClass}`}
                       onDragStartCapture={(e) => {
                         const t = e.target as HTMLElement;
                         if (!t.closest(".drag")) return;
@@ -5185,18 +5549,20 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           {queueDragCount}
                         </span>
                       )}
-                      <img
-                        className={`thumb ${thumb ? "" : "empty"}`}
-                        src={thumb || ""}
-                        alt=""
-                        onError={() => { void refreshThumbForPath(it.photoPath); }}
-                        onClick={(e) => {
-                          // Prevent row-click selection toggle when opening preview.
-                          e.stopPropagation();
-                          void openPreviewForItem(it, thumb || undefined, srcs.previewSrc || undefined);
-                        }}
-                        style={{ cursor: (it.photoPath || srcs.previewSrc) ? "pointer" : "default" }}
-                      />
+                      <div className={`qthumb-frame ${useLargeThumbnails ? "large" : ""} ${thumb ? "" : "empty"}`}>
+                        <img
+                          className={`thumb ${useLargeThumbnails ? "large" : ""} ${thumb ? "" : "empty"}`}
+                          src={thumb || ""}
+                          alt=""
+                          onError={() => { void refreshThumbForPath(it.photoPath); }}
+                          onClick={(e) => {
+                            // Prevent row-click selection toggle when opening preview.
+                            e.stopPropagation();
+                            void openPreviewForItem(it, thumb || undefined, srcs.previewSrc || undefined);
+                          }}
+                          style={{ cursor: (it.photoPath || srcs.previewSrc) ? "pointer" : "default" }}
+                        />
+                      </div>
                       <div className="qmid">
                         <div className="qtitle">{it.title || "(untitled)"}</div>
                         <div className="qpath">{it.photoPath}</div>
@@ -6509,7 +6875,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
         <div className="footer-right">
           {isDevRuntime && <span className="dev-runtime-badge">DEV {devSessionStamp}</span>}
-          <span className="mono">v{appVersion || "0.9.6a"}</span>
+          <span className="mono">v{appVersion || "0.9.6b"}</span>
         </div>
       </div>
 

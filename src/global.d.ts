@@ -37,7 +37,7 @@ declare global {
       fetchGroupRefreshStatus: () => Promise<{ inProgress: boolean; total: number; completed: number; startedAt: number }>;
       fetchAlbums: () => Promise<Album[]>;
 
-      getThumbSrc: (photoPath: string) => Promise<string | null>;
+      getThumbSrc: (photoPath: string, variant?: "square" | "wide") => Promise<string | null>;
       getPreviewSrc: (photoPath: string, maxEdge?: number) => Promise<string | null>;
       clearImageCache: () => Promise<{ ok: boolean; deletedFiles?: number; error?: string }>;
 
@@ -82,6 +82,7 @@ declare global {
       setVerboseLogging: (enabled: boolean) => Promise<any>;
       setMinimizeToTray: (enabled: boolean) => Promise<any>;
       setCheckUpdatesOnLaunch: (enabled: boolean) => Promise<any>;
+      setUseLargeThumbnails: (enabled: boolean) => Promise<any>;
       setTumblrPostTextMode: (mode: "bold_title_then_description" | "title_then_description" | "title_only" | "description_only") => Promise<any>;
       setTumblrPostTimingMode: (mode: "publish_now" | "add_to_queue") => Promise<any>;
       setBlueskyPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;

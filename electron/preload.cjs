@@ -34,7 +34,7 @@ contextBridge.exposeInMainWorld("sq", {
   fetchAlbums: () => ipcRenderer.invoke("flickr:albums"),
   getFlickrPhotoUrls: (photoId) => ipcRenderer.invoke("flickr:photoUrls", { photoId }),
 
-  getThumbSrc: (photoPath) => ipcRenderer.invoke("thumb:getSrc", { photoPath }),
+  getThumbSrc: (photoPath, variant) => ipcRenderer.invoke("thumb:getSrc", { photoPath, variant }),
   getPreviewSrc: (photoPath, maxEdge) => ipcRenderer.invoke("image:getPreviewSrc", { photoPath, maxEdge }),
   clearImageCache: () => ipcRenderer.invoke("cache:clearImageCache"),
 
@@ -74,6 +74,7 @@ contextBridge.exposeInMainWorld("sq", {
   setVerboseLogging: (enabled) => ipcRenderer.invoke("cfg:setVerboseLogging", { enabled }),
   setMinimizeToTray: (enabled) => ipcRenderer.invoke("cfg:setMinimizeToTray", { enabled }),
   setCheckUpdatesOnLaunch: (enabled) => ipcRenderer.invoke("cfg:setCheckUpdatesOnLaunch", { enabled }),
+  setUseLargeThumbnails: (enabled) => ipcRenderer.invoke("cfg:setUseLargeThumbnails", { enabled }),
   setTumblrPostTextMode: (mode) => ipcRenderer.invoke("cfg:setTumblrPostTextMode", { mode }),
   setTumblrPostTimingMode: (mode) => ipcRenderer.invoke("cfg:setTumblrPostTimingMode", { mode }),
   setBlueskyPostTextMode: (mode) => ipcRenderer.invoke("cfg:setBlueskyPostTextMode", { mode }),

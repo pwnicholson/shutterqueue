@@ -288,18 +288,42 @@ body{
   background: rgba(255,255,255,0.02);
   user-select:none;
 }
+.qitem.large-thumbs{
+  grid-template-columns: 162px minmax(0, 1fr) auto;
+}
 .qitem.selected { border-color: rgba(139,211,255,0.55); box-shadow: 0 0 0 2px rgba(139,211,255,0.18) inset; }
 
 .qitem *{
   user-select:none;
 }
 
-.thumb{
-  width:54px;height:54px;
+.qthumb-frame{
+  width:54px;
+  height:54px;
   border-radius:12px;
   border:1px solid var(--border);
   background: rgba(0,0,0,0.20);
+  overflow:hidden;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.qthumb-frame.large{
+  width:162px;
+  height:108px;
+}
+.qthumb-frame.empty{opacity:0.25}
+
+.thumb{
+  width:54px;height:54px;
   object-fit:cover;
+}
+.thumb.large{
+  width:auto;
+  height:100%;
+  max-width:none;
+  display:block;
+  flex:0 0 auto;
 }
 .thumb.empty{opacity:0.25}
 .qmid{min-width:0}

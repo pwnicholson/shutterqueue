@@ -2,6 +2,31 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
+## [0.9.6b] - 2026-03-26
+
+### Changed
+- **Local development version rev and metadata alignment**
+  - Bumped local app version to `0.9.6b` in package/build metadata and UI fallback version display
+- **Queue undo UX and shortcut parity**
+  - Added queue-level Undo controls for major queue edits (metadata edits, reorder, sort, and shuffle)
+  - Ctrl+Z now routes through the same queue undo stack as the Undo button on the Queue tab
+  - Consecutive text edits are coalesced so undo reverts a full field edit instead of stepping per keystroke
+- **Queue thumbnail display defaults**
+  - Increased the default queue thumbnail size to a larger 3:2 presentation for better image visibility in the queue list
+  - Added a Setup option to re-enable the old small square thumbnails (`Use Small Thumbnails`)
+
+### Fixed
+- **Date Taken sorting reliability for subset selection**
+  - Fixed Date Taken sorting so selected subsets now reorder correctly when capture dates are stored in EXIF-style timestamp formats
+  - Queue-load and import normalization now convert parseable capture dates into ISO format for consistent sorting behavior
+- **Queue edit panel stale-value issues during undo**
+  - Fixed batch/single edit panel fields that could show stale values after undo while data had already reverted
+- **Close behavior warning when work is pending**
+  - Closing the window while scheduler is active and pending queue work exists now prompts with: Close the app, Minimize to Tray, or Return to App
+
+### Tests
+- Added queue date parsing regression tests covering EXIF-style timestamps and explicit timezone offsets
+
 ## [0.9.6a] - 2026-03-24
 
 ### Added

@@ -175,13 +175,14 @@ function clearAllImageCacheFiles() {
   return { deletedFiles };
 }
 
-async function getOrCreateThumbPath(photoPath) {
+async function getOrCreateThumbPath(photoPath, variant = "square") {
   const p = String(photoPath || "");
   if (!p) return null;
   ensureImageCacheDirs();
   const pathHash = getPhotoPathHash(p);
   const key = getPhotoCacheKey(p);
-  const outPath = path.join(THUMB_CACHE_DIR, `${pathHash}-${key}.jpg`);
+  const thumbVariant = String(variant || "square").trim().toLowerCase() === "wide" ? "wide" : "square";
+  const outPath = path.join(THUMB_CACHE_DIR, `${pathHash}-${key}-${thumbVariant}.jpg`);
   if (fs.existsSync(outPath)) return outPath;
 
   const existing = thumbBuildsInFlight.get(outPath);
@@ -191,11 +192,30 @@ async function getOrCreateThumbPath(photoPath) {
     const image = nativeImage.createFromPath(p);
     if (!image || image.isEmpty()) return null;
     const { width, height } = image.getSize();
-    const side = Math.max(1, Math.min(width, height));
-    const x = Math.max(0, Math.floor((width - side) / 2));
-    const y = Math.max(0, Math.floor((height - side) / 2));
-    const cropped = image.crop({ x, y, width: side, height: side });
-    const thumb = cropped.resize({ width: 96, height: 96, quality: "good" });
+    let thumb;
+    if (thumbVariant === "wide") {
+      const targetAspect = 3 / 2;
+      const safeHeight = Math.max(1, height);
+      const sourceAspect = width > 0 ? (width / safeHeight) : targetAspect;
+      let working = image;
+
+      if (sourceAspect > targetAspect) {
+        const cropWidth = Math.max(1, Math.round(height * targetAspect));
+        const x = Math.max(0, Math.floor((width - cropWidth) / 2));
+        working = image.crop({ x, y: 0, width: cropWidth, height });
+      }
+
+      const workingSize = working.getSize();
+      const targetHeight = 72;
+      const scaledWidth = Math.max(1, Math.round((workingSize.width / Math.max(1, workingSize.height)) * targetHeight));
+      thumb = working.resize({ width: scaledWidth, height: targetHeight, quality: "good" });
+    } else {
+      const side = Math.max(1, Math.min(width, height));
+      const x = Math.max(0, Math.floor((width - side) / 2));
+      const y = Math.max(0, Math.floor((height - side) / 2));
+      const cropped = image.crop({ x, y, width: side, height: side });
+      thumb = cropped.resize({ width: 96, height: 96, quality: "good" });
+    }
     const jpg = thumb.toJPEG(84);
     fs.writeFileSync(outPath, jpg);
     return outPath;
@@ -418,6 +438,27 @@ function hasPendingWork() {
   return false;
 }
 
+function promptForPendingWorkBeforeQuit() {
+  const schedulerOn = Boolean(store.get("schedulerOn"));
+  const pendingWork = hasPendingWork();
+  if (!schedulerOn || !pendingWork) return "quit";
+
+  const choice = dialog.showMessageBoxSync(win && !win.isDestroyed() ? win : undefined, {
+    type: "warning",
+    title: "Pending Uploads",
+    message: "There are still files that haven't been uploaded. Are you sure you want to quit?",
+    detail: "Scheduler is currently active and there are queue items that are not done yet.",
+    buttons: ["Close the app", "Minimize to Tray", "Return to App"],
+    defaultId: 2,
+    cancelId: 2,
+    noLink: true,
+  });
+
+  if (choice === 0) return "quit";
+  if (choice === 1) return "tray";
+  return "return";
+}
+
 function getManualScheduleMs(item) {
   const iso = item && item.scheduledUploadAt ? String(item.scheduledUploadAt) : "";
   if (!iso) return null;
@@ -542,6 +583,7 @@ const store = new Store({
     verboseLogging: false,
     minimizeToTray: false,
     checkUpdatesOnLaunch: true,
+    useLargeThumbnails: true,
     addShutterQueueTagToAllUploads: true,
     updateCheckCache: null,
     fileDialogLastDir: "",
@@ -1415,13 +1457,31 @@ function createWindow() {
     menu.popup({ window: win });
   });
 
-  // Handle window close: minimize to tray if enabled, otherwise quit
+  // Handle window close: honor minimize-to-tray first, otherwise warn about pending scheduled work.
   win.on("close", (event) => {
     if (!isQuitting && store.get("minimizeToTray")) {
       event.preventDefault();
       win.hide();
       // Ensure tray icon exists when minimizing
       if (!tray) createTray();
+      return;
+    }
+
+    if (!isQuitting) {
+      const action = promptForPendingWorkBeforeQuit();
+      if (action !== "quit") {
+        event.preventDefault();
+        if (action === "tray") {
+          win.hide();
+          if (!tray) createTray();
+          return;
+        }
+
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+        return;
+      }
     }
   });
 
@@ -1501,7 +1561,25 @@ function createTray() {
       {
         label: "Quit ShutterQueue",
         click: () => {
-          // Force quit without triggering minimize-to-tray
+          const action = promptForPendingWorkBeforeQuit();
+          if (action === "tray") {
+            if (win && !win.isDestroyed()) {
+              win.hide();
+            }
+            if (!tray) createTray();
+            return;
+          }
+          if (action === "return") {
+            if (win && !win.isDestroyed()) {
+              win.show();
+              win.focus();
+            } else {
+              createWindow();
+            }
+            return;
+          }
+
+          // Force quit without triggering minimize-to-tray.
           isQuitting = true;
           app.quit();
         }
@@ -1833,6 +1911,7 @@ ipcMain.handle("cfg:get", async () => ({
   verboseLogging: Boolean(store.get("verboseLogging")),
   minimizeToTray: Boolean(store.get("minimizeToTray")),
   checkUpdatesOnLaunch: Boolean(store.get("checkUpdatesOnLaunch")),
+  useLargeThumbnails: Boolean(store.get("useLargeThumbnails")),
   addShutterQueueTagToAllUploads: store.get("addShutterQueueTagToAllUploads") !== false,
   savedGroupSets: Array.isArray(store.get("savedGroupSets")) ? store.get("savedGroupSets") : [],
   savedAlbumSets: Array.isArray(store.get("savedAlbumSets")) ? store.get("savedAlbumSets") : [],
@@ -2259,9 +2338,9 @@ ipcMain.handle("flickr:photoUrls", async (_e, { photoId }) => {
 });
 
 
-ipcMain.handle("thumb:getSrc", async (_e, { photoPath }) => {
+ipcMain.handle("thumb:getSrc", async (_e, { photoPath, variant }) => {
   try {
-    return toSqimgUrl(await getOrCreateThumbPath(photoPath));
+    return toSqimgUrl(await getOrCreateThumbPath(photoPath, variant));
   } catch {
     return null;
   }
@@ -2491,6 +2570,12 @@ ipcMain.handle("cfg:setMinimizeToTray", async (_e, { enabled }) => {
 ipcMain.handle("cfg:setCheckUpdatesOnLaunch", async (_e, { enabled }) => {
   store.set("checkUpdatesOnLaunch", Boolean(enabled));
   return { ok: true, checkUpdatesOnLaunch: Boolean(enabled) };
+});
+
+ipcMain.handle("cfg:setUseLargeThumbnails", async (_e, { enabled }) => {
+  const next = Boolean(enabled);
+  store.set("useLargeThumbnails", next);
+  return { ok: true, useLargeThumbnails: next };
 });
 
 ipcMain.handle("cfg:setTumblrPostTextMode", async (_e, { mode }) => {

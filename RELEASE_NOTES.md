@@ -1,39 +1,46 @@
-# ShutterQueue v0.9.6a Release Notes
+# ShutterQueue v0.9.6b Release Notes
 
-**Release Date:** March 24, 2026
+**Release Date:** March 26, 2026
 
-## What's New in 0.9.6a
+## What's New in 0.9.6b
 
-### Major Queue Reordering Fix
+### Queue Undo Added
 
-Queue reordering has been stabilized so the order you see is the real queue order:
+Queue tab editing now includes queue-level undo for major user edits:
 
-- Drag-and-drop reordering now applies reliably
-- Manual moves, sorting, shuffle, and schedule-driven moves stay visually in sync
-- Multi-item drag now shows a clear count badge while moving items
+- Added Undo support for metadata edits, queue reorder actions, sort actions, and shuffle actions
+- Ctrl+Z now uses the same app undo stack as the Queue tab Undo button
+- Consecutive text edits are grouped so undo behaves like field-level edits rather than keystroke-by-keystroke reversal
+- Multi-select edit controls now stay in sync after undo so reverted values show immediately in the editor panel
 
-### New Queue Shortcuts
+### Larger Queue Thumbnails by Default
 
-Right-click any queue item to quickly:
+The Queue tab now uses larger thumbnails by default so images are easier to scan visually:
 
-- **Move to Top**
-- **Move to Bottom**
+- Queue thumbnails now default to a larger 3:2 presentation in the queue list
+- Setup now includes a `Use Small Thumbnails` option if you want to switch back to the previous compact square thumbnails
 
-### Tumblr Queue Posting Option
+### Date Taken Sorting Fix
 
-Tumblr setup now includes a post timing option so uploads can either:
+Date Taken sorting now correctly reorders selected subsets when photo capture timestamps are present as EXIF-style datetime strings:
 
-- publish immediately, or
-- be added to the selected Tumblr blog queue
+- Date-based sorting now recognizes EXIF-style formats like `YYYY:MM:DD HH:MM:SS`
+- Existing queue and imported items now normalize parseable capture dates for consistent date sorting
+- Date Taken sort in the Queue tab now applies reliably for full-queue sorting
+- Date Taken sort in the Queue tab now applies reliably for selected-subset sorting
 
-### Smarter Dev Build Visibility
+### Close Warning for Pending Scheduler Work
 
-When running with `npm run dev`, the footer now shows a small **DEV** runtime badge so it is easier to confirm that a fresh development build is actually running.
+If the scheduler is active and there are still queue items not yet uploaded, closing the app now prompts with:
 
-### Update Check Fixes
+- Close the app
+- Minimize to Tray
+- Return to App
 
-- Fixed stale cached update notices after upgrading so the app reports the correct current version
-- **Fixed version comparison for local letter-suffix versions** — The update checker now correctly recognizes versions like `0.9.6a` as newer than `0.9.6` when checking for available updates
+### Notes
+
+- This release combines queue editing polish, thumbnail visibility improvements, and Date Taken sorting fixes.
+- Features listed in prior release notes remain available in 0.9.6b.
 
 ## Download & Install
 

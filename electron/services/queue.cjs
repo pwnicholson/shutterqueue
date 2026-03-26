@@ -30,6 +30,10 @@ function loadQueue() {
     for (const it of q) {
       if (!it) continue;
       it.targetServices = normalizeTargetServices(it.targetServices);
+      if (it.dateTaken != null && String(it.dateTaken).trim()) {
+        const normalizedDateTaken = toIsoDateOrEmpty(it.dateTaken);
+        if (normalizedDateTaken) it.dateTaken = normalizedDateTaken;
+      }
       if (it.status === "done_warn") {
         const states = it.groupAddStates || {};
         const hasProblem = Object.values(states).some(st => st && (st.status === "retry" || st.status === "failed" || st.status === "gave_up"));
@@ -142,10 +146,46 @@ function normalizeEmbeddedTags(values) {
   return out;
 }
 
+function parseDateTakenToMs(value) {
+  if (value == null) return NaN;
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value.getTime();
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+
+  const text = String(value || "").trim();
+  if (!text) return NaN;
+
+  const parsedMs = Date.parse(text);
+  if (Number.isFinite(parsedMs)) return parsedMs;
+
+  const exif = text.match(/^(\d{4}):(\d{2}):(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?(?:\s*(Z|[+\-]\d{2}:?\d{2}))?$/);
+  if (!exif) return NaN;
+
+  const year = Number(exif[1]);
+  const month = Number(exif[2]);
+  const day = Number(exif[3]);
+  const hour = Number(exif[4] || 0);
+  const minute = Number(exif[5] || 0);
+  const second = Number(exif[6] || 0);
+  const ms = Number(String(exif[7] || "").padEnd(3, "0") || 0);
+  const tz = String(exif[8] || "").trim();
+
+  if (tz) {
+    const utcMs = Date.UTC(year, month - 1, day, hour, minute, second, ms);
+    if (tz === "Z") return utcMs;
+
+    const sign = tz.startsWith("-") ? -1 : 1;
+    const tzBody = tz.slice(1).replace(":", "");
+    const tzHours = Number(tzBody.slice(0, 2));
+    const tzMinutes = Number(tzBody.slice(2, 4) || 0);
+    const offsetMs = sign * ((tzHours * 60 + tzMinutes) * 60 * 1000);
+    return utcMs - offsetMs;
+  }
+
+  return Date.UTC(year, month - 1, day, hour, minute, second, ms);
+}
+
 function toIsoDateOrEmpty(value) {
-  if (!value) return "";
-  if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
-  const ms = Date.parse(String(value));
+  const ms = parseDateTakenToMs(value);
   if (Number.isFinite(ms)) return new Date(ms).toISOString();
   return "";
 }
@@ -304,7 +344,9 @@ function normalizeImportedQueue(input) {
     if (Number.isFinite(Number(raw.latitude))) normalized.latitude = Number(raw.latitude);
     if (Number.isFinite(Number(raw.longitude))) normalized.longitude = Number(raw.longitude);
     if (Number.isFinite(Number(raw.accuracy))) normalized.accuracy = Number(raw.accuracy);
-    if (raw.dateTaken != null && String(raw.dateTaken).trim()) normalized.dateTaken = String(raw.dateTaken);
+    if (raw.dateTaken != null && String(raw.dateTaken).trim()) {
+      normalized.dateTaken = toIsoDateOrEmpty(raw.dateTaken) || String(raw.dateTaken).trim();
+    }
     if (VALID_GEO_PRIVACY.has(String(raw.geoPrivacy || ""))) normalized.geoPrivacy = String(raw.geoPrivacy);
     if (raw.locationDisplayName != null && String(raw.locationDisplayName).trim()) normalized.locationDisplayName = String(raw.locationDisplayName);
     if (raw.groupAddStates && typeof raw.groupAddStates === "object" && !Array.isArray(raw.groupAddStates)) normalized.groupAddStates = raw.groupAddStates;
@@ -394,7 +436,7 @@ function findDuplicateGroups() {
   return duplicates;
 }
 
-module.exports = { loadQueue, saveQueue, addPaths, removeIds, updateItems, reorder, QUEUE_PATH };
+module.exports = { loadQueue, saveQueue, addPaths, removeIds, updateItems, reorder, QUEUE_PATH, parseDateTakenToMs };
 
 
 function clearUploaded() {
