@@ -297,6 +297,91 @@ function parseFlickrCount(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function readFlickrTextField(value) {
+  if (value == null) return "";
+  const raw = typeof value === "object"
+    ? (value._content ?? value.content ?? value.value ?? "")
+    : value;
+  return decodeHtmlEntities(String(raw == null ? "" : raw)).trim();
+}
+
+function parseFlickrBool(value) {
+  const normalized = String(readFlickrTextField(value)).trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "y" || normalized === "on";
+}
+
+function buildGroupAdditionalInfo(group) {
+  if (!group || typeof group !== "object") return "";
+
+  const restrictions = (group.restrictions && typeof group.restrictions === "object") ? group.restrictions : {};
+  const throttle = (group.throttle && typeof group.throttle === "object") ? group.throttle : {};
+  const lines = [];
+
+  const groupsPerPhotoRaw = restrictions.groups_per_photo
+    ?? restrictions.groupsPerPhoto
+    ?? restrictions.max_groups_per_photo
+    ?? restrictions.maxGroupsPerPhoto
+    ?? restrictions.max_groups
+    ?? restrictions.maxGroups;
+  if (groupsPerPhotoRaw != null) {
+    const groupsPerPhoto = parseFlickrCount(groupsPerPhotoRaw);
+    if (groupsPerPhoto <= 0) {
+      lines.push("This group doesn’t care how many other groups a photo is in");
+    } else {
+      lines.push(`A photo can be in up to ${groupsPerPhoto} group${groupsPerPhoto === 1 ? "" : "s"}`);
+    }
+  }
+
+  const throttleCount = parseFlickrCount(throttle.count ?? throttle.max ?? throttle.value);
+  if (throttleCount > 0) {
+    const modeRaw = readFlickrTextField(throttle.mode ?? throttle.period ?? "day").toLowerCase();
+    const period = modeRaw.includes("week") ? "week" : modeRaw.includes("month") ? "month" : "day";
+    lines.push(`Members can post ${throttleCount} thing${throttleCount === 1 ? "" : "s"} to the pool each ${period}.`);
+  }
+
+  const mediaTypes = [];
+  if (parseFlickrBool(restrictions.photos_ok ?? restrictions.photo_ok ?? restrictions.photos)) mediaTypes.push("Photos");
+  if (parseFlickrBool(restrictions.videos_ok ?? restrictions.video_ok ?? restrictions.videos)) mediaTypes.push("Videos");
+  if (mediaTypes.length) lines.push(`Accepted media types: ${mediaTypes.join(", ")}`);
+
+  const contentTypes = [];
+  if (parseFlickrBool(restrictions.images_ok ?? restrictions.image_ok ?? restrictions.images)) contentTypes.push("Photos");
+  if (parseFlickrBool(restrictions.screens_ok ?? restrictions.screenshot_ok ?? restrictions.screens)) contentTypes.push("Screenshots");
+  if (parseFlickrBool(restrictions.art_ok ?? restrictions.illustration_ok ?? restrictions.art)) contentTypes.push("Artwork");
+  if (contentTypes.length) lines.push(`Accepted content types: ${contentTypes.join(", ")}`);
+
+  const safetyLevels = [];
+  if (parseFlickrBool(restrictions.safe_ok ?? restrictions.safe)) safetyLevels.push("Safe");
+  if (parseFlickrBool(restrictions.moderate_ok ?? restrictions.moderate)) safetyLevels.push("Moderate");
+  if (parseFlickrBool(restrictions.restricted_ok ?? restrictions.restricted)) safetyLevels.push("Restricted");
+  if (safetyLevels.length) lines.push(`Accepted safety levels: ${safetyLevels.join(", ")}`);
+
+  const rawAdditionalInfo = readFlickrTextField(
+    group.additional_info ||
+    group.additionalInfo ||
+    group.info_bottom ||
+    group.infoBottom ||
+    group.pool_info ||
+    group.poolInfo ||
+    group.pool_message ||
+    group.poolMessage
+  );
+
+  const generated = lines.join("\n").trim();
+  if (rawAdditionalInfo && generated) return `${rawAdditionalInfo}\n\n${generated}`;
+  return rawAdditionalInfo || generated;
+}
+
+function readFlickrGroupCount(group, keys) {
+  if (!group || typeof group !== "object") return 0;
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(group, key)) continue;
+    const parsed = parseFlickrCount(group[key]);
+    if (parsed > 0) return parsed;
+  }
+  return 0;
+}
+
 async function getGroupInfo({ apiKey, apiSecret, token, tokenSecret, groupId }) {
   try {
     const j = await flickrRestCall({
@@ -306,15 +391,46 @@ async function getGroupInfo({ apiKey, apiSecret, token, tokenSecret, groupId }) 
     });
     
     if (j.group) {
+      const description = readFlickrTextField(j.group.description);
+      const rulesText = readFlickrTextField(j.group.rules || j.group.pool_rules || j.group.poolRules || j.group.rule_text);
+      const additionalInfo = buildGroupAdditionalInfo(j.group);
+      const adminBlast = readFlickrTextField(
+        j.group.admin_blast ||
+        j.group.adminBlast ||
+        j.group.admin_message ||
+        j.group.adminMessage ||
+        j.group.blast ||
+        j.group.message
+      );
+      const alias = readFlickrTextField(j.group.path_alias);
+      const groupUrl = alias
+        ? `https://www.flickr.com/groups/${encodeURIComponent(alias)}/`
+        : `https://www.flickr.com/groups/${encodeURIComponent(String(groupId || ""))}/`;
+      const memberCount = readFlickrGroupCount(j.group, ["members", "member_count", "membercount", "users", "user_count"]);
+      const photoCount = readFlickrGroupCount(j.group, ["photos", "pool_count", "poolcount", "count_photos", "photo_count"]);
+
       return {
-        memberCount: parseFlickrCount(j.group.members),
-        photoCount: parseFlickrCount(j.group.photos)
+        memberCount,
+        photoCount,
+        description,
+        rulesText,
+        additionalInfo,
+        adminBlast,
+        groupUrl,
       };
     }
   } catch (e) {
     console.warn(`[Flickr] Failed to fetch info for group ${groupId}:`, e.message);
   }
-  return { memberCount: 0, photoCount: 0 };
+  return {
+    memberCount: 0,
+    photoCount: 0,
+    description: "",
+    rulesText: "",
+    additionalInfo: "",
+    adminBlast: "",
+    groupUrl: `https://www.flickr.com/groups/${encodeURIComponent(String(groupId || ""))}/`,
+  };
 }
 
 async function listGroups({ apiKey, apiSecret, token, tokenSecret }) {

@@ -4,7 +4,7 @@ export type GeoPrivacy = "public" | "contacts" | "friends" | "family" | "friends
 
 export type QueueStatus = "pending" | "uploading" | "done" | "done_warn" | "failed";
 
-export type UploadService = "flickr" | "tumblr" | "bluesky" | "pixelfed" | "mastodon";
+export type UploadService = "flickr" | "tumblr" | "bluesky" | "pixelfed" | "mastodon" | "lemmy";
 
 export type ScheduleSettings = {
   intervalHours: number;
@@ -34,6 +34,9 @@ export type QueueItem = {
   groupIds: string[];
   albumIds: string[];
   createAlbums: string[];
+  lemmyCommunityIds?: string[];
+  // Legacy single-select field retained for backward compatibility with older queues.
+  lemmyCommunityId?: string;
   privacy: Privacy;
   safetyLevel: 1 | 2 | 3; // Flickr safety_level: 1=safe,2=moderate,3=restricted
   // Geo location data

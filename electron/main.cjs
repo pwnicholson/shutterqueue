@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const { pathToFileURL } = require("url");
 const Store = require("electron-store");
 const update = require("./services/update.cjs");
+const trash = require("./services/trash.cjs");
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -382,6 +383,7 @@ const tumblr = require("./services/tumblr.cjs");
 const bluesky = require("./services/bluesky.cjs");
 const pixelfed = require("./services/pixelfed.cjs");
 const mastodon = require("./services/mastodon.cjs");
+const lemmy = require("./services/lemmy.cjs");
 const geo = require("./services/geocoding.cjs");
 
 let win = null;
@@ -559,10 +561,18 @@ const store = new Store({
     mastodonUsername: "",
     mastodonPostTextMode: "merge_title_description_tags",
     mastodonUseDescriptionAsAltText: true,
+    lemmyInstanceUrl: lemmy.DEFAULT_LEMMY_INSTANCE,
+    lemmyAccessTokenEnc: "",
+    lemmyHasAccessToken: false,
+    lemmyUsername: "",
+    lemmyPostTextMode: "merge_title_description_tags",
+    lemmyCommunitiesCache: [],
     blueskyPrependText: "",
     blueskyAppendText: "",
     mastodonPrependText: "",
     mastodonAppendText: "",
+    lemmyPrependText: "",
+    lemmyAppendText: "",
     pixelfedPrependText: "",
     pixelfedAppendText: "",
     tumblrPrependText: "",
@@ -585,6 +595,10 @@ const store = new Store({
     checkUpdatesOnLaunch: true,
     useLargeThumbnails: true,
     addShutterQueueTagToAllUploads: true,
+    savedGroupSets: [],
+    savedAlbumSets: [],
+    savedTagSets: [],
+    savedLemmyCommunitySets: [],
     updateCheckCache: null,
     fileDialogLastDir: "",
     queueJsonDialogDir: ""
@@ -611,6 +625,32 @@ function rememberLastFileDialogDir(filePath) {
   }
 }
 
+function collectFilesRecursive(rootDir, maxFiles = 50000) {
+  const out = [];
+  const stack = [String(rootDir || "")];
+  while (stack.length && out.length < maxFiles) {
+    const dir = stack.pop();
+    if (!dir) continue;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (ent.isFile()) out.push(full);
+      if (out.length >= maxFiles) break;
+    }
+  }
+  return out;
+}
+
 function isFlickrAuthed() {
   return Boolean(store.get("apiKey")) && Boolean(store.get("hasApiSecret")) && Boolean(store.get("hasToken"));
 }
@@ -631,8 +671,12 @@ function isMastodonAuthed() {
   return Boolean(store.get("mastodonInstanceUrl")) && Boolean(store.get("mastodonHasAccessToken")) && Boolean(store.get("mastodonUsername"));
 }
 
+function isLemmyAuthed() {
+  return Boolean(store.get("lemmyInstanceUrl")) && Boolean(store.get("lemmyHasAccessToken")) && Boolean(store.get("lemmyUsername"));
+}
+
 function isAuthed() {
-  return isFlickrAuthed() || isTumblrAuthed() || isBlueskyAuthed() || isPixelfedAuthed() || isMastodonAuthed();
+  return isFlickrAuthed() || isTumblrAuthed() || isBlueskyAuthed() || isPixelfedAuthed() || isMastodonAuthed() || isLemmyAuthed();
 }
 
 // Helper to retrieve decrypted Flickr credentials for API calls
@@ -681,6 +725,14 @@ function getMastodonAuth() {
     instanceUrl: String(store.get("mastodonInstanceUrl") || mastodon.DEFAULT_MASTODON_INSTANCE),
     accessToken: decryptCredential(store.get("mastodonAccessTokenEnc") || ""),
     username: String(store.get("mastodonUsername") || ""),
+  };
+}
+
+function getLemmyAuth() {
+  return {
+    instanceUrl: String(store.get("lemmyInstanceUrl") || lemmy.DEFAULT_LEMMY_INSTANCE),
+    accessToken: decryptCredential(store.get("lemmyAccessTokenEnc") || ""),
+    username: String(store.get("lemmyUsername") || ""),
   };
 }
 
@@ -812,6 +864,7 @@ function startPixelfedOAuthLoopbackServer() {
     stopPixelfedOAuthLoopbackServer();
   }, PIXELFED_OAUTH_LOOPBACK_MAX_MS);
 }
+
 
 const GROUP_COUNTS_REFRESH_INTERVAL_MS = GROUP_COUNT_REFRESH_MAX_AGE_MS;
 const GROUP_COUNTS_REFRESH_DELAY_MS = 900;
@@ -1431,6 +1484,42 @@ function createWindow() {
     const template = [];
     const canCopy = Boolean(params.selectionText);
     const canPaste = Boolean(params.isEditable);
+    const misspelledWord = String(params.misspelledWord || "").trim();
+    const dictionarySuggestions = Array.isArray(params.dictionarySuggestions) ? params.dictionarySuggestions : [];
+
+    if (params.isEditable && misspelledWord) {
+      if (dictionarySuggestions.length) {
+        for (const suggestion of dictionarySuggestions.slice(0, 6)) {
+          template.push({
+            label: String(suggestion),
+            click: () => {
+              try {
+                win.webContents.replaceMisspelling(String(suggestion));
+              } catch {
+                // ignore replace failures
+              }
+            }
+          });
+        }
+      } else {
+        template.push({
+          label: "No spelling suggestions",
+          enabled: false,
+        });
+      }
+
+      template.push({
+        label: `Add \"${misspelledWord}\" to Dictionary`,
+        click: () => {
+          try {
+            win.webContents.session.addWordToSpellCheckerDictionary(misspelledWord);
+          } catch {
+            // ignore dictionary add failures
+          }
+        }
+      });
+      template.push({ type: "separator" });
+    }
 
     if (params.isEditable) {
       template.push(
@@ -1883,10 +1972,18 @@ ipcMain.handle("cfg:get", async () => ({
   mastodonUsername: String(store.get("mastodonUsername") || ""),
   mastodonPostTextMode: String(store.get("mastodonPostTextMode") || "merge_title_description_tags"),
   mastodonUseDescriptionAsAltText: store.get("mastodonUseDescriptionAsAltText") !== false,
+  lemmyInstanceUrl: String(store.get("lemmyInstanceUrl") || lemmy.DEFAULT_LEMMY_INSTANCE),
+  lemmyHasAccessToken: Boolean(store.get("lemmyHasAccessToken")),
+  lemmyAuthed: isLemmyAuthed(),
+  lemmyUsername: String(store.get("lemmyUsername") || ""),
+  lemmyPostTextMode: String(store.get("lemmyPostTextMode") || "merge_title_description_tags"),
+  lemmyCommunitiesCache: Array.isArray(store.get("lemmyCommunitiesCache")) ? store.get("lemmyCommunitiesCache") : [],
   blueskyPrependText: String(store.get("blueskyPrependText") || ""),
   blueskyAppendText: String(store.get("blueskyAppendText") || ""),
   mastodonPrependText: String(store.get("mastodonPrependText") || ""),
   mastodonAppendText: String(store.get("mastodonAppendText") || ""),
+  lemmyPrependText: String(store.get("lemmyPrependText") || ""),
+  lemmyAppendText: String(store.get("lemmyAppendText") || ""),
   pixelfedPrependText: String(store.get("pixelfedPrependText") || ""),
   pixelfedAppendText: String(store.get("pixelfedAppendText") || ""),
   tumblrPrependText: String(store.get("tumblrPrependText") || ""),
@@ -1912,10 +2009,12 @@ ipcMain.handle("cfg:get", async () => ({
   minimizeToTray: Boolean(store.get("minimizeToTray")),
   checkUpdatesOnLaunch: Boolean(store.get("checkUpdatesOnLaunch")),
   useLargeThumbnails: Boolean(store.get("useLargeThumbnails")),
+  useLightTheme: Boolean(store.get("useLightTheme")),
   addShutterQueueTagToAllUploads: store.get("addShutterQueueTagToAllUploads") !== false,
   savedGroupSets: Array.isArray(store.get("savedGroupSets")) ? store.get("savedGroupSets") : [],
   savedAlbumSets: Array.isArray(store.get("savedAlbumSets")) ? store.get("savedAlbumSets") : [],
-  savedTagSets: Array.isArray(store.get("savedTagSets")) ? store.get("savedTagSets") : []
+  savedTagSets: Array.isArray(store.get("savedTagSets")) ? store.get("savedTagSets") : [],
+  savedLemmyCommunitySets: Array.isArray(store.get("savedLemmyCommunitySets")) ? store.get("savedLemmyCommunitySets") : []
 }));
 
 ipcMain.handle("cfg:setKeys", async (_e, { apiKey, apiSecret }) => {
@@ -1978,6 +2077,22 @@ ipcMain.handle("cfg:setMastodonCredentials", async (_e, { instanceUrl, accessTok
   }
   return { ok: true };
 });
+
+ipcMain.handle("cfg:setLemmyCredentials", async (_e, { instanceUrl, accessToken }) => {
+  if (typeof instanceUrl === "string" && instanceUrl.trim().length) {
+    store.set("lemmyInstanceUrl", lemmy.normalizeInstanceUrl(instanceUrl.trim()));
+  }
+  if (typeof accessToken === "string" && accessToken.trim().length) {
+    const encrypted = encryptCredential(accessToken.trim());
+    store.set("lemmyAccessTokenEnc", encrypted);
+    store.set("lemmyHasAccessToken", true);
+    // Force re-verification and refetch communities with new token.
+    store.set("lemmyUsername", "");
+    store.set("lemmyCommunitiesCache", []);
+  }
+  return { ok: true };
+});
+
 
 ipcMain.handle("cfg:setUploadBatchSize", async (_e, { uploadBatchSize }) => {
   const v = Math.max(1, Math.min(999, Math.round(Number(uploadBatchSize || 1))));
@@ -2064,8 +2179,14 @@ ipcMain.handle("cfg:setSchedulerSettings", async (_e, payload) => {
 });
 
 ipcMain.handle("cfg:setSavedSets", async (_e, payload) => {
-  const kind = ["album", "tag"].includes(payload?.kind) ? payload.kind : "group";
-  const key = kind === "group" ? "savedGroupSets" : kind === "album" ? "savedAlbumSets" : "savedTagSets";
+  const kind = ["album", "tag", "lemmy_community"].includes(payload?.kind) ? payload.kind : "group";
+  const key = kind === "group"
+    ? "savedGroupSets"
+    : kind === "album"
+      ? "savedAlbumSets"
+      : kind === "tag"
+        ? "savedTagSets"
+        : "savedLemmyCommunitySets";
   const incoming = Array.isArray(payload?.sets) ? payload.sets : [];
   const out = [];
   const seen = new Set();
@@ -2294,6 +2415,28 @@ ipcMain.handle("flickr:groupsRefreshStatus", async () => {
   };
 });
 
+ipcMain.handle("flickr:groupInfo", async (_e, { groupId } = {}) => {
+  if (!isFlickrAuthed()) throw new Error("Flickr is not authorized");
+  const id = String(groupId || "").trim();
+  if (!id) throw new Error("Missing group id");
+
+  const auth = getFlickrAuth();
+  try {
+    const result = await flickr.getGroupInfo({
+      apiKey: auth.apiKey,
+      apiSecret: auth.apiSecret,
+      token: auth.token,
+      tokenSecret: auth.tokenSecret,
+      groupId: id,
+    });
+    logApiCallVerbose("flickr.groups.getInfo", { groupId: id }, result);
+    return result;
+  } catch (e) {
+    logApiCallVerbose("flickr.groups.getInfo", { groupId: id }, null, e);
+    throw e;
+  }
+});
+
 ipcMain.handle("flickr:albums", async () => {
   if (!isFlickrAuthed()) throw new Error("Flickr is not authorized");
   const auth = getFlickrAuth();
@@ -2379,6 +2522,131 @@ ipcMain.handle("queue:remove", async (_e, { ids }) => {
   pruneImageCacheForRemovedItems(before, out);
   logEvent("INFO", "Removed items from queue", { removed: list.length, queueSize: Array.isArray(out) ? out.length : 0 });
   return out;
+});
+ipcMain.handle("queue:removeAndTrash", async (_e, { ids }) => {
+  const list = Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
+  const before = queue.loadQueue();
+  const photoPaths = trash.collectUniquePhotoPathsByQueueIds(before, list);
+
+  let movedCount = 0;
+  let skippedMissing = 0;
+  let failedCount = 0;
+  for (const photoPath of photoPaths) {
+    try {
+      if (!fs.existsSync(photoPath)) {
+        skippedMissing++;
+        continue;
+      }
+      await shell.trashItem(photoPath);
+      movedCount++;
+    } catch (e) {
+      failedCount++;
+      logEvent("WARN", "Failed to move original file to trash", {
+        photoPath,
+        error: String(e),
+      });
+    }
+  }
+
+  const out = await queue.removeIds(list);
+  pruneImageCacheForRemovedItems(before, out);
+  const trashLabel = trash.getTrashLabel(process.platform);
+  logEvent("INFO", "Removed queue items and moved originals to trash", {
+    removed: list.length,
+    movedCount,
+    skippedMissing,
+    failedCount,
+    queueSize: Array.isArray(out) ? out.length : 0,
+  });
+
+  return {
+    ok: true,
+    queue: out,
+    movedCount,
+    skippedMissing,
+    failedCount,
+    trashLabel,
+  };
+});
+ipcMain.handle("queue:getMissingPathGroups", async () => {
+  const q = queue.loadQueue();
+  const byDir = new Map();
+
+  for (const it of Array.isArray(q) ? q : []) {
+    const id = String(it?.id || "");
+    const photoPath = String(it?.photoPath || "").trim();
+    if (!id || !photoPath) continue;
+
+    let exists = false;
+    try {
+      exists = fs.existsSync(photoPath);
+    } catch {
+      exists = false;
+    }
+    if (exists) continue;
+
+    const expectedDir = path.dirname(photoPath) || photoPath;
+    const key = String(expectedDir || "").trim();
+    if (!byDir.has(key)) {
+      byDir.set(key, { expectedDir: key, ids: [], missingCount: 0 });
+    }
+    const group = byDir.get(key);
+    group.ids.push(id);
+    group.missingCount += 1;
+  }
+
+  const groups = Array.from(byDir.values())
+    .filter((g) => g && g.missingCount > 0)
+    .sort((a, b) => String(a.expectedDir || "").localeCompare(String(b.expectedDir || "")));
+
+  return {
+    ok: true,
+    groups,
+    totalMissing: groups.reduce((sum, g) => sum + Number(g.missingCount || 0), 0),
+  };
+});
+ipcMain.handle("queue:relinkMissingFromFolder", async (_e, { folderPath, ids } = {}) => {
+  const folder = String(folderPath || "").trim();
+  if (!folder) return { ok: false, error: "No folder selected." };
+  if (!fs.existsSync(folder)) return { ok: false, error: "Selected folder does not exist." };
+
+  const before = queue.loadQueue();
+  const candidatePaths = collectFilesRecursive(folder);
+  const idList = Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
+
+  const result = queue.relinkMissingPhotoPaths(before, candidatePaths, {
+    ids: idList,
+    existsFn: (p) => {
+      try {
+        return fs.existsSync(String(p || ""));
+      } catch {
+        return false;
+      }
+    },
+  });
+
+  const out = queue.saveQueue(result.queue);
+  pruneImageCacheForRemovedItems(before, out);
+  logEvent("INFO", "Relinked missing queue files from folder", {
+    folder,
+    candidates: candidatePaths.length,
+    scannedMissing: result.scannedMissing,
+    updatedCount: result.updatedCount,
+    unresolvedCount: result.unresolvedCount,
+    ambiguousCount: result.ambiguousCount,
+    restrictedToIds: idList.length,
+  });
+
+  return {
+    ok: true,
+    queue: out,
+    folderPath: folder,
+    candidates: candidatePaths.length,
+    scannedMissing: result.scannedMissing,
+    updatedCount: result.updatedCount,
+    unresolvedCount: result.unresolvedCount,
+    ambiguousCount: result.ambiguousCount,
+  };
 });
 ipcMain.handle("queue:update", async (_e, { items }) => {
   const before = queue.loadQueue();
@@ -2578,6 +2846,12 @@ ipcMain.handle("cfg:setUseLargeThumbnails", async (_e, { enabled }) => {
   return { ok: true, useLargeThumbnails: next };
 });
 
+ipcMain.handle("cfg:setUseLightTheme", async (_e, { enabled }) => {
+  const next = Boolean(enabled);
+  store.set("useLightTheme", next);
+  return { ok: true, useLightTheme: next };
+});
+
 ipcMain.handle("cfg:setTumblrPostTextMode", async (_e, { mode }) => {
   const allowed = new Set(["bold_title_then_description", "title_then_description", "title_only", "description_only"]);
   const next = allowed.has(String(mode || "").trim()) ? String(mode).trim() : "bold_title_then_description";
@@ -2644,6 +2918,13 @@ ipcMain.handle("cfg:setMastodonUseDescriptionAsAltText", async (_e, { enabled })
   return { ok: true, mastodonUseDescriptionAsAltText: next };
 });
 
+ipcMain.handle("cfg:setLemmyPostTextMode", async (_e, { mode }) => {
+  const allowed = new Set(["merge_title_description_tags", "merge_title_description", "merge_title_tags", "merge_description_tags", "title_only", "description_only"]);
+  const next = allowed.has(String(mode || "").trim()) ? String(mode).trim() : "merge_title_description_tags";
+  store.set("lemmyPostTextMode", next);
+  return { ok: true, lemmyPostTextMode: next };
+});
+
 ipcMain.handle("cfg:setBlueskyPrependText", async (_e, { text }) => {
   store.set("blueskyPrependText", String(text || ""));
   return { ok: true };
@@ -2663,6 +2944,17 @@ ipcMain.handle("cfg:setMastodonAppendText", async (_e, { text }) => {
   store.set("mastodonAppendText", String(text || ""));
   return { ok: true };
 });
+
+ipcMain.handle("cfg:setLemmyPrependText", async (_e, { text }) => {
+  store.set("lemmyPrependText", String(text || ""));
+  return { ok: true };
+});
+
+ipcMain.handle("cfg:setLemmyAppendText", async (_e, { text }) => {
+  store.set("lemmyAppendText", String(text || ""));
+  return { ok: true };
+});
+
 
 ipcMain.handle("cfg:setPixelfedPrependText", async (_e, { text }) => {
   store.set("pixelfedPrependText", String(text || ""));
@@ -2750,6 +3042,19 @@ ipcMain.handle("ui:pickPhotos", async () => {
     rememberLastFileDialogDir(res.filePaths[0]);
   }
   return res.canceled ? [] : (res.filePaths || []);
+});
+
+ipcMain.handle("ui:pickFolder", async () => {
+  const res = await dialog.showOpenDialog(win, {
+    title: "Select folder containing your photo files",
+    defaultPath: getLastFileDialogDir(),
+    properties: ["openDirectory"],
+  });
+  if (!res.canceled && Array.isArray(res.filePaths) && res.filePaths[0]) {
+    store.set("fileDialogLastDir", String(res.filePaths[0]));
+    return String(res.filePaths[0]);
+  }
+  return "";
 });
 
 // show a three-button dialog when starting the scheduler:
@@ -2878,7 +3183,7 @@ async function ensureAlbumByTitle({ title, primaryPhotoId, auth }) {
 }
 
 function normalizeTargetServicesForItem(item) {
-  const allowedServices = new Set(["flickr", "tumblr", "bluesky", "pixelfed", "mastodon"]);
+  const allowedServices = new Set(["flickr", "tumblr", "bluesky", "pixelfed", "mastodon", "lemmy"]);
   const raw = Array.isArray(item?.targetServices) ? item.targetServices : [];
   const out = [];
   const seen = new Set();
@@ -3369,6 +3674,84 @@ async function uploadNowOneInternal(options = {}) {
       successfulServices += 1;
     }
 
+    if (next.targetServices.includes("lemmy") && next.serviceStates?.lemmy?.status !== "done") {
+      if (!isLemmyAuthed()) {
+        const msg = "Lemmy target selected but Lemmy is not authorized.";
+        next.serviceStates.lemmy = { status: "failed", lastError: msg };
+        errorParts.push(`Lemmy: ${msg}`);
+      } else {
+        const lauth = getLemmyAuth();
+        const communityIds = Array.isArray(next.lemmyCommunityIds)
+          ? Array.from(new Set(next.lemmyCommunityIds.map((v) => String(v || "").trim()).filter(Boolean)))
+          : [];
+        if (!communityIds.length) {
+          const legacyCommunityId = String(next.lemmyCommunityId || "").trim();
+          if (legacyCommunityId) communityIds.push(legacyCommunityId);
+        }
+        if (!communityIds.length) {
+          const msg = "Select a Lemmy community in the editor before uploading.";
+          next.serviceStates.lemmy = { status: "failed", lastError: msg };
+          errorParts.push(`Lemmy: ${msg}`);
+        } else {
+          try {
+            if (String(next.privacy || "private") !== "public") {
+              warningParts.push(`Lemmy: visibility "${String(next.privacy || "private")}" is not supported and was not applied.`);
+            }
+            const lemmyPostTextMode = String(store.get("lemmyPostTextMode") || "merge_title_description_tags");
+            const lemmyPrependText = String(store.get("lemmyPrependText") || "");
+            const lemmyAppendText = String(store.get("lemmyAppendText") || "");
+            let firstPost = null;
+            let failedPosts = 0;
+            for (const communityId of communityIds) {
+              try {
+                const post = await lemmy.createImagePost({
+                  instanceUrl: lauth.instanceUrl,
+                  accessToken: lauth.accessToken,
+                  item: {
+                    ...next,
+                    tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+                  },
+                  communityId,
+                  postTextMode: lemmyPostTextMode,
+                  prependText: lemmyPrependText,
+                  appendText: lemmyAppendText,
+                  nsfw: Number(next.safetyLevel || 1) >= 2,
+                });
+                if (!firstPost) firstPost = post;
+                logEvent("INFO", "Uploaded to Lemmy", { id: next.id, postId: post.id || "", communityId });
+              } catch (postErr) {
+                failedPosts += 1;
+                const postMsg = postErr?.message ? String(postErr.message) : String(postErr);
+                warningParts.push(`Lemmy (${communityId}): ${postMsg}`);
+                logEvent("WARN", "Lemmy upload failed for community", { id: next.id, communityId, error: postMsg });
+              }
+            }
+
+            if (failedPosts === communityIds.length) {
+              throw new Error("Failed to post to all selected Lemmy communities.");
+            }
+
+            next.serviceStates.lemmy = {
+              status: "done",
+              remoteId: firstPost?.url || firstPost?.id || "",
+              uploadedAt: new Date().toISOString(),
+            };
+            successfulServices += 1;
+            if (failedPosts > 0) {
+              warningParts.push(`Lemmy: posted to ${communityIds.length - failedPosts}/${communityIds.length} communities.`);
+            }
+          } catch (e) {
+            const msg = e?.message ? String(e.message) : String(e);
+            next.serviceStates.lemmy = { status: "failed", lastError: msg };
+            errorParts.push(`Lemmy: ${msg}`);
+            logEvent("WARN", "Lemmy upload failed", { id: next.id, error: msg });
+          }
+        }
+      }
+    } else if (next.targetServices.includes("lemmy")) {
+      successfulServices += 1;
+    }
+
     if (!next.targetServices.length) {
       const msg = "No target services selected for this item.";
       next.status = "failed";
@@ -3670,6 +4053,53 @@ ipcMain.handle("mastodon:auth:logout", async () => {
   store.set("mastodonHasAccessToken", false);
   store.set("mastodonUsername", "");
   return { ok: true };
+});
+
+ipcMain.handle("lemmy:auth:test", async () => {
+  const auth = getLemmyAuth();
+  if (!auth.instanceUrl || !auth.accessToken) throw new Error("Missing Lemmy instance URL or access token");
+  const acct = await lemmy.verifyCredentials({ instanceUrl: auth.instanceUrl, accessToken: auth.accessToken });
+  const username = String(acct.username || "");
+  store.set("lemmyUsername", username);
+  try {
+    const communities = await lemmy.listSubscribedCommunities({ instanceUrl: auth.instanceUrl, accessToken: auth.accessToken });
+    store.set("lemmyCommunitiesCache", communities);
+  } catch {
+    // Community list can fail independently; auth remains valid.
+  }
+  return { ok: true, username };
+});
+
+ipcMain.handle("lemmy:auth:logout", async () => {
+  store.set("lemmyAccessTokenEnc", "");
+  store.set("lemmyHasAccessToken", false);
+  store.set("lemmyUsername", "");
+  store.set("lemmyCommunitiesCache", []);
+  return { ok: true };
+});
+
+ipcMain.handle("lemmy:communities", async (_e, { force } = {}) => {
+  if (!isLemmyAuthed()) throw new Error("Lemmy is not authorized");
+  const cached = store.get("lemmyCommunitiesCache") || [];
+  if (!force && Array.isArray(cached) && cached.length) return cached;
+
+  const auth = getLemmyAuth();
+  const communities = await lemmy.listSubscribedCommunities({
+    instanceUrl: auth.instanceUrl,
+    accessToken: auth.accessToken,
+  });
+  store.set("lemmyCommunitiesCache", communities);
+  return communities;
+});
+
+ipcMain.handle("lemmy:communityInfo", async (_e, { communityId } = {}) => {
+  if (!isLemmyAuthed()) throw new Error("Lemmy is not authorized");
+  const auth = getLemmyAuth();
+  return lemmy.getCommunityInfo({
+    instanceUrl: auth.instanceUrl,
+    accessToken: auth.accessToken,
+    communityId,
+  });
 });
 
 ipcMain.handle("sched:stop", async () => {

@@ -5,14 +5,48 @@ type Tab = "setup" | "queue" | "schedule" | "logs";
 type SavedIdSet = { name: string; ids: string[] };
 type DuplicateMember = { id: string; photoPath: string; title?: string };
 type DuplicateGroup = { hash: string; members: DuplicateMember[]; removeCandidateIds: string[] };
+type GroupInfoDialogState = {
+  groupId: string;
+  groupName: string;
+  loading: boolean;
+  memberCount: number;
+  photoCount: number;
+  description: string;
+  rulesText: string;
+  additionalInfo: string;
+  adminBlast: string;
+  groupUrl: string;
+  error?: string;
+};
 type LogFilterMode = "all" | "activity" | "warn_error" | "api";
 type AlbumEditorEntry = Album & { isPendingNew?: boolean; pendingTitle?: string; state?: "all" | "some" | "none" };
+function sortStateOrder(state: "all" | "some" | "none") {
+  return state === "all" ? 0 : state === "some" ? 1 : 2;
+}
 type TumblrPostTextMode = "bold_title_then_description" | "title_then_description" | "title_only" | "description_only";
 type TumblrPostTimingMode = "publish_now" | "add_to_queue";
 type BlueskyPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
 type BlueskyLongPostMode = "truncate" | "thread";
 type PixelFedPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
 type MastodonPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
+type LemmyPostTextMode = "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only";
+type LemmyCommunity = { id: string; name: string; title: string; actorId?: string; subscribers?: number };
+type LemmyCommunityInfoDialogState = {
+  communityId: string;
+  communityName: string;
+  loading: boolean;
+  title: string;
+  actorId: string;
+  subscribers: number;
+  posts: number;
+  description: string;
+  removed: boolean;
+  deleted: boolean;
+  nsfw: boolean;
+  postingRestrictedToMods: boolean;
+  communityUrl: string;
+  error?: string;
+};
 
 type UndoEditableField =
   | "title"
@@ -22,6 +56,8 @@ type UndoEditableField =
   | "groupIds"
   | "albumIds"
   | "createAlbums"
+  | "lemmyCommunityIds"
+  | "lemmyCommunityId"
   | "privacy"
   | "safetyLevel"
   | "latitude"
@@ -53,6 +89,8 @@ const UNDO_EDITABLE_FIELDS: UndoEditableField[] = [
   "groupIds",
   "albumIds",
   "createAlbums",
+  "lemmyCommunityIds",
+  "lemmyCommunityId",
   "privacy",
   "safetyLevel",
   "latitude",
@@ -93,6 +131,7 @@ const SERVICES: Array<{ id: UploadService; label: string }> = [
   { id: "bluesky", label: "Bluesky" },
   { id: "pixelfed", label: "PixelFed" },
   { id: "mastodon", label: "Mastodon" },
+  { id: "lemmy", label: "Lemmy" },
 ];
 
 const PLATFORM_META: Record<string, { label: string; icon: string; bg: string; fg: string }> = {
@@ -101,6 +140,7 @@ const PLATFORM_META: Record<string, { label: string; icon: string; bg: string; f
   bluesky: { label: "Bluesky", icon: "B", bg: "#1185fe", fg: "#ffffff" },
   pixelfed: { label: "PixelFed", icon: "P", bg: "#b33cf2", fg: "#ffffff" },
   mastodon: { label: "Mastodon", icon: "M", bg: "#563acc", fg: "#ffffff" },
+  lemmy: { label: "Lemmy", icon: "L", bg: "#00a385", fg: "#ffffff" },
 };
 
 const PLATFORM_CHIP_BASE_STYLE: React.CSSProperties = {
@@ -120,7 +160,7 @@ function normalizeTargetServices(services: UploadService[] | undefined): UploadS
   const seen = new Set<string>();
   for (const raw of services || []) {
     const svc = String(raw || "").trim().toLowerCase();
-    if ((svc !== "flickr" && svc !== "tumblr" && svc !== "bluesky" && svc !== "pixelfed" && svc !== "mastodon") || seen.has(svc)) continue;
+    if ((svc !== "flickr" && svc !== "tumblr" && svc !== "bluesky" && svc !== "pixelfed" && svc !== "mastodon" && svc !== "lemmy") || seen.has(svc)) continue;
     seen.add(svc);
     out.push(svc as UploadService);
   }
@@ -190,6 +230,23 @@ function toDateTimeLocalValue(iso: string | null | undefined) {
 }
 function uniq<T>(arr: T[]) {
   return Array.from(new Set(arr));
+}
+
+function getItemLemmyCommunityIds(item: Partial<QueueItem> | null | undefined): string[] {
+  const fromArray = Array.isArray((item as any)?.lemmyCommunityIds)
+    ? (item as any).lemmyCommunityIds.map((id: any) => String(id || "").trim()).filter(Boolean)
+    : [];
+  const legacy = String((item as any)?.lemmyCommunityId || "").trim();
+  return uniq([...fromArray, ...(legacy ? [legacy] : [])]);
+}
+
+function applyItemLemmyCommunityIds(item: QueueItem, ids: string[]): QueueItem {
+  const normalized = uniq((ids || []).map((id) => String(id || "").trim()).filter(Boolean));
+  return {
+    ...item,
+    lemmyCommunityIds: normalized,
+    lemmyCommunityId: normalized[0] || "",
+  };
 }
 
 const NEW_ALBUM_ID_PREFIX = "__new_album__:";
@@ -479,6 +536,7 @@ function normalizeSavedIdSets(input: any): SavedIdSet[] {
 function TriCheck(props: {
   state: "all" | "none" | "some";
   onToggle: (next: "all" | "none") => void;
+  disabled?: boolean;
 }) {
   const ref = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
@@ -491,12 +549,166 @@ function TriCheck(props: {
       ref={ref}
       type="checkbox"
       checked={props.state === "all"}
+      disabled={props.disabled}
       className={`tricheck ${props.state === "some" ? "mixed" : ""}`}
       onChange={(e) => props.onToggle(e.target.checked ? "all" : "none")}
       onClick={(e) => e.stopPropagation()}
       title={props.state === "all" ? "Uncheck all" : "Check all"}
     />
   );
+}
+
+// Fields that identify/describe the file itself or its upload status — never copied as settings.
+const SETTINGS_NON_COPY_KEYS: Set<keyof QueueItem> = new Set([
+  "id",
+  "photoPath",
+  "status",
+  "lastError",
+  "photoId",
+  "uploadedAt",
+  "dateTaken",
+  "scheduledUploadAt",
+  "groupAddStates",
+  "serviceStates",
+]);
+
+const FLICKR_INFO_ALLOWED_TAGS = new Set([
+  "a",
+  "p",
+  "div",
+  "span",
+  "br",
+  "ul",
+  "ol",
+  "li",
+  "strong",
+  "em",
+  "b",
+  "i",
+  "u",
+  "blockquote",
+  "pre",
+  "code",
+  "img",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+]);
+
+const FLICKR_INFO_DROP_TAGS = new Set([
+  "script",
+  "style",
+  "iframe",
+  "object",
+  "embed",
+  "link",
+  "meta",
+  "base",
+  "noscript",
+]);
+
+function normalizeAllowedExternalHref(rawHref: string): string {
+  const href = String(rawHref || "").trim();
+  if (!href) return "";
+  try {
+    const url = new URL(href, "https://www.flickr.com");
+    if (url.protocol !== "http:" && url.protocol !== "https:" && url.protocol !== "mailto:") return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function normalizeAllowedImageSrc(rawSrc: string): string {
+  const src = String(rawSrc || "").trim();
+  if (!src) return "";
+  try {
+    const url = new URL(src, "https://www.flickr.com");
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function sanitizeFlickrHtmlBlock(rawInput: string): string {
+  const raw = String(rawInput || "").trim();
+  if (!raw) return "";
+
+  const doc = new DOMParser().parseFromString(`<div>${raw}</div>`, "text/html");
+  const root = doc.body.firstElementChild as HTMLElement | null;
+  if (!root) return "";
+
+  const unwrapElement = (el: Element) => {
+    const parent = el.parentNode;
+    if (!parent) return;
+    while (el.firstChild) parent.insertBefore(el.firstChild, el);
+    parent.removeChild(el);
+  };
+
+  const walk = (node: Node) => {
+    for (const child of Array.from(node.childNodes)) walk(child);
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+    const el = node as HTMLElement;
+    const tag = el.tagName.toLowerCase();
+
+    if (FLICKR_INFO_DROP_TAGS.has(tag)) {
+      el.remove();
+      return;
+    }
+
+    if (!FLICKR_INFO_ALLOWED_TAGS.has(tag)) {
+      unwrapElement(el);
+      return;
+    }
+
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      const value = String(attr.value || "").trim();
+
+      if (name.startsWith("on")) {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+
+      if (tag === "a") {
+        if (name === "href") {
+          const safeHref = normalizeAllowedExternalHref(value);
+          if (safeHref) el.setAttribute("href", safeHref);
+          else el.removeAttribute("href");
+          continue;
+        }
+        if (name === "title") continue;
+        el.removeAttribute(attr.name);
+        continue;
+      }
+
+      if (tag === "img") {
+        if (name === "src") {
+          const safeSrc = normalizeAllowedImageSrc(value);
+          if (safeSrc) el.setAttribute("src", safeSrc);
+          else el.removeAttribute("src");
+          continue;
+        }
+        if (name === "alt" || name === "title" || name === "width" || name === "height") continue;
+        el.removeAttribute(attr.name);
+        continue;
+      }
+
+      if (name !== "title") el.removeAttribute(attr.name);
+    }
+
+    if (tag === "a") {
+      el.setAttribute("rel", "noopener noreferrer nofollow");
+    }
+  };
+
+  walk(root);
+  return root.innerHTML.trim();
 }
 
 export default function App() {
@@ -554,6 +766,15 @@ export default function App() {
   const [mastodonAccessToken, setMastodonAccessToken] = useState("");
   const [mastodonPostTextMode, setMastodonPostTextMode] = useState<MastodonPostTextMode>("merge_title_description_tags");
   const [mastodonUseDescriptionAsAltText, setMastodonUseDescriptionAsAltText] = useState(true);
+  const [lemmyInstanceUrl, setLemmyInstanceUrl] = useState("https://lemmy.world");
+  const [lemmyAccessToken, setLemmyAccessToken] = useState("");
+  const [lemmyPostTextMode, setLemmyPostTextMode] = useState<LemmyPostTextMode>("merge_title_description_tags");
+  const [lemmyPrependText, setLemmyPrependText] = useState("");
+  const [lemmyAppendText, setLemmyAppendText] = useState("");
+  const [lemmyAuthError, setLemmyAuthError] = useState("");
+  const [lemmyCommunities, setLemmyCommunities] = useState<LemmyCommunity[]>([]);
+  const [lemmyCommunitiesFilter, setLemmyCommunitiesFilter] = useState("");
+  const [platformEditorTab, setPlatformEditorTab] = useState<"flickr" | "lemmy">("flickr");
   const [blueskyPrependText, setBlueskyPrependText] = useState("");
   const [blueskyAppendText, setBlueskyAppendText] = useState("");
   const [mastodonPrependText, setMastodonPrependText] = useState("");
@@ -581,13 +802,16 @@ export default function App() {
   const [savedGroupSets, setSavedGroupSets] = useState<SavedIdSet[]>([]);
   const [savedAlbumSets, setSavedAlbumSets] = useState<SavedIdSet[]>([]);
   const [savedTagSets, setSavedTagSets] = useState<SavedIdSet[]>([]);
+  const [savedLemmyCommunitySets, setSavedLemmyCommunitySets] = useState<SavedIdSet[]>([]);
   const [activeGroupSetName, setActiveGroupSetName] = useState("");
   const [activeAlbumSetName, setActiveAlbumSetName] = useState("");
   const [activeTagSetName, setActiveTagSetName] = useState("");
+  const [activeLemmyCommunitySetName, setActiveLemmyCommunitySetName] = useState("");
   const [groupSetMenuOpen, setGroupSetMenuOpen] = useState(false);
   const [albumSetMenuOpen, setAlbumSetMenuOpen] = useState(false);
   const [tagSetMenuOpen, setTagSetMenuOpen] = useState(false);
-  const [saveSetDialog, setSaveSetDialog] = useState<{ kind: "group" | "album" | "tag"; ids: string[] } | null>(null);
+  const [lemmyCommunitySetMenuOpen, setLemmyCommunitySetMenuOpen] = useState(false);
+  const [saveSetDialog, setSaveSetDialog] = useState<{ kind: "group" | "album" | "tag" | "lemmy_community"; ids: string[] } | null>(null);
   const [saveSetNameInput, setSaveSetNameInput] = useState("");
   const saveSetNameInputRef = useRef<HTMLInputElement | null>(null);
   
@@ -624,6 +848,11 @@ const activeAlbumSetIdSet = useMemo(() => {
   return set ? new Set(set.ids.map(String)) : null;
 }, [savedAlbumSets, activeAlbumSetName]);
 
+const activeLemmyCommunitySetIdSet = useMemo(() => {
+  const set = savedLemmyCommunitySets.find((s) => s.name === activeLemmyCommunitySetName);
+  return set ? new Set(set.ids.map(String)) : null;
+}, [savedLemmyCommunitySets, activeLemmyCommunitySetName]);
+
 const filteredGroups = useMemo(() => {
   const q = groupsFilter.trim().toLowerCase();
   return groups.filter(g => {
@@ -642,6 +871,20 @@ const filteredAlbums = useMemo(() => {
   });
 }, [albums, albumsFilter, activeAlbumSetIdSet]);
 
+const filteredLemmyCommunities = useMemo(() => {
+  const q = lemmyCommunitiesFilter.trim().toLowerCase();
+  return (lemmyCommunities || []).filter((c) => {
+    const inSet = !activeLemmyCommunitySetIdSet || activeLemmyCommunitySetIdSet.has(String(c.id));
+    if (!inSet) return false;
+    if (!q) return true;
+    return (
+      String(c.title || "").toLowerCase().includes(q) ||
+      String(c.name || "").toLowerCase().includes(q) ||
+      String(c.actorId || "").toLowerCase().includes(q)
+    );
+  });
+}, [lemmyCommunities, lemmyCommunitiesFilter, activeLemmyCommunitySetIdSet]);
+
 const groupsWithCounts = useMemo(() => {
   return groups.filter((g) => Number(g.memberCount || 0) > 0 || Number(g.photoCount || 0) > 0).length;
 }, [groups]);
@@ -651,6 +894,7 @@ const showGroupCountsUpdating = Boolean(groupRefreshStatus.inProgress);
 
 const isGroupFilterActive = Boolean(groupsFilter.trim() || activeGroupSetName);
 const isAlbumFilterActive = Boolean(albumsFilter.trim() || activeAlbumSetName);
+const isLemmyCommunityFilterActive = Boolean(lemmyCommunitiesFilter.trim() || activeLemmyCommunitySetName);
 
 const friendlyIdInMessage = (msg?: string) => {
   if (!msg) return msg;
@@ -738,6 +982,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const applyingUndoRef = useRef(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selectionContextKey = useMemo(() => selectedIds.map(String).sort().join("|"), [selectedIds]);
   const [anchorId, setAnchorId] = useState<string | null>(null);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [scheduleAtLocal, setScheduleAtLocal] = useState("");
@@ -748,6 +993,15 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const [pendingPhotoPaths, setPendingPhotoPaths] = useState<string[]>([]);
   const [duplicateDialogGroups, setDuplicateDialogGroups] = useState<DuplicateGroup[]>([]);
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
+  const [groupInfoDialog, setGroupInfoDialog] = useState<GroupInfoDialogState | null>(null);
+  const [lemmyCommunityInfoDialog, setLemmyCommunityInfoDialog] = useState<LemmyCommunityInfoDialogState | null>(null);
+  const [missingRelinkPrompt, setMissingRelinkPrompt] = useState<{ expectedDir: string; missingCount: number } | null>(null);
+  const [missingRelinkPromptBusy, setMissingRelinkPromptBusy] = useState(false);
+  const [missingRelinkPromptSuppressed, setMissingRelinkPromptSuppressed] = useState(false);
+  const [unuploadedDeleteDialog, setUnuploadedDeleteDialog] = useState<{ ids: string[]; fileCount: number } | null>(null);
+  const [typedDeleteDialog, setTypedDeleteDialog] = useState<{ ids: string[]; fileCount: number; requiredText: string } | null>(null);
+  const [typedDeleteInput, setTypedDeleteInput] = useState("");
+  const typedDeleteInputRef = useRef<HTMLInputElement | null>(null);
   const dismissedDuplicateKeysRef = useRef<Set<string>>(new Set());
 
   const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
@@ -766,11 +1020,17 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
 
   // Context menu for queue items
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; itemId: string } | null>(null);
+  const [copiedSettings, setCopiedSettings] = useState<Partial<QueueItem> | null>(null);
   const tumblrOAuthPollTimerRef = useRef<number | null>(null);
   const queueScrollAreaRef = useRef<HTMLDivElement | null>(null);
   const queueScrollTopRef = useRef(0);
 
   const [pendingGroupFocus, setPendingGroupFocus] = useState<string>("");
+
+  const queuePathSignature = useMemo(
+    () => queue.map((it) => `${it.id}:${String(it.photoPath || "")}`).join("|"),
+    [queue]
+  );
 
   const valueEquals = (a: unknown, b: unknown) => {
     if (Array.isArray(a) || Array.isArray(b)) {
@@ -1157,8 +1417,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return withState;
   }, [filteredGroups, selectedIds]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const sortedFilteredAlbums = useMemo(() => {
+  const albumEditorRows = useMemo(() => {
     const titleFilter = albumsFilter.trim().toLowerCase();
     const existingTitleSet = new Set(albums.map((a) => String(a.title || "").trim().toLowerCase()).filter(Boolean));
 
@@ -1194,40 +1453,84 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       }));
 
     const baseRows: AlbumEditorEntry[] = filteredAlbums.map((a) => ({ ...a, isPendingNew: false }));
-    const rows: AlbumEditorEntry[] = [...pendingRows, ...baseRows];
-
-    if (!selectedIds.length) return rows;
-
-    const withState = rows.map(a => {
-      let on = 0;
-      for (const sid of selectedIds) {
-        const it = queue.find(x => x.id === sid);
-        if (!it) continue;
-        if (a.isPendingNew) {
-          if (hasCreateAlbumName(it.createAlbums, a.pendingTitle || a.title)) on += 1;
-        } else if (it.albumIds?.includes(a.id)) {
-          on += 1;
-        }
-      }
-      const state = on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
-      return { ...a, state };
-    });
-    
-    withState.sort((a, b) => {
-      const order = { all: 0, some: 1, none: 2 };
-      const stateCompare = order[a.state] - order[b.state];
-      if (stateCompare !== 0) return stateCompare;
-      if (a.isPendingNew !== b.isPendingNew) return a.isPendingNew ? -1 : 1;
-      return (a.title || "").localeCompare(b.title || "");
-    });
-    
-    return withState;
+    return [...pendingRows, ...baseRows];
   }, [filteredAlbums, selectedIds, albumsFilter, albums, queue, active]);
+
+  const sortedFilteredAlbums = useMemo(() => {
+    if (!selectedIds.length) return albumEditorRows;
+
+    return albumEditorRows
+      .map((row, index) => ({
+        ...row,
+        state: (() => {
+          let on = 0;
+          for (const sid of selectedIds) {
+            const it = queue.find((x) => x.id === sid);
+            if (!it) continue;
+            if (row.isPendingNew) {
+              if (hasCreateAlbumName(it.createAlbums, row.pendingTitle || row.title)) on += 1;
+            } else if (it.albumIds?.includes(row.id)) {
+              on += 1;
+            }
+          }
+          return on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
+        })(),
+        _index: index,
+      }))
+      .sort((a, b) => {
+        const stateCompare = sortStateOrder(a.state) - sortStateOrder(b.state);
+        if (stateCompare !== 0) return stateCompare;
+        if (a.isPendingNew !== b.isPendingNew) return a.isPendingNew ? -1 : 1;
+        const titleCompare = String(a.title || "").localeCompare(String(b.title || ""));
+        if (titleCompare !== 0) return titleCompare;
+        return a._index - b._index;
+      })
+        .map(({ _index, ...row }) => row);
+      }, [albumEditorRows, selectedIds, queue]);
 
   const selectedItems = useMemo(
     () => queue.filter(it => selectedSet.has(it.id)),
     [queue, selectedSet]
   );
+
+  const selectedLemmyCommunityIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (selectedIds.length > 1) {
+      for (const it of selectedItems) {
+        for (const cid of getItemLemmyCommunityIds(it)) ids.add(cid);
+      }
+    } else if (active) {
+      for (const cid of getItemLemmyCommunityIds(active)) ids.add(cid);
+    }
+    return Array.from(ids);
+  }, [selectedIds, selectedItems, active]);
+
+  const sortedFilteredLemmyCommunities = useMemo(() => {
+    if (!selectedIds.length) return filteredLemmyCommunities;
+
+    return filteredLemmyCommunities
+      .map((community, index) => ({
+        ...community,
+        state: (() => {
+          let on = 0;
+          for (const sid of selectedIds) {
+            const it = queue.find((x) => x.id === sid);
+            if (!it) continue;
+            if (getItemLemmyCommunityIds(it).includes(String(community.id))) on += 1;
+          }
+          return on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
+        })(),
+        _index: index,
+      }))
+      .sort((a, b) => {
+        const stateCompare = sortStateOrder(a.state) - sortStateOrder(b.state);
+        if (stateCompare !== 0) return stateCompare;
+        const titleCompare = String(a.title || a.name || "").localeCompare(String(b.title || b.name || ""));
+        if (titleCompare !== 0) return titleCompare;
+        return a._index - b._index;
+      })
+        .map(({ _index, ...community }) => community);
+      }, [filteredLemmyCommunities, selectedIds, queue]);
 
   const configuredServiceIds = useMemo(() => {
     const out: UploadService[] = [];
@@ -1236,8 +1539,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     if (cfg?.blueskyAuthed) out.push("bluesky");
     if ((cfg as any)?.pixelfedAuthed) out.push("pixelfed");
     if ((cfg as any)?.mastodonAuthed) out.push("mastodon");
+    if ((cfg as any)?.lemmyAuthed) out.push("lemmy");
     return out;
-  }, [cfg?.flickrAuthed, cfg?.tumblrAuthed, cfg?.blueskyAuthed, (cfg as any)?.pixelfedAuthed, (cfg as any)?.mastodonAuthed]);
+  }, [cfg?.flickrAuthed, cfg?.tumblrAuthed, cfg?.blueskyAuthed, (cfg as any)?.pixelfedAuthed, (cfg as any)?.mastodonAuthed, (cfg as any)?.lemmyAuthed]);
 
   const showPlatformSelector = configuredServiceIds.length >= 2;
 
@@ -1262,6 +1566,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return selectedEditorServices.includes("flickr") && selectedEditorServices.some((svc) => svc !== "flickr");
   }, [selectedEditorServices]);
 
+  const showLemmyOnlyFieldHint = useMemo(() => {
+    return selectedEditorServices.includes("lemmy") && selectedEditorServices.some((svc) => svc !== "lemmy");
+  }, [selectedEditorServices]);
+
   const tumblrSelectedInEditor = useMemo(() => {
     if (selectedIds.length > 1) {
       return selectedItems.some((it) => normalizeTargetServices(it.targetServices).includes("tumblr"));
@@ -1284,6 +1592,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const mastodonSelectedInEditor = useMemo(() => {
     return selectedEditorServices.includes("mastodon");
+  }, [selectedEditorServices]);
+
+  const lemmySelectedInEditor = useMemo(() => {
+    return selectedEditorServices.includes("lemmy");
   }, [selectedEditorServices]);
 
   const blueskyCounterInfo = useMemo(() => {
@@ -1338,6 +1650,24 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     // Show Flickr-specific fields (groups, albums, location) only when Flickr is selected
     return flickrSelectedInEditor;
   }, [flickrSelectedInEditor]);
+
+  const shouldShowLemmyOnlyFields = useMemo(() => {
+    return lemmySelectedInEditor;
+  }, [lemmySelectedInEditor]);
+
+  useEffect(() => {
+    if (!shouldShowFlickrOnlyFields && shouldShowLemmyOnlyFields) {
+      setPlatformEditorTab("lemmy");
+      return;
+    }
+    if (shouldShowFlickrOnlyFields && !shouldShowLemmyOnlyFields) {
+      setPlatformEditorTab("flickr");
+      return;
+    }
+    if (!shouldShowFlickrOnlyFields && !shouldShowLemmyOnlyFields) {
+      setPlatformEditorTab("flickr");
+    }
+  }, [shouldShowFlickrOnlyFields, shouldShowLemmyOnlyFields]);
 
   const safetyOptionLabel = useCallback((level: 1 | 2 | 3) => {
     // Build labels for each platform: Tumblr uses "Mature" for levels 2-3, Bluesky uses "Suggestive"/"Adult"
@@ -1471,12 +1801,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [minimizeToTray, setMinimizeToTray] = useState(false);
   const [checkUpdatesOnLaunch, setCheckUpdatesOnLaunch] = useState(true);
   const [useLargeThumbnails, setUseLargeThumbnails] = useState(true);
+  const [useLightTheme, setUseLightTheme] = useState(false);
   const [addShutterQueueTagToAllUploads, setAddShutterQueueTagToAllUploads] = useState(true);
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
   const [updateCheckStatus, setUpdateCheckStatus] = useState("");
   const [updateAvailableNotice, setUpdateAvailableNotice] = useState<{ message: string; releaseUrl?: string } | null>(null);
   const [didAutoCheckUpdates, setDidAutoCheckUpdates] = useState(false);
   const thumbVariant = useLargeThumbnails ? "wide" as const : "square" as const;
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.setAttribute("data-theme", useLightTheme ? "light" : "dark");
+  }, [useLightTheme]);
 
   const showToast = (message: string, options?: { actionUrl?: string }) => {
     setToast({ message, actionUrl: options?.actionUrl });
@@ -1560,6 +1896,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setMinimizeToTray(Boolean(c.minimizeToTray));
     setCheckUpdatesOnLaunch(Boolean((c as any).checkUpdatesOnLaunch));
     setUseLargeThumbnails(Boolean((c as any).useLargeThumbnails));
+    setUseLightTheme(Boolean((c as any).useLightTheme));
     setAddShutterQueueTagToAllUploads((c as any).addShutterQueueTagToAllUploads !== false);
     const rawTumblrMode = String((c as any).tumblrPostTextMode || "bold_title_then_description");
     const tumblrMode: TumblrPostTextMode =
@@ -1593,10 +1930,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         : "merge_title_description_tags";
     setMastodonPostTextMode(mastodonMode);
     setMastodonUseDescriptionAsAltText((c as any).mastodonUseDescriptionAsAltText !== false);
+    const rawLemmyMode = String((c as any).lemmyPostTextMode || "merge_title_description_tags");
+    const lemmyMode: LemmyPostTextMode =
+      rawLemmyMode === "merge_title_description" || rawLemmyMode === "merge_title_tags" || rawLemmyMode === "merge_description_tags" || rawLemmyMode === "title_only" || rawLemmyMode === "description_only"
+        ? rawLemmyMode
+        : "merge_title_description_tags";
+    setLemmyPostTextMode(lemmyMode);
     setBlueskyPrependText(String((c as any).blueskyPrependText || ""));
     setBlueskyAppendText(String((c as any).blueskyAppendText || ""));
     setMastodonPrependText(String((c as any).mastodonPrependText || ""));
     setMastodonAppendText(String((c as any).mastodonAppendText || ""));
+    setLemmyPrependText(String((c as any).lemmyPrependText || ""));
+    setLemmyAppendText(String((c as any).lemmyAppendText || ""));
     setPixelfedPrependText(String((c as any).pixelfedPrependText || ""));
     setPixelfedAppendText(String((c as any).pixelfedAppendText || ""));
     setTumblrPrependText(String((c as any).tumblrPrependText || ""));
@@ -1606,12 +1951,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const nextSavedGroupSets = normalizeSavedIdSets((c as any).savedGroupSets);
     const nextSavedAlbumSets = normalizeSavedIdSets((c as any).savedAlbumSets);
     const nextSavedTagSets = normalizeSavedIdSets((c as any).savedTagSets);
+    const nextSavedLemmyCommunitySets = normalizeSavedIdSets((c as any).savedLemmyCommunitySets);
     setSavedGroupSets(nextSavedGroupSets);
     setSavedAlbumSets(nextSavedAlbumSets);
     setSavedTagSets(nextSavedTagSets);
+    setSavedLemmyCommunitySets(nextSavedLemmyCommunitySets);
     if (activeGroupSetName && !nextSavedGroupSets.some(s => s.name === activeGroupSetName)) setActiveGroupSetName("");
     if (activeAlbumSetName && !nextSavedAlbumSets.some(s => s.name === activeAlbumSetName)) setActiveAlbumSetName("");
     if (activeTagSetName && !nextSavedTagSets.some(s => s.name === activeTagSetName)) setActiveTagSetName("");
+    if (activeLemmyCommunitySetName && !nextSavedLemmyCommunitySets.some((s) => s.name === activeLemmyCommunitySetName)) setActiveLemmyCommunitySetName("");
 
     // scheduler defaults (only set once if missing)
     if (typeof c.timeWindowEnabled !== "boolean") setTimeWindowEnabled(false);
@@ -1626,6 +1974,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     if (!blueskyIdentifier) setBlueskyIdentifier(String((c as any).blueskyIdentifier || ""));
     setPixelfedInstanceUrl(String((c as any).pixelfedInstanceUrl || "https://pixelfed.social"));
     setMastodonInstanceUrl(String((c as any).mastodonInstanceUrl || "https://mastodon.social"));
+    setLemmyInstanceUrl(String((c as any).lemmyInstanceUrl || "https://lemmy.world"));
+    setLemmyCommunities(Array.isArray((c as any).lemmyCommunitiesCache) ? (c as any).lemmyCommunitiesCache : []);
     setTumblrPrimaryBlogId(String(c.tumblrPrimaryBlogId || ""));
     if (!c.tumblrAuthed) {
       setTumblrBlogs([]);
@@ -2249,6 +2599,51 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     showToast("Mastodon logged out.");
   };
 
+  const saveLemmyCredentials = async () => {
+    try {
+      setLemmyAuthError("");
+      await window.sq.setLemmyCredentials(lemmyInstanceUrl, lemmyAccessToken);
+      await refreshAll();
+      showToast("Saved Lemmy settings.");
+    } catch (e: any) {
+      setLemmyAuthError(`Failed to save Lemmy settings: ${String(e?.message || e)}`);
+    }
+  };
+
+  const testLemmyAuth = async () => {
+    try {
+      setLemmyAuthError("");
+      await window.sq.setLemmyCredentials(lemmyInstanceUrl, lemmyAccessToken);
+      const out = await window.sq.testLemmyAuth();
+      const communities = await window.sq.fetchLemmyCommunities({ force: true });
+      setLemmyCommunities(Array.isArray(communities) ? communities : []);
+      await refreshAll();
+      showToast(`Lemmy authorization complete${out?.username ? ` as @${out.username}` : "."}`);
+    } catch (e: any) {
+      const msg = String(e?.message || e || "Unknown Lemmy error");
+      setLemmyAuthError(msg);
+    }
+  };
+
+  const refreshLemmyCommunities = async () => {
+    try {
+      setLemmyAuthError("");
+      const communities = await window.sq.fetchLemmyCommunities({ force: true });
+      const list = Array.isArray(communities) ? communities : [];
+      setLemmyCommunities(list);
+      showToast(`Loaded ${list.length} Lemmy communities.`);
+    } catch (e: any) {
+      setLemmyAuthError(String(e?.message || e || "Failed to refresh Lemmy communities"));
+    }
+  };
+
+  const logoutLemmy = async () => {
+    await window.sq.lemmyLogout();
+    setLemmyCommunities([]);
+    await refreshAll();
+    showToast("Lemmy logged out.");
+  };
+
   const refreshGroups = async () => {
     const g = await window.sq.fetchGroups({ force: true });
     setGroups(g);
@@ -2448,6 +2843,39 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [displayTab, queue, activeId, anchorId, undoBusy, undoStack]);
 
+  useEffect(() => {
+    if (!typedDeleteDialog) return;
+    const timer = window.setTimeout(() => {
+      typedDeleteInputRef.current?.focus();
+      typedDeleteInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [typedDeleteDialog]);
+
+  useEffect(() => {
+    setMissingRelinkPromptSuppressed(false);
+  }, [queuePathSignature]);
+
+  const refreshMissingRelinkPrompt = useCallback(async () => {
+    if (!queue.length) return;
+    if (missingRelinkPrompt) return;
+    if (missingRelinkPromptBusy) return;
+    if (missingRelinkPromptSuppressed) return;
+
+    const result = await window.sq.queueGetMissingPathGroups();
+    if (!result?.ok || !Array.isArray(result.groups) || !result.groups.length) return;
+
+    const first = result.groups[0];
+    setMissingRelinkPrompt({
+      expectedDir: String(first.expectedDir || ""),
+      missingCount: Number(first.missingCount || 0),
+    });
+  }, [queue, missingRelinkPrompt, missingRelinkPromptBusy, missingRelinkPromptSuppressed]);
+
+  useEffect(() => {
+    void refreshMissingRelinkPrompt();
+  }, [refreshMissingRelinkPrompt]);
+
   const manuallyScheduledCount = useMemo(
     () => queue.filter(it => it.status === "pending" && !!it.scheduledUploadAt).length,
     [queue]
@@ -2612,6 +3040,178 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setContextMenu({ x: e.clientX, y: e.clientY, itemId });
   }, [selectedIds]);
 
+  const openGroupInfoDialog = async (group: Group) => {
+    const groupId = String(group?.id || "").trim();
+    if (!groupId) return;
+
+    const fallbackUrl = `https://www.flickr.com/groups/${encodeURIComponent(groupId)}/`;
+    setGroupInfoDialog({
+      groupId,
+      groupName: String(group?.name || groupId),
+      loading: true,
+      memberCount: Number(group?.memberCount || 0),
+      photoCount: Number(group?.photoCount || 0),
+      description: "",
+      rulesText: "",
+      additionalInfo: "",
+      adminBlast: "",
+      groupUrl: fallbackUrl,
+    });
+
+    try {
+      const info = await window.sq.fetchGroupInfo(groupId);
+      setGroupInfoDialog((prev) => {
+        if (!prev || prev.groupId !== groupId) return prev;
+        return {
+          ...prev,
+          loading: false,
+          memberCount: Number(info?.memberCount || prev.memberCount || 0),
+          photoCount: Number(info?.photoCount || prev.photoCount || 0),
+          description: String(info?.description || "").trim(),
+          rulesText: String(info?.rulesText || "").trim(),
+          additionalInfo: String(info?.additionalInfo || "").trim(),
+          adminBlast: String(info?.adminBlast || "").trim(),
+          groupUrl: String(info?.groupUrl || prev.groupUrl || fallbackUrl).trim() || fallbackUrl,
+          error: undefined,
+        };
+      });
+    } catch (e: any) {
+      setGroupInfoDialog((prev) => {
+        if (!prev || prev.groupId !== groupId) return prev;
+        return {
+          ...prev,
+          loading: false,
+          error: String(e?.message || e || "Failed to load group info."),
+        };
+      });
+    }
+  };
+
+  const onGroupInfoClick = (e: React.MouseEvent, group: Group) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void openGroupInfoDialog(group);
+  };
+
+  const openGroupOverviewPage = () => {
+    if (!groupInfoDialog?.groupUrl) return;
+    void window.sq.openExternal({ url: groupInfoDialog.groupUrl });
+  };
+
+  const onGroupInfoHtmlClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    const link = target?.closest("a") as HTMLAnchorElement | null;
+    if (!link) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const href = normalizeAllowedExternalHref(link.getAttribute("href") || "");
+    if (!href) return;
+
+    const confirmed = window.confirm(`Do you want to open this link in your browser?\n\n${href}`);
+    if (!confirmed) return;
+    void window.sq.openExternal({ url: href });
+  };
+
+  const groupInfoHtml = useMemo(() => {
+    if (!groupInfoDialog) {
+      return { description: "", rulesText: "", additionalInfo: "", adminBlast: "" };
+    }
+    return {
+      description: sanitizeFlickrHtmlBlock(groupInfoDialog.description),
+      rulesText: sanitizeFlickrHtmlBlock(groupInfoDialog.rulesText),
+      additionalInfo: sanitizeFlickrHtmlBlock(groupInfoDialog.additionalInfo),
+      adminBlast: sanitizeFlickrHtmlBlock(groupInfoDialog.adminBlast),
+    };
+  }, [groupInfoDialog]);
+
+  const openLemmyCommunityInfoDialog = async (community: LemmyCommunity) => {
+    const communityId = String(community?.id || "").trim();
+    if (!communityId) return;
+
+    setLemmyCommunityInfoDialog({
+      communityId,
+      communityName: String(community?.title || community?.name || communityId),
+      loading: true,
+      title: String(community?.title || community?.name || communityId),
+      actorId: String(community?.actorId || ""),
+      subscribers: Number(community?.subscribers || 0),
+      posts: 0,
+      description: "",
+      removed: false,
+      deleted: false,
+      nsfw: false,
+      postingRestrictedToMods: false,
+      communityUrl: String(community?.actorId || ""),
+    });
+
+    try {
+      const info = await window.sq.fetchLemmyCommunityInfo(communityId);
+      setLemmyCommunityInfoDialog((prev) => {
+        if (!prev || prev.communityId !== communityId) return prev;
+        return {
+          ...prev,
+          loading: false,
+          title: String(info?.title || prev.title || prev.communityName),
+          actorId: String(info?.actorId || prev.actorId || ""),
+          subscribers: Number(info?.subscribers || prev.subscribers || 0),
+          posts: Number(info?.posts || 0),
+          description: String(info?.description || "").trim(),
+          removed: Boolean(info?.removed),
+          deleted: Boolean(info?.deleted),
+          nsfw: Boolean(info?.nsfw),
+          postingRestrictedToMods: Boolean(info?.postingRestrictedToMods),
+          communityUrl: String(info?.communityUrl || prev.communityUrl || "").trim(),
+          error: undefined,
+        };
+      });
+    } catch (e: any) {
+      setLemmyCommunityInfoDialog((prev) => {
+        if (!prev || prev.communityId !== communityId) return prev;
+        return {
+          ...prev,
+          loading: false,
+          error: String(e?.message || e || "Failed to load community info."),
+        };
+      });
+    }
+  };
+
+  const onLemmyCommunityInfoClick = (e: React.MouseEvent, community: LemmyCommunity) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void openLemmyCommunityInfoDialog(community);
+  };
+
+  const openLemmyCommunityPage = () => {
+    const url = normalizeAllowedExternalHref(lemmyCommunityInfoDialog?.communityUrl || "");
+    if (!url) return;
+    void window.sq.openExternal({ url });
+  };
+
+  const resolveRemovableIds = (ids: string[]) => {
+    if (!ids.length) return [];
+
+    const waitingIds = ids.filter(id => {
+      const it = queue.find(q => q.id === id);
+      if (!it?.groupAddStates) return false;
+      return Object.values(it.groupAddStates).some(st => st?.status === "retry");
+    });
+
+    let finalIds = ids;
+    if (waitingIds.length) {
+      const removeAll = window.confirm(
+        "One or more items being removed is still waiting to be added to a group.\n\nOK = Remove items from queue.\nCancel = Keep photos that are waiting."
+      );
+      if (!removeAll) {
+        finalIds = ids.filter(id => !waitingIds.includes(id));
+      }
+    }
+
+    return finalIds;
+  };
+
   const removeContextMenuItems = async () => {
     const idsToRemove = selectedIds.length > 0 ? selectedIds : (contextMenu ? [contextMenu.itemId] : []);
     setContextMenu(null);
@@ -2627,6 +3227,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     
     await removeSelected();
   };
+
+      const deleteContextMenuItems = async () => {
+        const idsToDelete = selectedIds.length > 0 ? selectedIds : (contextMenu ? [contextMenu.itemId] : []);
+        setContextMenu(null);
+        if (!idsToDelete.length) return;
+
+        const finalIds = resolveRemovableIds(idsToDelete);
+        if (!finalIds.length) return;
+
+        const hasNotYetUploadedItems = finalIds.some((id) => {
+          const it = queue.find((q) => q.id === id);
+          if (!it) return false;
+          return it.status === "pending" || it.status === "uploading" || it.status === "failed";
+        });
+
+        if (hasNotYetUploadedItems) {
+          setUnuploadedDeleteDialog({ ids: finalIds, fileCount: finalIds.length });
+          return;
+        }
+
+        const fileCount = finalIds.length;
+        setTypedDeleteInput("");
+        setTypedDeleteDialog({ ids: finalIds, fileCount, requiredText: `Delete ${fileCount}` });
+      };
 
   const uploadContextMenuItemsNow = async () => {
     const idsToUpload = selectedIds.length > 0 ? selectedIds : (contextMenu ? [contextMenu.itemId] : []);
@@ -2772,33 +3396,142 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     );
   };
 
+  const copyItemSettings = () => {
+    if (!contextMenu) return;
+    const item = queue.find((it) => it.id === contextMenu.itemId);
+    if (!item) return;
+    const settings: Partial<QueueItem> = {};
+    for (const key of Object.keys(item) as (keyof QueueItem)[]) {
+      if (!SETTINGS_NON_COPY_KEYS.has(key)) {
+        (settings as Record<string, unknown>)[key] = item[key];
+      }
+    }
+    setCopiedSettings(settings);
+    setContextMenu(null);
+    showToast("Settings copied.");
+  };
+
+  const pasteItemSettings = async () => {
+    if (!contextMenu || !copiedSettings) return;
+    const idsToUpdate = selectedIds.length > 0 ? selectedIds : [contextMenu.itemId];
+    setContextMenu(null);
+    const changed = queue
+      .filter((it) => idsToUpdate.includes(it.id))
+      .map((it) => ({ ...it, ...copiedSettings }));
+    if (!changed.length) return;
+    await updateItems(changed, { label: `Pasted settings to ${changed.length} item(s)` });
+    showToast(`Settings pasted to ${changed.length} item${changed.length !== 1 ? "s" : ""}.`);
+  };
+
   const removeSelected = async () => {
     const ids = selectedIds.length ? selectedIds : (activeId ? [activeId] : []);
     if (!ids.length) return;
-
-    // If any items are waiting on group retry, confirm how to proceed.
-    const waitingIds = ids.filter(id => {
-      const it = queue.find(q => q.id === id);
-      if (!it?.groupAddStates) return false;
-      return Object.values(it.groupAddStates).some(st => st?.status === "retry");
-    });
-
-    let finalIds = ids;
-    if (waitingIds.length) {
-      const removeAll = window.confirm(
-        "One or more items being removed is still waiting to be added to a group.\n\nOK = Remove items from queue.\nCancel = Keep photos that are waiting."
-      );
-      if (!removeAll) {
-        // Keep waiting photos; remove only those not waiting.
-        finalIds = ids.filter(id => !waitingIds.includes(id));
-        if (!finalIds.length) return;
-      }
-    }
+    const finalIds = resolveRemovableIds(ids);
+    if (!finalIds.length) return;
 
     const q = await window.sq.queueRemove(finalIds);
     setQueue(q);
     setSelectedIds([]);
     setActiveId(q[0]?.id || null);
+  };
+
+  const dismissMissingRelinkPrompt = () => {
+    setMissingRelinkPrompt(null);
+    setMissingRelinkPromptSuppressed(true);
+  };
+
+  const resolveMissingRelinkPrompt = async () => {
+    if (!missingRelinkPrompt) return;
+    setMissingRelinkPromptBusy(true);
+    try {
+      const folderPath = await window.sq.pickFolder();
+      if (!folderPath) {
+        setMissingRelinkPromptBusy(false);
+        dismissMissingRelinkPrompt();
+        return;
+      }
+
+      const result = await window.sq.queueRelinkMissingFromFolder({ folderPath });
+      if (!result?.ok || !Array.isArray(result.queue)) {
+        showToast(`Relink failed${result?.error ? `: ${result.error}` : "."}`);
+        setMissingRelinkPromptBusy(false);
+        return;
+      }
+
+      setQueue(result.queue);
+      if (activeId && !result.queue.some((it) => it.id === activeId)) {
+        setActiveId(result.queue[0]?.id || null);
+      }
+
+      const scannedMissing = Number(result.scannedMissing || 0);
+      const updatedCount = Number(result.updatedCount || 0);
+      const unresolvedCount = Number(result.unresolvedCount || 0);
+      const ambiguousCount = Number(result.ambiguousCount || 0);
+      let message = `Relinked ${updatedCount} of ${scannedMissing} missing file(s).`;
+      if (ambiguousCount > 0) message += ` ${ambiguousCount} ambiguous filename match(es).`;
+      if (unresolvedCount > 0 && ambiguousCount === 0) message += ` ${unresolvedCount} still missing.`;
+      showToast(message);
+
+      const missingAfter = await window.sq.queueGetMissingPathGroups();
+      if (missingAfter?.ok && Array.isArray(missingAfter.groups) && missingAfter.groups.length) {
+        const first = missingAfter.groups[0];
+        setMissingRelinkPrompt({
+          expectedDir: String(first.expectedDir || ""),
+          missingCount: Number(first.missingCount || 0),
+        });
+      } else {
+        setMissingRelinkPrompt(null);
+      }
+    } finally {
+      setMissingRelinkPromptBusy(false);
+    }
+  };
+
+  const cancelOriginalFileDeletion = () => {
+    setUnuploadedDeleteDialog(null);
+    setTypedDeleteDialog(null);
+    setTypedDeleteInput("");
+  };
+
+  const continueDeleteAfterUnuploadedWarning = () => {
+    if (!unuploadedDeleteDialog) return;
+    const fileCount = unuploadedDeleteDialog.fileCount;
+    const ids = [...unuploadedDeleteDialog.ids];
+    setUnuploadedDeleteDialog(null);
+    setTypedDeleteInput("");
+    setTypedDeleteDialog({ ids, fileCount, requiredText: `Delete ${fileCount}` });
+  };
+
+  const matchesTypedDeleteConfirmation = typedDeleteDialog
+    ? typedDeleteInput.trim().toLowerCase() === typedDeleteDialog.requiredText.trim().toLowerCase()
+    : false;
+
+  const confirmTypedOriginalFileDeletion = async () => {
+    if (!typedDeleteDialog) return;
+    if (!matchesTypedDeleteConfirmation) return;
+
+    const result = await window.sq.queueRemoveAndTrash(typedDeleteDialog.ids);
+    const nextQueue = Array.isArray(result?.queue) ? result.queue : [];
+    const movedCount = Number(result?.movedCount || 0);
+    const failedCount = Number(result?.failedCount || 0);
+    const skippedMissing = Number(result?.skippedMissing || 0);
+    const trashLabel = String(result?.trashLabel || "Recycle Bin");
+
+    setQueue(nextQueue);
+    setSelectedIds([]);
+    setActiveId(nextQueue[0]?.id || null);
+    setTypedDeleteDialog(null);
+    setTypedDeleteInput("");
+
+    const plural = movedCount === 1 ? "file has" : "files have";
+    window.alert(`${movedCount} ${plural} been moved to the ${trashLabel}. You can recover ${movedCount === 1 ? "it" : "them"} from the ${trashLabel}.`);
+
+    if (failedCount > 0 || skippedMissing > 0) {
+      const notes: string[] = [];
+      if (failedCount > 0) notes.push(`${failedCount} failed`);
+      if (skippedMissing > 0) notes.push(`${skippedMissing} missing on disk`);
+      showToast(`Some files could not be moved to ${trashLabel}: ${notes.join(", ")}.`);
+    }
   };
 
   const applySortToQueueItems = (itemsToSort: QueueItem[], sortFn: (a: QueueItem, b: QueueItem) => number): QueueItem[] => {
@@ -3766,7 +4499,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return Array.from(set);
   };
 
-  const triState = (kind: "group" | "album" | "service", id: string) => {
+  const triState = (kind: "group" | "album" | "service" | "lemmy_community", id: string) => {
     if (!selectedIds.length) return "none" as const;
     const pendingAlbumTitle = kind === "album" && isPendingNewAlbumId(id) ? pendingAlbumTitleFromId(id) : "";
     let on = 0;
@@ -3774,6 +4507,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       const it = queue.find(x => x.id === sid);
       if (kind === "service") {
         if (normalizeTargetServices(it?.targetServices).includes(id as UploadService)) on += 1;
+      } else if (kind === "lemmy_community") {
+        if (getItemLemmyCommunityIds(it).includes(id)) on += 1;
       } else if (kind === "album" && pendingAlbumTitle) {
         if (hasCreateAlbumName(it?.createAlbums, pendingAlbumTitle)) on += 1;
       } else {
@@ -3786,7 +4521,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return "some" as const;
   };
 
-  const setForSelected = async (kind: "group" | "album" | "service", id: string, next: "all" | "none") => {
+  const setForSelected = async (kind: "group" | "album" | "service" | "lemmy_community", id: string, next: "all" | "none") => {
     if (!selectedIds.length) return;
     const pendingAlbumTitle = kind === "album" && isPendingNewAlbumId(id) ? pendingAlbumTitleFromId(id) : "";
     const changed: QueueItem[] = [];
@@ -3799,6 +4534,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         if (next === "all") set.add(id as UploadService);
         else set.delete(id as UploadService);
         changed.push({ ...it, targetServices: normalizeTargetServices(Array.from(set) as UploadService[]) });
+      } else if (kind === "lemmy_community") {
+        const currentIds = getItemLemmyCommunityIds(it);
+        const nextIds = next === "all"
+          ? uniq([...currentIds, id])
+          : currentIds.filter((communityId) => communityId !== id);
+        changed.push(applyItemLemmyCommunityIds(it, nextIds));
       } else if (kind === "group") {
         let updated: QueueItem = { ...it, groupIds: toggleIds(it.groupIds || [], id, next === "all" ? "add" : "remove") };
         if (next === "none") updated = removeGroupRetryAndSelection(updated, id);
@@ -3816,19 +4557,27 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     await updateItems(changed);
   };
 
-  const persistSavedSets = async (kind: "group" | "album" | "tag", sets: SavedIdSet[]) => {
+  const persistSavedSets = async (kind: "group" | "album" | "tag" | "lemmy_community", sets: SavedIdSet[]) => {
     const normalized = normalizeSavedIdSets(sets);
     if (kind === "group") setSavedGroupSets(normalized);
     else if (kind === "album") setSavedAlbumSets(normalized);
-    else setSavedTagSets(normalized);
+    else if (kind === "tag") setSavedTagSets(normalized);
+    else setSavedLemmyCommunitySets(normalized);
     await window.sq.setSavedSets({ kind, sets: normalized });
   };
 
-  const getCurrentSelectedIdsForSetSave = (kind: "group" | "album" | "tag") => {
+  const getCurrentSelectedIdsForSetSave = (kind: "group" | "album" | "tag" | "lemmy_community") => {
     if (kind === "tag") {
       if (selectedIds.length > 1) return parseTagsCsv(batchTags);
       if (!active) return [] as string[];
       return parseTagsCsv(active.tags);
+    }
+    if (kind === "lemmy_community") {
+      if (selectedIds.length > 1) {
+        return lemmyCommunities.map((x) => String(x.id)).filter((id) => triState(kind, id) === "all");
+      }
+      if (!active) return [] as string[];
+      return getItemLemmyCommunityIds(active);
     }
     if (selectedIds.length > 1) {
       const source = kind === "group" ? groups : albums;
@@ -3840,14 +4589,14 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return (kind === "group" ? (active.groupIds || []) : (active.albumIds || [])).map(String);
   };
 
-  const saveCurrentSelectionAsSet = async (kind: "group" | "album" | "tag") => {
+  const saveCurrentSelectionAsSet = async (kind: "group" | "album" | "tag" | "lemmy_community") => {
     const ids = uniq(getCurrentSelectedIdsForSetSave(kind));
     if (!ids.length) {
-      const label = kind === "group" ? "groups" : kind === "album" ? "albums" : "tags";
+      const label = kind === "group" ? "groups" : kind === "album" ? "albums" : kind === "tag" ? "tags" : "communities";
       showToast(`No ${label} selected to save.`);
       return;
     }
-    const defaultName = `${kind === "group" ? "Group" : kind === "album" ? "Album" : "Tag"} set ${new Date().toISOString().slice(0, 10)}`;
+    const defaultName = `${kind === "group" ? "Group" : kind === "album" ? "Album" : kind === "tag" ? "Tag" : "Lemmy community"} set ${new Date().toISOString().slice(0, 10)}`;
     setSaveSetNameInput(defaultName);
     setSaveSetDialog({ kind, ids });
   };
@@ -3857,7 +4606,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const { kind, ids } = saveSetDialog;
     const name = saveSetNameInput.trim();
     if (!name) return;
-    const existing = kind === "group" ? savedGroupSets : kind === "album" ? savedAlbumSets : savedTagSets;
+    const existing = kind === "group" ? savedGroupSets : kind === "album" ? savedAlbumSets : kind === "tag" ? savedTagSets : savedLemmyCommunitySets;
     const next = [
       ...existing.filter(s => s.name.toLowerCase() !== name.toLowerCase()),
       { name, ids },
@@ -3865,34 +4614,36 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     await persistSavedSets(kind, next);
     if (kind === "group") setActiveGroupSetName(name);
     else if (kind === "album") setActiveAlbumSetName(name);
-    else setActiveTagSetName(name);
+    else if (kind === "tag") setActiveTagSetName(name);
+    else setActiveLemmyCommunitySetName(name);
     setSaveSetDialog(null);
     setSaveSetNameInput("");
     showToast(`Saved ${kind} set "${name}" (${ids.length} item(s)).`);
   };
 
-  const deleteSavedSet = async (kind: "group" | "album" | "tag", name: string) => {
-    const label = kind === "group" ? "groups" : kind === "album" ? "albums" : "tags";
+  const deleteSavedSet = async (kind: "group" | "album" | "tag" | "lemmy_community", name: string) => {
+    const label = kind === "group" ? "groups" : kind === "album" ? "albums" : kind === "tag" ? "tags" : "communities";
     const ok = window.confirm(
       `Delete saved ${kind} set "${name}"?\n\nThis only deletes the saved set definition. Photos will remain assigned to their current ${label}.`
     );
     if (!ok) return;
-    const existing = kind === "group" ? savedGroupSets : kind === "album" ? savedAlbumSets : savedTagSets;
+    const existing = kind === "group" ? savedGroupSets : kind === "album" ? savedAlbumSets : kind === "tag" ? savedTagSets : savedLemmyCommunitySets;
     const next = existing.filter(s => s.name !== name);
     await persistSavedSets(kind, next);
     if (kind === "group" && activeGroupSetName === name) setActiveGroupSetName("");
     if (kind === "album" && activeAlbumSetName === name) setActiveAlbumSetName("");
     if (kind === "tag" && activeTagSetName === name) setActiveTagSetName("");
+    if (kind === "lemmy_community" && activeLemmyCommunitySetName === name) setActiveLemmyCommunitySetName("");
     showToast(`Deleted ${kind} set "${name}".`);
   };
 
-  const renderSavedSetFilterControl = (kind: "group" | "album" | "tag", opts?: { disabled?: boolean }) => {
+  const renderSavedSetFilterControl = (kind: "group" | "album" | "tag" | "lemmy_community", opts?: { disabled?: boolean }) => {
     const disabled = Boolean(opts?.disabled);
-    const savedSets = kind === "group" ? savedGroupSets : kind === "album" ? savedAlbumSets : savedTagSets;
-    const activeName = kind === "group" ? activeGroupSetName : kind === "album" ? activeAlbumSetName : activeTagSetName;
-    const setActiveName = kind === "group" ? setActiveGroupSetName : kind === "album" ? setActiveAlbumSetName : setActiveTagSetName;
-    const menuOpen = kind === "group" ? groupSetMenuOpen : kind === "album" ? albumSetMenuOpen : tagSetMenuOpen;
-    const setMenuOpen = kind === "group" ? setGroupSetMenuOpen : kind === "album" ? setAlbumSetMenuOpen : setTagSetMenuOpen;
+    const savedSets = kind === "group" ? savedGroupSets : kind === "album" ? savedAlbumSets : kind === "tag" ? savedTagSets : savedLemmyCommunitySets;
+    const activeName = kind === "group" ? activeGroupSetName : kind === "album" ? activeAlbumSetName : kind === "tag" ? activeTagSetName : activeLemmyCommunitySetName;
+    const setActiveName = kind === "group" ? setActiveGroupSetName : kind === "album" ? setActiveAlbumSetName : kind === "tag" ? setActiveTagSetName : setActiveLemmyCommunitySetName;
+    const menuOpen = kind === "group" ? groupSetMenuOpen : kind === "album" ? albumSetMenuOpen : kind === "tag" ? tagSetMenuOpen : lemmyCommunitySetMenuOpen;
+    const setMenuOpen = kind === "group" ? setGroupSetMenuOpen : kind === "album" ? setAlbumSetMenuOpen : kind === "tag" ? setTagSetMenuOpen : setLemmyCommunitySetMenuOpen;
 
     return (
       <div style={{ position: "relative" }} data-dropdown={kind}>
@@ -3905,12 +4656,19 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             if (kind === "group") {
               setAlbumSetMenuOpen(false);
               setTagSetMenuOpen(false);
+              setLemmyCommunitySetMenuOpen(false);
             } else if (kind === "album") {
               setGroupSetMenuOpen(false);
               setTagSetMenuOpen(false);
+              setLemmyCommunitySetMenuOpen(false);
+            } else if (kind === "tag") {
+              setGroupSetMenuOpen(false);
+              setAlbumSetMenuOpen(false);
+              setLemmyCommunitySetMenuOpen(false);
             } else {
               setGroupSetMenuOpen(false);
               setAlbumSetMenuOpen(false);
+              setTagSetMenuOpen(false);
             }
             setMenuOpen(!menuOpen);
             e.stopPropagation();
@@ -3960,9 +4718,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     );
   };
 
-  const clearFilteredSelections = async (kind: "group" | "album") => {
+  const clearFilteredSelections = async (kind: "group" | "album" | "lemmy_community") => {
     const albumRows = kind === "album" ? sortedFilteredAlbums : [];
-    const idsToRemove = new Set((kind === "group" ? sortedFilteredGroups : albumRows.filter(x => !x.isPendingNew)).map(x => String(x.id)));
+    const idsToRemove = new Set((kind === "group" ? sortedFilteredGroups : kind === "album" ? albumRows.filter(x => !x.isPendingNew) : sortedFilteredLemmyCommunities).map(x => String(x.id)));
     const pendingAlbumTitlesToRemoveLc = new Set(
       albumRows
         .filter((x) => x.isPendingNew)
@@ -3970,7 +4728,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         .filter(Boolean)
     );
     if (!idsToRemove.size && !pendingAlbumTitlesToRemoveLc.size) {
-      showToast(`No filtered ${kind === "group" ? "groups" : "albums"} to clear.`);
+      const label = kind === "group" ? "groups" : kind === "album" ? "albums" : "communities";
+      showToast(`No filtered ${label} to clear.`);
       return;
     }
 
@@ -3983,18 +4742,21 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           let updated: QueueItem = { ...it, groupIds: (it.groupIds || []).filter(id => !idsToRemove.has(String(id))) };
           for (const gid of idsToRemove) updated = removeGroupRetryAndSelection(updated, gid);
           changed.push(updated);
-        } else {
+        } else if (kind === "album") {
           changed.push({
             ...it,
             albumIds: (it.albumIds || []).filter(id => !idsToRemove.has(String(id))),
             createAlbums: removeCreateAlbumNames(it.createAlbums, pendingAlbumTitlesToRemoveLc),
           });
+        } else {
+          changed.push(applyItemLemmyCommunityIds(it, getItemLemmyCommunityIds(it).filter((id) => !idsToRemove.has(String(id)))));
         }
       }
       if (!changed.length) return;
       setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
       await updateItems(changed);
-      showToast(`Cleared filtered ${kind === "group" ? "groups" : "albums"} for ${changed.length} item(s).`);
+      const label = kind === "group" ? "groups" : kind === "album" ? "albums" : "communities";
+      showToast(`Cleared filtered ${label} for ${changed.length} item(s).`);
       return;
     }
 
@@ -4004,7 +4766,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       for (const gid of idsToRemove) updated = removeGroupRetryAndSelection(updated, gid);
       setQueue(prev => prev.map(it => (it.id === updated.id ? updated : it)));
       await updateItems([updated]);
-    } else {
+    } else if (kind === "album") {
       const updated: QueueItem = {
         ...active,
         albumIds: (active.albumIds || []).filter(id => !idsToRemove.has(String(id))),
@@ -4012,19 +4774,25 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       };
       setQueue(prev => prev.map(it => (it.id === updated.id ? updated : it)));
       await updateItems([updated]);
+    } else {
+      const updated = applyItemLemmyCommunityIds(active, getItemLemmyCommunityIds(active).filter((id) => !idsToRemove.has(String(id))));
+      setQueue(prev => prev.map(it => (it.id === updated.id ? updated : it)));
+      await updateItems([updated]);
     }
-    showToast(`Cleared filtered ${kind === "group" ? "groups" : "albums"}.`);
+    const label = kind === "group" ? "groups" : kind === "album" ? "albums" : "communities";
+    showToast(`Cleared filtered ${label}.`);
   };
 
-  const selectAllFilteredForCurrentSelection = async (kind: "group" | "album") => {
+  const selectAllFilteredForCurrentSelection = async (kind: "group" | "album" | "lemmy_community") => {
     const albumRows = kind === "album" ? sortedFilteredAlbums : [];
-    const idsToAdd = (kind === "group" ? sortedFilteredGroups : albumRows.filter(x => !x.isPendingNew)).map(x => String(x.id));
+    const idsToAdd = (kind === "group" ? sortedFilteredGroups : kind === "album" ? albumRows.filter(x => !x.isPendingNew) : sortedFilteredLemmyCommunities).map(x => String(x.id));
     const pendingAlbumTitlesToAdd = albumRows
       .filter((x) => x.isPendingNew)
       .map((x) => String(x.pendingTitle || x.title || "").trim())
       .filter(Boolean);
     if (!idsToAdd.length && !pendingAlbumTitlesToAdd.length) {
-      showToast(`No filtered ${kind === "group" ? "groups" : "albums"} to select.`);
+      const label = kind === "group" ? "groups" : kind === "album" ? "albums" : "communities";
+      showToast(`No filtered ${label} to select.`);
       return;
     }
 
@@ -4034,26 +4802,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       for (const it of queue) {
         if (!selectedIdSet.has(it.id)) continue;
         if (kind === "group") changed.push({ ...it, groupIds: uniq([...(it.groupIds || []), ...idsToAdd]) });
-        else changed.push({
+        else if (kind === "album") changed.push({
           ...it,
           albumIds: uniq([...(it.albumIds || []), ...idsToAdd]),
           createAlbums: mergeCreateAlbumNames(it.createAlbums, pendingAlbumTitlesToAdd),
         });
+        else changed.push(applyItemLemmyCommunityIds(it, uniq([...getItemLemmyCommunityIds(it), ...idsToAdd])));
       }
       if (!changed.length) return;
       setQueue(prev => prev.map(it => changed.find(x => x.id === it.id) || it));
       await updateItems(changed);
-      showToast(`Selected all filtered ${kind === "group" ? "groups" : "albums"} for ${changed.length} item(s).`);
+      const label = kind === "group" ? "groups" : kind === "album" ? "albums" : "communities";
+      showToast(`Selected all filtered ${label} for ${changed.length} item(s).`);
       return;
     }
 
     if (!active) return;
     if (kind === "group") await updateActive({ groupIds: uniq([...(active.groupIds || []), ...idsToAdd]) });
-    else await updateActive({
+    else if (kind === "album") await updateActive({
       albumIds: uniq([...(active.albumIds || []), ...idsToAdd]),
       createAlbums: mergeCreateAlbumNames(active.createAlbums, pendingAlbumTitlesToAdd),
     });
-    showToast(`Selected all filtered ${kind === "group" ? "groups" : "albums"}.`);
+    else await updateActive(applyItemLemmyCommunityIds(active, uniq([...getItemLemmyCommunityIds(active), ...idsToAdd])));
+    const label = kind === "group" ? "groups" : kind === "album" ? "albums" : "communities";
+    showToast(`Selected all filtered ${label}.`);
   };
 
   const scheduledMap = useMemo(() => {
@@ -4247,7 +5019,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         ? Boolean((cfg as any)?.blueskyAuthed)
                         : svc.id === "pixelfed"
                           ? Boolean((cfg as any)?.pixelfedAuthed)
-                          : Boolean((cfg as any)?.mastodonAuthed);
+                          : svc.id === "mastodon"
+                            ? Boolean((cfg as any)?.mastodonAuthed)
+                      : Boolean((cfg as any)?.lemmyAuthed);
                   return (
                     <div
                       key={svc.id}
@@ -4367,7 +5141,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <div className="listbox">
                         {filteredGroups.slice(0, 200).map(g => (
                           <div key={g.id} className="listrow">
-                            <div className="small">{formatGroupName(g)}</div>
+                            <div className="small" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <span>{formatGroupName(g)}</span>
+                              <button
+                                className="btn btn-sm"
+                                type="button"
+                                title="View group info"
+                                style={{ padding: "0 6px", lineHeight: 1.1, minHeight: 18, borderRadius: 10 }}
+                                onClick={(e) => onGroupInfoClick(e, g)}
+                              >
+                                i
+                              </button>
+                            </div>
                           </div>
                         ))}
                         {!groups.length && <div className="small">Not loaded yet.</div>}
@@ -4980,7 +5765,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     PixelFed currently supports public/private visibility and accessibility alt text. Friends/family privacy and location tagging are not supported and will be adjusted/ignored when posting.
                   </div>
                 </>
-              ) : (
+              ) : setupServiceTab === "mastodon" ? (
                 <>
                   <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Mastodon API Access + Posting</div>
                   <div className="small">Mastodon uses a personal access token. ShutterQueue stores Mastodon credentials encrypted locally.</div>
@@ -5147,7 +5932,138 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     Token scopes: select <b>read</b> and <b>write</b>. You do not need follow/push/admin scopes.
                   </div>
                 </>
-              )}
+              ) : setupServiceTab === "lemmy" ? (
+                <>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Lemmy API Access + Communities</div>
+                  <div className="small">Lemmy uses a personal JWT token. ShutterQueue stores Lemmy credentials encrypted locally.</div>
+                  {!((cfg as any)?.lemmyAuthed) ? (
+                    <div className="card" style={{ marginTop: 12, backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
+                      <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>Lemmy Setup Help:</div>
+                      <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+                        <li style={{ marginBottom: 6 }}>Open your Lemmy instance in a browser (for example, https://lemmy.world) and sign in.</li>
+                        <li style={{ marginBottom: 6 }}>
+                          Press <b>F12</b> to open Developer Tools, then open the <b>Application</b> tab (Chromium browsers) or <b>Storage</b> tab (Firefox).
+                        </li>
+                        <li style={{ marginBottom: 6 }}>
+                          Go to <b>Cookies</b>, select your Lemmy domain, and copy the value of the <b>jwt</b> cookie.
+                        </li>
+                        <li style={{ marginBottom: 6 }}>
+                          Paste your instance URL and the JWT value below, click <b>Save</b>, then click <b>Test Lemmy Authorization</b>.
+                        </li>
+                        <li>After successful auth, click Refresh Subscribed Communities to load communities (including remote federated communities).</li>
+                      </ol>
+                      <div className="small" style={{ marginTop: 8, color: "var(--text-dim)" }}>
+                        Note: JWT cookies can expire. If Lemmy auth fails later, repeat the steps above to copy a fresh <b>jwt</b> value.
+                      </div>
+                    </div>
+                  ) : null}
+                  <div style={{ height: 12 }} />
+                  <label className="small">Lemmy Instance URL</label>
+                  <input className="input" value={lemmyInstanceUrl} onChange={(e) => { setLemmyInstanceUrl(e.target.value); setLemmyAuthError(""); }} placeholder="https://lemmy.world" />
+                  <div style={{ height: 10 }} />
+                  <label className="small">Lemmy Access Token (JWT)</label>
+                  <input className="input" value={lemmyAccessToken} onChange={(e) => { setLemmyAccessToken(e.target.value); setLemmyAuthError(""); }} placeholder="Paste Lemmy access token" type="password" />
+                  <div style={{ height: 12 }} />
+                  {((cfg as any)?.lemmyAuthed) ? (
+                    <div className="row">
+                      <button className="btn" onClick={saveLemmyCredentials}>Save</button>
+                      <button className="btn" onClick={testLemmyAuth}>Re-test Authorization</button>
+                      <button className="btn" onClick={refreshLemmyCommunities}>Refresh Subscribed Communities</button>
+                      <button className="btn danger" onClick={logoutLemmy}>Logout Lemmy</button>
+                    </div>
+                  ) : (
+                    <div className="row">
+                      <button className="btn" onClick={saveLemmyCredentials}>Save</button>
+                      <button className="btn primary" onClick={testLemmyAuth} disabled={!lemmyInstanceUrl || (!lemmyAccessToken && !(cfg as any)?.lemmyHasAccessToken)}>Test Lemmy Authorization</button>
+                    </div>
+                  )}
+                  {lemmyAuthError ? (
+                    <div className="small" style={{ marginTop: 8, color: "var(--bad)" }}>{lemmyAuthError}</div>
+                  ) : null}
+                  <div style={{ height: 12 }} />
+                  <div className="small">Lemmy status: {((cfg as any)?.lemmyAuthed) ? `Authorized${(cfg as any)?.lemmyUsername ? ` as @${(cfg as any).lemmyUsername}` : ""}` : "Not authorized"}</div>
+                  <div style={{ height: 12 }} />
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <div className="small">Subscribed communities loaded: {lemmyCommunities.length}</div>
+                    <button className="btn" onClick={refreshLemmyCommunities} disabled={!((cfg as any)?.lemmyAuthed)}>Refresh Communities</button>
+                  </div>
+                  <div style={{ height: 8 }} />
+                  <input
+                    className="input"
+                    value={lemmyCommunitiesFilter}
+                    onChange={(e) => setLemmyCommunitiesFilter(e.target.value)}
+                    placeholder="Filter communities..."
+                  />
+                  <div style={{ height: 8 }} />
+                  <div className="listbox" style={{ maxHeight: 220 }}>
+                    {filteredLemmyCommunities.slice(0, 300).map((community) => (
+                      <div key={community.id} className="listrow">
+                        <div className="small" style={{ display: "grid", gap: 2 }}>
+                          <span>{community.title || community.name}</span>
+                          <span style={{ color: "var(--text-dim)" }}>{`!${community.name}${community.subscribers ? ` • ${community.subscribers} subscribers` : ""}`}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {!lemmyCommunities.length && <div className="small">No communities loaded yet.</div>}
+                    {!!lemmyCommunities.length && !filteredLemmyCommunities.length && <div className="small">No communities match this filter.</div>}
+                  </div>
+                  <div style={{ height: 12 }} />
+                  <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>When posting to Lemmy...</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="radio" name="lemmy-post-text-mode" checked={lemmyPostTextMode === "merge_title_description_tags"} onChange={() => { const next: LemmyPostTextMode = "merge_title_description_tags"; setLemmyPostTextMode(next); window.sq.setLemmyPostTextMode(next).catch(console.error); }} />
+                      <span>Merge Title, Description, and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="radio" name="lemmy-post-text-mode" checked={lemmyPostTextMode === "merge_title_description"} onChange={() => { const next: LemmyPostTextMode = "merge_title_description"; setLemmyPostTextMode(next); window.sq.setLemmyPostTextMode(next).catch(console.error); }} />
+                      <span>Merge Title and Description for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="radio" name="lemmy-post-text-mode" checked={lemmyPostTextMode === "merge_title_tags"} onChange={() => { const next: LemmyPostTextMode = "merge_title_tags"; setLemmyPostTextMode(next); window.sq.setLemmyPostTextMode(next).catch(console.error); }} />
+                      <span>Merge Title and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="radio" name="lemmy-post-text-mode" checked={lemmyPostTextMode === "merge_description_tags"} onChange={() => { const next: LemmyPostTextMode = "merge_description_tags"; setLemmyPostTextMode(next); window.sq.setLemmyPostTextMode(next).catch(console.error); }} />
+                      <span>Merge Description and Tags for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="radio" name="lemmy-post-text-mode" checked={lemmyPostTextMode === "title_only"} onChange={() => { const next: LemmyPostTextMode = "title_only"; setLemmyPostTextMode(next); window.sq.setLemmyPostTextMode(next).catch(console.error); }} />
+                      <span>Use only Title for post text</span>
+                    </label>
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="radio" name="lemmy-post-text-mode" checked={lemmyPostTextMode === "description_only"} onChange={() => { const next: LemmyPostTextMode = "description_only"; setLemmyPostTextMode(next); window.sq.setLemmyPostTextMode(next).catch(console.error); }} />
+                      <span>Use only Description for post text</span>
+                    </label>
+                  </div>
+                  <div style={{ height: 12 }} />
+                  <label className="small">Prepend every Lemmy post with:</label>
+                  <input
+                    className="input"
+                    value={lemmyPrependText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setLemmyPrependText(next);
+                      window.sq.setLemmyPrependText(next).catch(console.error);
+                    }}
+                    placeholder="Optional text added above post body"
+                  />
+                  <div style={{ height: 8 }} />
+                  <label className="small">Add to the end of each post on Lemmy:</label>
+                  <input
+                    className="input"
+                    value={lemmyAppendText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setLemmyAppendText(next);
+                      window.sq.setLemmyAppendText(next).catch(console.error);
+                    }}
+                    placeholder="Optional text added below post body"
+                  />
+                  <div className="small" style={{ marginTop: 6 }}>
+                    Lemmy image posts are published to a selected community. Visibility and location controls are not supported by Lemmy and will be ignored.
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
 
@@ -5208,6 +6124,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   window.sq.setUseLargeThumbnails(next).catch(console.error);
                 }} />
                 <span className="small">Use Small Thumbnails</span>
+              </label>
+              <div style={{ height: 8 }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={useLightTheme} onChange={(e) => {
+                  const next = e.target.checked;
+                  setUseLightTheme(next);
+                  window.sq.setUseLightTheme(next).catch(console.error);
+                }} />
+                <span className="small">Use Light Theme</span>
               </label>
               <div style={{ height: 8 }} />
               <button className="btn" onClick={() => { void clearThumbnailCache(); }}>
@@ -5688,21 +6613,68 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   const hasPending = items.some(it => it.status === "pending");
                   const hasFailed = items.some(it => it.status === "failed");
                   const hasScheduled = items.some(it => it.scheduledUploadAt);
-                  
+                  const isSingleItem = idsToCheck.length === 1;
+                  const hasCopyPasteBlock = isSingleItem || copiedSettings !== null;
+
                   return (
                     <>
+                      {isSingleItem && (
+                        <div
+                          className="context-menu-item"
+                          onClick={copyItemSettings}
+                          style={{
+                            padding: "8px 12px",
+                            cursor: "pointer",
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                        >
+                          Copy Settings
+                        </div>
+                      )}
+                      {copiedSettings !== null && (
+                        <div
+                          className="context-menu-item"
+                          onClick={() => { void pasteItemSettings(); }}
+                          style={{
+                            padding: "8px 12px",
+                            cursor: "pointer",
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                        >
+                          Paste Settings
+                        </div>
+                      )}
+                      {hasCopyPasteBlock && (
+                        <div style={{ borderTop: "1px solid var(--border)", margin: "2px 0" }} />
+                      )}
                       <div
                         className="context-menu-item"
                         onClick={removeContextMenuItems}
                         style={{
                           padding: "8px 12px",
                           cursor: "pointer",
-                          borderBottom: (hasFailed || hasPending) ? "1px solid var(--border)" : "none",
+                          borderBottom: "1px solid var(--border)",
                         }}
                         onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
                         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                       >
                         Remove Item{selectedIds.length > 1 ? "s" : ""}
+                      </div>
+                      <div
+                        className="context-menu-item"
+                        onClick={() => { void deleteContextMenuItems(); }}
+                        style={{
+                          padding: "8px 12px",
+                          cursor: "pointer",
+                          color: "var(--bad)",
+                          borderBottom: (hasFailed || hasPending) ? "1px solid var(--border)" : "none",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        Remove + delete file{selectedIds.length > 1 ? "s" : ""}
                       </div>
                       {hasFailed && (
                         <div
@@ -5917,6 +6889,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           </div>
                         </div>
                       )}
+                      {lemmySelectedInEditor && batchPrivacy && batchPrivacy !== "public" && (
+                        <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 6, marginTop: 8, borderRadius: 3 }}>
+                          <div className="small" style={{ color: "var(--warn)" }}>
+                            ⚠ Lemmy community posts are always public. Selected privacy will not be applied.
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div>
                       <label className="small">Safety level</label>
@@ -5940,7 +6919,36 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="section-divider" />
 
-                  {shouldShowFlickrOnlyFields && (
+                  {(shouldShowFlickrOnlyFields || shouldShowLemmyOnlyFields) ? (
+                    <div style={{ marginBottom: 10 }}>
+                      <div className="tabs" style={{ marginBottom: 8, flexWrap: "wrap" }}>
+                        {shouldShowFlickrOnlyFields ? (
+                          <div
+                            className={`tab ${platformEditorTab === "flickr" ? "selected" : ""}`}
+                            onClick={() => setPlatformEditorTab("flickr")}
+                            role="tab"
+                            tabIndex={0}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+                          >
+                            <span>Flickr</span>
+                          </div>
+                        ) : null}
+                        {shouldShowLemmyOnlyFields ? (
+                          <div
+                            className={`tab ${platformEditorTab === "lemmy" ? "selected" : ""}`}
+                            onClick={() => setPlatformEditorTab("lemmy")}
+                            role="tab"
+                            tabIndex={0}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+                          >
+                            <span>Lemmy</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {shouldShowFlickrOnlyFields && platformEditorTab === "flickr" && (
                   <><div className="split">
                     <div>
                       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
@@ -5964,7 +6972,22 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         {sortedFilteredGroups.map(g => (
                           <label key={g.id} className="listrow trirow">
                             <TriCheck state={triState("group", g.id)} onToggle={(next) => setForSelected("group", g.id, next)} />
-                            <span className="small">{formatGroupName(g)}</span>
+                            <span className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              <span>{formatGroupName(g)}</span>
+                              <button
+                                className="btn btn-sm"
+                                type="button"
+                                title="View group info"
+                                style={{ padding: "0 6px", lineHeight: 1.1, minHeight: 18, borderRadius: 10 }}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                }}
+                                onClick={(e) => onGroupInfoClick(e, g)}
+                              >
+                                i
+                              </button>
+                            </span>
                           </label>
                         ))}
                         {!groups.length && <div className="small">Load groups in Setup tab.</div>}
@@ -6019,7 +7042,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="section-divider" />
 
-                  {shouldShowFlickrOnlyFields && (
+                  {shouldShowFlickrOnlyFields && platformEditorTab === "flickr" && (
                   <div>
                     <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
                       <span>Location</span>
@@ -6121,6 +7144,45 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     </button>
                   </div>
                   )}
+
+                  {shouldShowLemmyOnlyFields && platformEditorTab === "lemmy" && (
+                    <div>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>Communities</span>
+                        {showLemmyOnlyFieldHint ? <span className="small" style={{ opacity: 0.75 }}>Lemmy only</span> : null}
+                      </div>
+                      <div className="small" style={{ marginTop: 6 }}>Load saved community set</div>
+                      {renderSavedSetFilterControl("lemmy_community")}
+                      <div style={{ height: 6 }} />
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input className="input" value={lemmyCommunitiesFilter} onChange={(e) => setLemmyCommunitiesFilter(e.target.value)} placeholder="Filter communities..." style={{ flex: 1 }} />
+                        {lemmyCommunitiesFilter && <button className="btn btn-sm" onClick={() => setLemmyCommunitiesFilter("")} title="Clear filter">×</button>}
+                      </div>
+                      <div style={{ height: 8 }} />
+                      <div className="btncluster btncluster-secondary" style={{ justifySelf: "start", marginBottom: 8 }}>
+                        <span className="small">Filtered</span>
+                        <button className="btn btn-sm" onClick={() => selectAllFilteredForCurrentSelection("lemmy_community")} disabled={!isLemmyCommunityFilterActive}>Select Filtered</button>
+                        <button className="btn btn-sm" onClick={() => clearFilteredSelections("lemmy_community")} disabled={!isLemmyCommunityFilterActive}>Clear</button>
+                      </div>
+                      <div className="listbox">
+                        {sortedFilteredLemmyCommunities.map(c => (
+                          <label key={c.id} className="listrow trirow">
+                            <TriCheck state={triState("lemmy_community", c.id)} onToggle={(next) => setForSelected("lemmy_community", c.id, next)} />
+                            <span className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              <span>{c.title || c.name}</span>
+                              {c.subscribers ? <span style={{ color: "var(--text-dim)" }}>({c.subscribers})</span> : null}
+                            </span>
+                            <button className="btn btn-icon" style={{ marginLeft: "auto" }} onClick={(e) => { e.preventDefault(); onLemmyCommunityInfoClick(e, c); }} title="Community info">ℹ</button>
+                          </label>
+                        ))}
+                        {!lemmyCommunities.length && <div className="small">Load communities in Setup tab.</div>}
+                        {!!lemmyCommunities.length && !sortedFilteredLemmyCommunities.length && <div className="small">No communities match this filter.</div>}
+                      </div>
+                      <div style={{ height: 10 }} />
+                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("lemmy_community")}>Save selected Communities as a set</button>
+                    </div>
+                  )}
+
                 </>
               )}
 
@@ -6236,6 +7298,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           </div>
                         </div>
                       )}
+                      {lemmySelectedInEditor && active.privacy && active.privacy !== "public" && (
+                        <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: 6, marginTop: 8, borderRadius: 3 }}>
+                          <div className="small" style={{ color: "var(--warn)" }}>
+                            ⚠ Lemmy community posts are always public. Selected privacy will not be applied.
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div>
                       <label className="small">Safety level</label>
@@ -6254,7 +7323,36 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="section-divider" />
 
-                  {shouldShowFlickrOnlyFields && (
+                  {(shouldShowFlickrOnlyFields || shouldShowLemmyOnlyFields) ? (
+                    <div style={{ marginBottom: 10 }}>
+                      <div className="tabs" style={{ marginBottom: 8, flexWrap: "wrap" }}>
+                        {shouldShowFlickrOnlyFields ? (
+                          <div
+                            className={`tab ${platformEditorTab === "flickr" ? "selected" : ""}`}
+                            onClick={() => setPlatformEditorTab("flickr")}
+                            role="tab"
+                            tabIndex={0}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+                          >
+                            <span>Flickr</span>
+                          </div>
+                        ) : null}
+                        {shouldShowLemmyOnlyFields ? (
+                          <div
+                            className={`tab ${platformEditorTab === "lemmy" ? "selected" : ""}`}
+                            onClick={() => setPlatformEditorTab("lemmy")}
+                            role="tab"
+                            tabIndex={0}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+                          >
+                            <span>Lemmy</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {shouldShowFlickrOnlyFields && platformEditorTab === "flickr" && (
                   <><div className="split">
                     <div>
                       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
@@ -6293,6 +7391,19 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                             />
                             <span className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                               <span>{formatGroupName(g)}</span>
+                              <button
+                                className="btn btn-sm"
+                                type="button"
+                                title="View group info"
+                                style={{ padding: "0 6px", lineHeight: 1.1, minHeight: 18, borderRadius: 10 }}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                }}
+                                onClick={(e) => onGroupInfoClick(e, g)}
+                              >
+                                i
+                              </button>
                               {active.groupAddStates?.[g.id]?.status === "retry" ? <span className="badge warn">Pending Retry</span> : null}
                             </span>
                           </label>
@@ -6365,7 +7476,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div className="section-divider" />
 
-                  {shouldShowFlickrOnlyFields && (
+                  {shouldShowFlickrOnlyFields && platformEditorTab === "flickr" && (
                   <div>
                     <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
                       <span>Location</span>
@@ -6465,6 +7576,42 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     )}
                   </div>
                   )}
+
+                  {shouldShowLemmyOnlyFields && platformEditorTab === "lemmy" && (
+                    <div>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>Communities</span>
+                        {showLemmyOnlyFieldHint ? <span className="small" style={{ opacity: 0.75 }}>Lemmy only</span> : null}
+                      </div>
+                      <div className="small" style={{ marginTop: 6 }}>Load saved community set</div>
+                      {renderSavedSetFilterControl("lemmy_community")}
+                      <div style={{ height: 6 }} />
+                      <div className="small" style={{ marginBottom: 6 }}>
+                        Current: {selectedLemmyCommunityIds.length === 0 ? "(none)" : selectedLemmyCommunityIds.length === 1 ? selectedLemmyCommunityIds[0] : "(multiple)"}
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                        <input className="input" value={lemmyCommunitiesFilter} onChange={(e) => setLemmyCommunitiesFilter(e.target.value)} placeholder="Filter communities..." style={{ flex: 1 }} disabled={isUploaded} />
+                        {lemmyCommunitiesFilter && <button className="btn btn-sm" onClick={() => setLemmyCommunitiesFilter("")} title="Clear filter" disabled={isUploaded}>×</button>}
+                      </div>
+                      <div className="listbox">
+                        {sortedFilteredLemmyCommunities.map(c => (
+                          <label key={c.id} className="listrow trirow">
+                            <TriCheck state={triState("lemmy_community", c.id)} onToggle={(next) => setForSelected("lemmy_community", c.id, next)} disabled={isUploaded} />
+                            <span className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              <span>{c.title || c.name}</span>
+                              {c.subscribers ? <span style={{ color: "var(--text-dim)" }}>({c.subscribers})</span> : null}
+                            </span>
+                            <button className="btn btn-icon" style={{ marginLeft: "auto" }} onClick={(e) => { e.preventDefault(); onLemmyCommunityInfoClick(e, c); }} title="Community info" disabled={isUploaded}>ℹ</button>
+                          </label>
+                        ))}
+                        {!lemmyCommunities.length && <div className="small">Load communities in Setup tab.</div>}
+                        {!!lemmyCommunities.length && !sortedFilteredLemmyCommunities.length && <div className="small">No communities match this filter.</div>}
+                      </div>
+                      <div style={{ height: 10 }} />
+                      <button className="btn" onClick={() => saveCurrentSelectionAsSet("lemmy_community")}>Save selected Communities as a set</button>
+                    </div>
+                  )}
+
 
                   <div style={{ height: 14 }} />
                   {active.lastError ? (() => {
@@ -6875,9 +8022,247 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
         <div className="footer-right">
           {isDevRuntime && <span className="dev-runtime-badge">DEV {devSessionStamp}</span>}
-          <span className="mono">v{appVersion || "0.9.6b"}</span>
+          <span className="mono">v{appVersion || "0.9.6c"}</span>
         </div>
       </div>
+
+      {missingRelinkPrompt && (
+        <div className="schedule-dialog-backdrop" onClick={dismissMissingRelinkPrompt}>
+          <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 800, marginBottom: 10 }}>
+              Can't find the files in {missingRelinkPrompt.expectedDir}. Select the new folder where they are and ShutterQueue will try to relink by matching filenames.
+            </div>
+            {missingRelinkPrompt.missingCount > 0 && (
+              <div className="small" style={{ marginBottom: 10 }}>
+                Missing files from this folder: {missingRelinkPrompt.missingCount}
+              </div>
+            )}
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={dismissMissingRelinkPrompt} disabled={missingRelinkPromptBusy}>Not now</button>
+              <button className="btn primary" onClick={() => { void resolveMissingRelinkPrompt(); }} disabled={missingRelinkPromptBusy}>
+                {missingRelinkPromptBusy ? "Relinking..." : "Select Folder"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {groupInfoDialog && (
+        <div className="schedule-dialog-backdrop" onClick={() => setGroupInfoDialog(null)}>
+          <div
+            className="schedule-dialog"
+            style={{ width: "85vw", maxWidth: "85vw", maxHeight: "85vh", overflow: "hidden", display: "flex", flexDirection: "column" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <div style={{ fontWeight: 800 }}>
+                Group Info: {groupInfoDialog.groupName}
+              </div>
+              <button
+                className="preview-close"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setGroupInfoDialog(null);
+                }}
+                aria-label="Close group info"
+                title="Close"
+                style={{ width: 34, height: 34, fontSize: 22 }}
+              >
+                ×
+              </button>
+            </div>
+            <div className="small" style={{ marginBottom: 10 }}>
+              Users: {formatCompactCount(Number(groupInfoDialog.memberCount || 0))} | Photos: {formatCompactCount(Number(groupInfoDialog.photoCount || 0))}
+            </div>
+
+            <div className="group-info-scroll" onClick={onGroupInfoHtmlClick}>
+              {groupInfoDialog.loading && (
+                <div className="small" style={{ marginBottom: 10 }}>Loading group details...</div>
+              )}
+
+              {!groupInfoDialog.loading && groupInfoDialog.error && (
+                <div className="small" style={{ marginBottom: 10, color: "var(--bad)" }}>
+                  {groupInfoDialog.error}
+                </div>
+              )}
+
+              {!groupInfoDialog.loading && !groupInfoDialog.error && (
+                <>
+                  {groupInfoHtml.additionalInfo ? (
+                    <>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>Additional Info</div>
+                      <div className="small group-info-html" style={{ whiteSpace: "pre-wrap", marginBottom: 10 }} dangerouslySetInnerHTML={{ __html: groupInfoHtml.additionalInfo }} />
+                    </>
+                  ) : null}
+
+                  {groupInfoHtml.rulesText ? (
+                    <>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>Group Rules</div>
+                      <div className="small group-info-html" style={{ whiteSpace: "pre-wrap", marginBottom: 10 }} dangerouslySetInnerHTML={{ __html: groupInfoHtml.rulesText }} />
+                    </>
+                  ) : null}
+
+                  {groupInfoHtml.adminBlast ? (
+                    <>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>Admin Blast</div>
+                      <div className="small group-info-html" style={{ whiteSpace: "pre-wrap", marginBottom: 10 }} dangerouslySetInnerHTML={{ __html: groupInfoHtml.adminBlast }} />
+                    </>
+                  ) : null}
+
+                  {groupInfoHtml.description ? (
+                    <>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>Group Description</div>
+                      <div className="small group-info-html" style={{ whiteSpace: "pre-wrap", marginBottom: 10 }} dangerouslySetInnerHTML={{ __html: groupInfoHtml.description }} />
+                    </>
+                  ) : null}
+
+                  {!groupInfoHtml.description && !groupInfoHtml.rulesText && !groupInfoHtml.additionalInfo && !groupInfoHtml.adminBlast && (
+                    <div className="small" style={{ marginBottom: 10 }}>
+                      No additional text fields were returned for this group.
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={() => setGroupInfoDialog(null)}>Close</button>
+              <button className="btn" onClick={openGroupOverviewPage} disabled={!groupInfoDialog.groupUrl}>
+                Open Group Overview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {lemmyCommunityInfoDialog && (
+        <div className="schedule-dialog-backdrop" onClick={() => setLemmyCommunityInfoDialog(null)}>
+          <div
+            className="schedule-dialog"
+            style={{ width: "85vw", maxWidth: "85vw", maxHeight: "85vh", overflow: "hidden", display: "flex", flexDirection: "column" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <div style={{ fontWeight: 800 }}>
+                Community Info: {lemmyCommunityInfoDialog.communityName}
+              </div>
+              <button
+                className="preview-close"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLemmyCommunityInfoDialog(null);
+                }}
+                aria-label="Close community info"
+                title="Close"
+                style={{ width: 34, height: 34, fontSize: 22 }}
+              >
+                ×
+              </button>
+            </div>
+            <div className="small" style={{ marginBottom: 10 }}>
+              Members: {formatCompactCount(Number(lemmyCommunityInfoDialog.subscribers || 0))} | Posts: {formatCompactCount(Number(lemmyCommunityInfoDialog.posts || 0))}
+              {lemmyCommunityInfoDialog.nsfw && <span style={{ marginLeft: 10, color: "var(--warn)" }}>⚠️ NSFW</span>}
+              {lemmyCommunityInfoDialog.removed && <span style={{ marginLeft: 10, color: "var(--bad)" }}>🚫 Removed</span>}
+              {lemmyCommunityInfoDialog.deleted && <span style={{ marginLeft: 10, color: "var(--bad)" }}>🗑️ Deleted</span>}
+            </div>
+
+            <div className="group-info-scroll">
+              {lemmyCommunityInfoDialog.loading && (
+                <div className="small" style={{ marginBottom: 10 }}>Loading community details...</div>
+              )}
+
+              {!lemmyCommunityInfoDialog.loading && lemmyCommunityInfoDialog.error && (
+                <div className="small" style={{ marginBottom: 10, color: "var(--bad)" }}>
+                  {lemmyCommunityInfoDialog.error}
+                </div>
+              )}
+
+              {!lemmyCommunityInfoDialog.loading && !lemmyCommunityInfoDialog.error && (
+                <>
+                  {lemmyCommunityInfoDialog.title && (
+                    <>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>Title</div>
+                      <div className="small" style={{ marginBottom: 10 }}>{lemmyCommunityInfoDialog.title}</div>
+                    </>
+                  )}
+
+                  {lemmyCommunityInfoDialog.description && (
+                    <>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>Description</div>
+                      <div className="small" style={{ whiteSpace: "pre-wrap", marginBottom: 10 }}>{lemmyCommunityInfoDialog.description}</div>
+                    </>
+                  )}
+
+                  {lemmyCommunityInfoDialog.postingRestrictedToMods && (
+                    <div className="small" style={{ marginBottom: 10, color: "var(--warn)" }}>
+                      ⚠️ Posting is restricted to moderators only.
+                    </div>
+                  )}
+
+                  {!lemmyCommunityInfoDialog.title && !lemmyCommunityInfoDialog.description && (
+                    <div className="small" style={{ marginBottom: 10 }}>
+                      No additional details were available for this community.
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={() => setLemmyCommunityInfoDialog(null)}>Close</button>
+              <button className="btn" onClick={openLemmyCommunityPage} disabled={!lemmyCommunityInfoDialog.communityUrl}>
+                Open Community Page
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {unuploadedDeleteDialog && (
+        <div className="schedule-dialog-backdrop" onClick={cancelOriginalFileDeletion}>
+          <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 800, marginBottom: 10, color: "#ffd36b", fontSize: 18 }}>
+              Are you sure you want to delete these files? You haven't uploaded them yet.
+            </div>
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={cancelOriginalFileDeletion}>Cancel</button>
+              <button className="btn danger" onClick={continueDeleteAfterUnuploadedWarning}>Yes, continue to delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {typedDeleteDialog && (
+        <div className="schedule-dialog-backdrop" onClick={cancelOriginalFileDeletion}>
+          <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 900, marginBottom: 8, color: "#ff8f8f", fontSize: 20 }}>
+              You are about to delete the original files from your drive! Are you sure?
+            </div>
+            <div className="small" style={{ marginBottom: 12 }}>
+              If you really want to delete {typedDeleteDialog.fileCount} files, then please type '{typedDeleteDialog.requiredText}' in the field below.
+            </div>
+            <input
+              ref={typedDeleteInputRef}
+              className="input"
+              value={typedDeleteInput}
+              onChange={(e) => setTypedDeleteInput(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
+              placeholder={typedDeleteDialog.requiredText}
+              autoFocus
+            />
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={cancelOriginalFileDeletion}>Cancel</button>
+              <button
+                className="btn danger"
+                onClick={() => { void confirmTypedOriginalFileDeletion(); }}
+                disabled={!matchesTypedDeleteConfirmation}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {duplicateDialogOpen && (
         <div className="schedule-dialog-backdrop" onClick={() => setDuplicateDialogOpen(false)}>

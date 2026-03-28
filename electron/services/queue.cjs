@@ -3,17 +3,55 @@ const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
 const exifr = require("exifr");
+const { URL } = require("url");
 
 const ROOT = path.join(os.homedir(), ".shutterqueue");
 const QUEUE_PATH = path.join(ROOT, "queue.json");
 const duplicateHashCacheByItemId = new Map();
-const VALID_TARGET_SERVICES = new Set(["flickr", "tumblr", "bluesky", "pixelfed", "mastodon"]);
+const VALID_TARGET_SERVICES = new Set(["flickr", "tumblr", "bluesky", "pixelfed", "mastodon", "lemmy"]);
 const VALID_PRIVACY = new Set(["public", "friends", "family", "friends_family", "private"]);
 const VALID_GEO_PRIVACY = new Set(["public", "contacts", "friends", "family", "friends_family", "private"]);
 const VALID_STATUS = new Set(["pending", "uploading", "done", "done_warn", "failed"]);
 
 function ensureRoot() {
   if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT, { recursive: true });
+}
+
+function normalizePhotoPath(rawPath) {
+  let out = String(rawPath || "").trim();
+  if (!out) return "";
+
+  if ((out.startsWith('"') && out.endsWith('"')) || (out.startsWith("'") && out.endsWith("'"))) {
+    out = out.slice(1, -1).trim();
+  }
+
+  if (/^file:\/\//i.test(out)) {
+    try {
+      const parsed = new URL(out);
+      if (parsed.protocol === "file:") {
+        let pathname = decodeURIComponent(String(parsed.pathname || ""));
+        if (/^\/[A-Za-z]:[\\/]/.test(pathname)) pathname = pathname.slice(1);
+        if (parsed.hostname) {
+          pathname = `//${parsed.hostname}${pathname}`;
+        }
+        out = pathname;
+      }
+    } catch {
+      // Keep original path on parse failure.
+    }
+  }
+
+  if (/%[0-9A-Fa-f]{2}/.test(out)) {
+    try {
+      out = decodeURI(out);
+    } catch {
+      // Leave as-is if malformed escape sequence.
+    }
+  }
+
+  if (/^\/[A-Za-z]:[\\/]/.test(out)) out = out.slice(1);
+
+  return out.trim();
 }
 
 function loadQueue() {
@@ -29,6 +67,9 @@ function loadQueue() {
     // as expected after upgrades.
     for (const it of q) {
       if (!it) continue;
+      if (it.photoPath != null && String(it.photoPath).trim()) {
+        it.photoPath = normalizePhotoPath(it.photoPath);
+      }
       it.targetServices = normalizeTargetServices(it.targetServices);
       if (it.dateTaken != null && String(it.dateTaken).trim()) {
         const normalizedDateTaken = toIsoDateOrEmpty(it.dateTaken);
@@ -277,6 +318,7 @@ async function addPaths(paths) {
       groupIds: [],
       albumIds: [],
       createAlbums: [],
+      lemmyCommunityIds: [],
       privacy: "private",
       safetyLevel: 1,
       status: "pending",
@@ -311,7 +353,9 @@ function normalizeImportedQueue(input) {
       continue;
     }
 
-    const photoPath = String(raw.photoPath || "").trim();
+    const photoPath = normalizePhotoPath(
+      raw.photoPath ?? raw.path ?? raw.filePath ?? raw.sourcePath ?? ""
+    );
     if (!photoPath) {
       skipped += 1;
       continue;
@@ -322,6 +366,13 @@ function normalizeImportedQueue(input) {
     seenIds.add(id);
 
     const safetyLevel = Number(raw.safetyLevel);
+    const lemmyCommunityIds = Array.isArray(raw.lemmyCommunityIds)
+      ? raw.lemmyCommunityIds.map((v) => String(v || "").trim()).filter(Boolean)
+      : [];
+    if (!lemmyCommunityIds.length) {
+      const legacyCommunityId = String(raw.lemmyCommunityId || "").trim();
+      if (legacyCommunityId) lemmyCommunityIds.push(legacyCommunityId);
+    }
     const normalized = {
       id,
       photoPath,
@@ -332,6 +383,8 @@ function normalizeImportedQueue(input) {
       groupIds: Array.isArray(raw.groupIds) ? raw.groupIds.map((v) => String(v)).filter(Boolean) : [],
       albumIds: Array.isArray(raw.albumIds) ? raw.albumIds.map((v) => String(v)).filter(Boolean) : [],
       createAlbums: Array.isArray(raw.createAlbums) ? raw.createAlbums.map((v) => String(v)).filter(Boolean) : [],
+      lemmyCommunityIds,
+      lemmyCommunityId: lemmyCommunityIds[0] || "",
       privacy: VALID_PRIVACY.has(String(raw.privacy || "")) ? String(raw.privacy) : "private",
       safetyLevel: safetyLevel === 2 || safetyLevel === 3 ? safetyLevel : 1,
       status: VALID_STATUS.has(String(raw.status || "")) ? String(raw.status) : "pending",
@@ -436,6 +489,73 @@ function findDuplicateGroups() {
   return duplicates;
 }
 
+function relinkMissingPhotoPaths(queueItems, candidatePaths, options = {}) {
+  const sourceQueue = Array.isArray(queueItems) ? queueItems : [];
+  const files = Array.isArray(candidatePaths) ? candidatePaths : [];
+  const filteredIds = Array.isArray(options.ids)
+    ? options.ids.map((id) => String(id || "")).filter(Boolean)
+    : [];
+  const idSet = filteredIds.length > 0 ? new Set(filteredIds) : null;
+  const existsFn = typeof options.existsFn === "function"
+    ? options.existsFn
+    : (p) => {
+      try {
+        return fs.existsSync(String(p || ""));
+      } catch {
+        return false;
+      }
+    };
+
+  const candidatesByName = new Map();
+  for (const fp of files) {
+    const full = String(fp || "").trim();
+    if (!full) continue;
+    const baseKey = path.basename(full).toLowerCase();
+    if (!baseKey) continue;
+    if (!candidatesByName.has(baseKey)) candidatesByName.set(baseKey, []);
+    candidatesByName.get(baseKey).push(full);
+  }
+
+  const nextQueue = sourceQueue.map((it) => ({ ...it }));
+  let scannedMissing = 0;
+  let updatedCount = 0;
+  let ambiguousCount = 0;
+
+  for (const it of nextQueue) {
+    const id = String(it?.id || "");
+    if (idSet && !idSet.has(id)) continue;
+
+    const currentPath = normalizePhotoPath(it?.photoPath || "");
+    if (!currentPath) continue;
+    if (existsFn(currentPath)) {
+      it.photoPath = currentPath;
+      continue;
+    }
+
+    scannedMissing++;
+    const fileKey = path.basename(currentPath).toLowerCase();
+    const matches = candidatesByName.get(fileKey) || [];
+    if (matches.length > 1) {
+      ambiguousCount++;
+      continue;
+    }
+    if (matches.length !== 1) continue;
+
+    const replacement = String(matches[0] || "").trim();
+    if (!replacement || !existsFn(replacement)) continue;
+    it.photoPath = replacement;
+    updatedCount++;
+  }
+
+  return {
+    queue: nextQueue,
+    scannedMissing,
+    updatedCount,
+    unresolvedCount: Math.max(0, scannedMissing - updatedCount),
+    ambiguousCount,
+  };
+}
+
 module.exports = { loadQueue, saveQueue, addPaths, removeIds, updateItems, reorder, QUEUE_PATH, parseDateTakenToMs };
 
 
@@ -459,4 +579,5 @@ function clearUploaded() {
 module.exports.clearUploaded = clearUploaded;
 module.exports.findDuplicateGroups = findDuplicateGroups;
 module.exports.normalizeImportedQueue = normalizeImportedQueue;
+module.exports.relinkMissingPhotoPaths = relinkMissingPhotoPaths;
 

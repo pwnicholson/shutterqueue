@@ -2,6 +2,51 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
+## [0.9.6c] - 2026-03-26
+
+### Added
+- **Original file deletion flow with strong safeguards**
+  - Added queue action flow to move selected original files to the OS bin (`Recycle Bin` on Windows/Linux, `Trash Can` on macOS) instead of permanently deleting them
+  - Added a typed confirmation modal that requires an exact phrase (`Delete N`) before the Delete action can be executed
+  - Added a pre-warning modal when selected items include photos that have not been uploaded yet
+  - Added a completion popup confirming how many files were moved to the OS bin
+- **Missing-file relink helper for imported queues**
+  - Added automatic relink prompts when queued files are missing, with one prompt per missing source folder
+  - Prompts now state: `Can't find the files in XX. Select the new folder where they are and ShutterQueue will try to relink by matching filenames.`
+  - Selecting a folder remaps missing queue file paths by filename, preserving already-valid items and prompting again only if unresolved folders remain
+  - Added relink result summaries (relinked, unresolved, and ambiguous filename matches)
+- **Queue item settings copy/paste tools**
+  - Added `Copy Settings` for single-item context menus
+  - Added `Paste Settings` for single-item and multi-select context menus when copied settings are available
+  - Paste applies via existing queue update flow so undo behavior remains consistent
+- **Flickr group info dialogs in Setup and Queue editors**
+  - Added per-group info action to open a rich group info dialog (description, rules, additional info, admin blast, member/photo counts)
+  - Added safe HTML rendering and external-link confirmation prompts inside the dialog
+  - Added direct `Open Group Overview` fallback action for full group pages
+- **Lemmy platform integration (setup + upload + editor)**
+  - Added Lemmy setup/auth fields (instance URL + access token) with account test/logout
+  - Added subscribed-community loading and refresh from Lemmy API (including federated/remote communities)
+  - Added per-item Lemmy community selection in batch and single-item editors
+  - Added Lemmy upload pipeline branch for image posts with service-state tracking and error/warning handling
+  - Added platform-specific bottom editor tabs so Flickr and Lemmy fields can be shown independently when both services are selected
+
+### Changed
+- **Local development version rev and metadata alignment**
+  - Bumped local app version to `0.9.6c` in package/build metadata and UI fallback version display
+- **Delete completion guidance**
+  - Updated the delete-complete popup to explicitly tell users files can be recovered from the OS `Recycle Bin`/`Trash Can`
+- **Native text context menu parity**
+  - Restored spell-check suggestions and `Add to Dictionary` entries in the custom right-click text menu while keeping Undo/Redo/Cut/Copy/Paste/Delete/Select All
+- **Theme support and setup controls**
+  - Added a persisted `Use Light Theme` setup toggle
+  - Added light-theme palette tuning and contrast updates, including stronger selected-item outlines
+
+### Fixed
+- **Legacy queue import thumbnail compatibility**
+  - Import normalization now accepts older path keys (`path`, `filePath`, `sourcePath`) and normalizes legacy `file://` / encoded photo paths so thumbnail generation can resolve older exported queues reliably
+- **Missing relink no-op edge case**
+  - Fixed relink behavior when ID filters were passed as an empty list so relinking now applies correctly instead of matching nothing
+
 ## [0.9.6b] - 2026-03-26
 
 ### Changed

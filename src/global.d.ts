@@ -11,9 +11,10 @@ declare global {
       setBlueskyCredentials: (identifier: string, appPassword: string) => Promise<any>;
       setPixelfedCredentials: (instanceUrl: string, accessToken: string) => Promise<any>;
       setMastodonCredentials: (instanceUrl: string, accessToken: string) => Promise<any>;
+      setLemmyCredentials: (instanceUrl: string, accessToken: string) => Promise<any>;
       setUploadBatchSize: (uploadBatchSize: number) => Promise<any>;
       setSchedulerSettings: (payload: any) => Promise<any>;
-      setSavedSets: (options: { kind: "group" | "album" | "tag"; sets: Array<{ name: string; ids: string[] }> }) => Promise<any>;
+      setSavedSets: (options: { kind: "group" | "album" | "tag" | "lemmy_community"; sets: Array<{ name: string; ids: string[] }> }) => Promise<any>;
       startOAuth: () => Promise<any>;
       finishOAuth: (verifier: string) => Promise<any>;
       logout: () => Promise<any>;
@@ -32,9 +33,35 @@ declare global {
       cancelPixelfedOAuth: () => Promise<{ ok: boolean }>;
       testMastodonAuth: () => Promise<any>;
       mastodonLogout: () => Promise<any>;
+      testLemmyAuth: () => Promise<any>;
+      lemmyLogout: () => Promise<any>;
+      fetchLemmyCommunities: (options?: { force?: boolean }) => Promise<Array<{ id: string; name: string; title: string; actorId?: string; subscribers?: number }>>;
+      fetchLemmyCommunityInfo: (communityId: string) => Promise<{
+        id: string;
+        name: string;
+        title: string;
+        actorId?: string;
+        description?: string;
+        subscribers?: number;
+        posts?: number;
+        removed?: boolean;
+        deleted?: boolean;
+        nsfw?: boolean;
+        postingRestrictedToMods?: boolean;
+        communityUrl?: string;
+      }>;
 
       fetchGroups: (options?: { force?: boolean }) => Promise<Group[]>;
       fetchGroupRefreshStatus: () => Promise<{ inProgress: boolean; total: number; completed: number; startedAt: number }>;
+      fetchGroupInfo: (groupId: string) => Promise<{
+        memberCount: number;
+        photoCount: number;
+        description: string;
+        rulesText: string;
+        additionalInfo: string;
+        adminBlast: string;
+        groupUrl: string;
+      }>;
       fetchAlbums: () => Promise<Album[]>;
 
       getThumbSrc: (photoPath: string, variant?: "square" | "wide") => Promise<string | null>;
@@ -44,6 +71,30 @@ declare global {
       queueGet: () => Promise<QueueItem[]>;
       queueAdd: (paths: string[]) => Promise<QueueItem[]>;
       queueRemove: (ids: string[]) => Promise<QueueItem[]>;
+      queueRemoveAndTrash: (ids: string[]) => Promise<{
+        ok: boolean;
+        queue: QueueItem[];
+        movedCount: number;
+        skippedMissing: number;
+        failedCount: number;
+        trashLabel: string;
+      }>;
+      queueGetMissingPathGroups: () => Promise<{
+        ok: boolean;
+        groups: Array<{ expectedDir: string; ids: string[]; missingCount: number }>;
+        totalMissing: number;
+      }>;
+      queueRelinkMissingFromFolder: (options: { folderPath: string; ids?: string[] }) => Promise<{
+        ok: boolean;
+        queue?: QueueItem[];
+        folderPath?: string;
+        candidates?: number;
+        scannedMissing?: number;
+        updatedCount?: number;
+        unresolvedCount?: number;
+        ambiguousCount?: number;
+        error?: string;
+      }>;
       queueUpdate: (items: QueueItem[]) => Promise<QueueItem[]>;
       queueReorder: (idsInOrder: string[]) => Promise<QueueItem[]>;
       queueClearUploaded: () => Promise<QueueItem[]>;
@@ -77,12 +128,14 @@ declare global {
       schedulerStatus: () => Promise<any>;
 
       pickPhotos: () => Promise<string[]>;
+      pickFolder: () => Promise<string>;
       getPathForFile: (file: File) => string | null;
       openExternal: (options: { url: string }) => Promise<any>;
       setVerboseLogging: (enabled: boolean) => Promise<any>;
       setMinimizeToTray: (enabled: boolean) => Promise<any>;
       setCheckUpdatesOnLaunch: (enabled: boolean) => Promise<any>;
       setUseLargeThumbnails: (enabled: boolean) => Promise<any>;
+      setUseLightTheme: (enabled: boolean) => Promise<any>;
       setTumblrPostTextMode: (mode: "bold_title_then_description" | "title_then_description" | "title_only" | "description_only") => Promise<any>;
       setTumblrPostTimingMode: (mode: "publish_now" | "add_to_queue") => Promise<any>;
       setBlueskyPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
@@ -93,10 +146,13 @@ declare global {
       setPixelfedUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
       setMastodonPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
       setMastodonUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
+      setLemmyPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
       setBlueskyPrependText: (text: string) => Promise<any>;
       setBlueskyAppendText: (text: string) => Promise<any>;
       setMastodonPrependText: (text: string) => Promise<any>;
       setMastodonAppendText: (text: string) => Promise<any>;
+      setLemmyPrependText: (text: string) => Promise<any>;
+      setLemmyAppendText: (text: string) => Promise<any>;
       setPixelfedPrependText: (text: string) => Promise<any>;
       setPixelfedAppendText: (text: string) => Promise<any>;
       setTumblrPrependText: (text: string) => Promise<any>;
