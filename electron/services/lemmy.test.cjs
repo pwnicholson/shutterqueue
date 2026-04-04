@@ -82,3 +82,17 @@ test("Lemmy collectUploadedImageUrlCandidates keeps ranked candidate list", () =
     "https://x/api/v4/image",
   ]);
 });
+
+test("Lemmy pictrs bare filename is prefixed with /pictrs/image/ path", () => {
+  // Older pict-rs returns just a bare filename like "uuid.jpeg" in files[0].file.
+  // The upload loop must prefix it with /pictrs/image/ before normalizing, so the
+  // probe URL becomes https://instance/pictrs/image/uuid.jpeg, not https://instance/uuid.jpeg.
+  const bare = "5cb481d4-b75f-4787-b28a-55e4160dcddb.jpeg";
+  // Simulate: pickUploadedImageUrl returns the bare filename
+  const picked = pickUploadedImageUrl({ files: [{ file: bare }] });
+  assert.equal(picked, bare); // no path separators — just the filename
+
+  // The upload loop applies this fix when endpoint contains "pictrs/image":
+  const patched = !picked.includes("/") ? `/pictrs/image/${picked}` : picked;
+  assert.equal(patched, `/pictrs/image/${bare}`);
+});

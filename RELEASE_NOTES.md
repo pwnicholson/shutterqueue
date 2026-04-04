@@ -2,6 +2,14 @@
 
 **Release Date:** April 4, 2026
 
+## Post-Release Fixes (April 4, 2026)
+
+### Lemmy Image Upload Fix
+
+Lemmy uploads were failing on all endpoints for lemmy.world and most standard Lemmy instances. The root cause was a URL construction bug: the `/pictrs/image` upload endpoint returns just a bare filename (like `a1b2c3d4.jpeg`) with no path info. ShutterQueue was building the image URL as `https://lemmy.world/a1b2c3d4.jpeg`, when the correct serving URL is `https://lemmy.world/pictrs/image/a1b2c3d4.jpeg`. The probe was then checking the wrong URL, failing, and moving on to try all other endpoint combinations — all of which also failed for unrelated reasons. The fix ensures bare filenames from pictrs responses are given the correct `/pictrs/image/` path prefix before the URL is used.
+
+---
+
 ## Fixes & Improvements in 0.9.7
 
 ### Platform Status Indicators on Queue Cards

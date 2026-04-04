@@ -756,7 +756,12 @@ async function uploadImage({ instanceUrl, accessToken, photoPath, onProgress, im
       for (const [apiPath, fieldName] of orderedAttempts) {
         try {
           const uploadOut = await attempt(apiPath, fieldName);
-          const imageUrl = String(uploadOut?.urlOut || "").trim();
+          let imageUrl = String(uploadOut?.urlOut || "").trim();
+          // For /pictrs/image endpoints, the response gives a bare filename (e.g. "uuid.jpeg")
+          // with no path. The correct serving URL is /pictrs/image/{filename}, not just /{filename}.
+          if (imageUrl && !imageUrl.includes("/") && apiPath.includes("pictrs/image")) {
+            imageUrl = `/pictrs/image/${imageUrl}`;
+          }
           if (imageUrl) {
             const normalizedCandidate = normalizeUploadedImageUrlForPost(imageUrl, instanceUrl);
             const probe = await probePublicImageUrl(normalizedCandidate);

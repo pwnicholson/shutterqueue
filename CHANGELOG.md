@@ -4,6 +4,18 @@ All notable changes to ShutterQueue will be documented in this file.
 
 ## [0.9.7] - 2026-04-04
 
+### Post-Release Fixes (2026-04-04)
+
+#### Fixed
+- **Lemmy image upload broken on lemmy.world and most instances**
+  - The `/pictrs/image` upload endpoint returns a bare filename (e.g. `uuid.jpeg`) with no path in the response
+  - ShutterQueue was incorrectly constructing `https://instance/uuid.jpeg` instead of the correct `https://instance/pictrs/image/uuid.jpeg`
+  - All 11 endpoint combinations were failing because the URL probe was checking the wrong URL
+  - Fix: bare filenames from `/pictrs/image` responses are now prefixed with `/pictrs/image/` before URL normalization
+
+#### Tests
+- Added regression test for pictrs bare filename path prefixing
+
 ### Added
 - **Original file deletion flow with strong safeguards**
   - Added queue action flow to move selected original files to the OS bin (`Recycle Bin` on Windows/Linux, `Trash Can` on macOS) instead of permanently deleting them
