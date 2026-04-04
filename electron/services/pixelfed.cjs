@@ -3,8 +3,12 @@ const https = require("https");
 const FormData = require("form-data");
 const mime = require("mime-types");
 const path = require("path");
+const { prepareImageForUpload } = require("./image-prep.cjs");
 
 const DEFAULT_PIXELFED_INSTANCE = "https://pixelfed.social";
+const INSTANCE_LIMITS_CACHE = new Map();
+const INSTANCE_LIMITS_TTL_MS = 10 * 60 * 1000;
+const DISCOVERED_LIMITS_STALE_MS = 30 * 24 * 60 * 60 * 1000;
 
 function normalizeInstanceUrl(raw) {
   const input = String(raw || "").trim();
@@ -196,6 +200,139 @@ function requestFormUrlEncoded({ instanceUrl, pathName, accessToken, formData })
   });
 }
 
+function parseDimensionsLimit(value) {
+  const m = String(value || "").match(/^(\d+)x(\d+)$/i);
+  if (!m) return { maxWidth: null, maxHeight: null };
+  const maxWidth = Number(m[1]);
+  const maxHeight = Number(m[2]);
+  return {
+    maxWidth: Number.isFinite(maxWidth) && maxWidth > 0 ? Math.floor(maxWidth) : null,
+    maxHeight: Number.isFinite(maxHeight) && maxHeight > 0 ? Math.floor(maxHeight) : null,
+  };
+}
+
+function parsePositiveInt(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
+}
+
+function normalizeLimitsShape(value) {
+  if (!value || typeof value !== "object") {
+    return { maxBytes: null, maxPixels: null, maxWidth: null, maxHeight: null };
+  }
+  return {
+    maxBytes: parsePositiveInt(value.maxBytes),
+    maxPixels: parsePositiveInt(value.maxPixels),
+    maxWidth: parsePositiveInt(value.maxWidth),
+    maxHeight: parsePositiveInt(value.maxHeight),
+  };
+}
+
+function readDiscoveredLimitsFromCache(limitsCache, instanceKey) {
+  if (!limitsCache || typeof limitsCache !== "object") return null;
+  const entry = limitsCache[instanceKey];
+  if (!entry || typeof entry !== "object") return null;
+  const cachedAt = Number(entry.cachedAt);
+  if (!Number.isFinite(cachedAt) || cachedAt <= 0) return null;
+  return {
+    cachedAt,
+    limits: normalizeLimitsShape(entry.limits),
+  };
+}
+
+function looksLikeLimitError(err) {
+  const text = String(err?.message || err || "").toLowerCase();
+  return (
+    text.includes("too large") ||
+    text.includes("file is too big") ||
+    text.includes("file too large") ||
+    text.includes("payload too large") ||
+    text.includes("maximum") ||
+    text.includes("max size") ||
+    text.includes("entity too large") ||
+    text.includes("413")
+  );
+}
+
+function applyResizeOverrides(limits, imageResizeOptions) {
+  const base = normalizeLimitsShape(limits);
+  const enabled = Boolean(imageResizeOptions?.enabled);
+  if (!enabled) return base;
+
+  const overrideW = parsePositiveInt(imageResizeOptions?.maxWidth);
+  const overrideH = parsePositiveInt(imageResizeOptions?.maxHeight);
+
+  if (overrideW) {
+    base.maxWidth = base.maxWidth ? Math.min(base.maxWidth, overrideW) : overrideW;
+  }
+  if (overrideH) {
+    base.maxHeight = base.maxHeight ? Math.min(base.maxHeight, overrideH) : overrideH;
+  }
+
+  return base;
+}
+
+async function fetchPixelFedImageLimits({ instanceUrl, accessToken, limitsCache, forceRefresh, onDiscoveredLimits }) {
+  const key = normalizeInstanceUrl(instanceUrl);
+  const now = Date.now();
+  const cached = INSTANCE_LIMITS_CACHE.get(key);
+  if (!forceRefresh && cached && (now - cached.cachedAt) < INSTANCE_LIMITS_TTL_MS) {
+    return cached.limits;
+  }
+
+  const discovered = readDiscoveredLimitsFromCache(limitsCache, key);
+  if (!forceRefresh && discovered && (now - discovered.cachedAt) < DISCOVERED_LIMITS_STALE_MS) {
+    INSTANCE_LIMITS_CACHE.set(key, { cachedAt: discovered.cachedAt, limits: discovered.limits });
+    return discovered.limits;
+  }
+
+  let payload = null;
+  try {
+    try {
+      payload = await requestJson({
+        instanceUrl: key,
+        pathName: "/api/v2/instance",
+        method: "GET",
+        accessToken,
+      });
+    } catch {
+      payload = await requestJson({
+        instanceUrl: key,
+        pathName: "/api/v1/instance",
+        method: "GET",
+        accessToken,
+      });
+    }
+  } catch (e) {
+    if (discovered) {
+      INSTANCE_LIMITS_CACHE.set(key, { cachedAt: discovered.cachedAt, limits: discovered.limits });
+      return discovered.limits;
+    }
+    throw e;
+  }
+
+  const mediaCfg = payload?.configuration?.media_attachments || {};
+  const dim = parseDimensionsLimit(mediaCfg?.image_dimensions_limit);
+  const limits = normalizeLimitsShape({
+    maxBytes: parsePositiveInt(mediaCfg?.image_size_limit),
+    maxPixels: parsePositiveInt(mediaCfg?.image_matrix_limit),
+    maxWidth: dim.maxWidth,
+    maxHeight: dim.maxHeight,
+  });
+
+  const cachedAt = Date.now();
+  INSTANCE_LIMITS_CACHE.set(key, { cachedAt, limits });
+  if (typeof onDiscoveredLimits === "function") {
+    try {
+      onDiscoveredLimits({ instanceKey: key, limits, cachedAt });
+    } catch {
+      // Ignore cache persistence callback errors.
+    }
+  }
+  return limits;
+}
+
 function parseTagsCsv(tagsCsv) {
   const parts = String(tagsCsv || "")
     .split(",")
@@ -294,34 +431,74 @@ async function verifyCredentials({ instanceUrl, accessToken }) {
   };
 }
 
-async function uploadMedia({ instanceUrl, accessToken, photoPath, description }) {
-  const form = new FormData();
-  const contentType = mime.lookup(photoPath) || "application/octet-stream";
-  form.append("file", fs.createReadStream(photoPath), {
-    contentType,
-    filename: path.basename(photoPath),
-  });
-  if (description) form.append("description", String(description));
+async function uploadMedia({ instanceUrl, accessToken, photoPath, description, onProgress, imageResizeOptions, instanceLimitsCache, onDiscoveredLimits }) {
+  let refreshedAfterError = false;
 
-  const out = await requestForm({
-    instanceUrl,
-    pathName: "/api/v2/media",
-    accessToken,
-    form,
-  });
+  while (true) {
+    const limits = await fetchPixelFedImageLimits({
+      instanceUrl,
+      accessToken,
+      limitsCache: instanceLimitsCache,
+      forceRefresh: refreshedAfterError,
+      onDiscoveredLimits,
+    });
+    const effectiveLimits = applyResizeOverrides(limits, imageResizeOptions);
+    const prepared = await prepareImageForUpload(photoPath, effectiveLimits);
 
-  const mediaId = String(out?.id || "");
-  if (!mediaId) throw new Error("PixelFed media upload succeeded but returned no media id.");
-  return mediaId;
+    try {
+      const form = new FormData();
+      const contentType = prepared.contentType || mime.lookup(prepared.filePath) || "application/octet-stream";
+      const fileStream = fs.createReadStream(prepared.filePath);
+      form.append("file", fileStream, {
+        contentType,
+        filename: path.basename(prepared.filePath),
+      });
+      if (description) form.append("description", String(description));
+
+      const totalLength = Number(prepared.sizeBytes || fs.statSync(prepared.filePath).size || 0);
+      if (onProgress && totalLength > 0) {
+        let loaded = 0;
+        fileStream.on("data", (chunk) => {
+          loaded += chunk.length;
+          try { onProgress(loaded, totalLength); } catch (_) {}
+        });
+        fileStream.on("end", () => {
+          try { onProgress(totalLength, totalLength); } catch (_) {}
+        });
+      }
+
+      const out = await requestForm({
+        instanceUrl,
+        pathName: "/api/v2/media",
+        accessToken,
+        form,
+      });
+
+      const mediaId = String(out?.id || "");
+      if (!mediaId) throw new Error("PixelFed media upload succeeded but returned no media id.");
+      return mediaId;
+    } catch (e) {
+      if (!refreshedAfterError && looksLikeLimitError(e)) {
+        refreshedAfterError = true;
+        continue;
+      }
+      throw e;
+    } finally {
+      await prepared.cleanup();
+    }
+  }
 }
 
-async function createImagePost({ instanceUrl, accessToken, item, postTextMode, useDescriptionAsAltText, visibility, sensitive, prependText, appendText }) {
+async function createImagePost({ instanceUrl, accessToken, item, postTextMode, useDescriptionAsAltText, visibility, sensitive, prependText, appendText, imageResizeOptions, instanceLimitsCache, onDiscoveredLimits }) {
   const alt = useDescriptionAsAltText ? String(item?.description || "").trim() : "";
   const mediaId = await uploadMedia({
     instanceUrl,
     accessToken,
     photoPath: item.photoPath,
     description: alt,
+    imageResizeOptions,
+    instanceLimitsCache,
+    onDiscoveredLimits,
   });
 
   const status = buildPostText({ item, postTextMode, prependText, appendText }) || "Photo";

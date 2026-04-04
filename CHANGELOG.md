@@ -2,7 +2,7 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
-## [0.9.6c] - 2026-03-26
+## [0.9.7] - 2026-04-04
 
 ### Added
 - **Original file deletion flow with strong safeguards**
@@ -29,10 +29,21 @@ All notable changes to ShutterQueue will be documented in this file.
   - Added per-item Lemmy community selection in batch and single-item editors
   - Added Lemmy upload pipeline branch for image posts with service-state tracking and error/warning handling
   - Added platform-specific bottom editor tabs so Flickr and Lemmy fields can be shown independently when both services are selected
+  - Added in-app warning banners noting that Lemmy integration is still unreliable
+- **Selective queue removal with Flickr group retry preservation**
+  - Added ability to remove items from the main queue while keeping them in scheduled Flickr group addition/retry operations
+  - When removing items that have pending group retries, shows a modal with three options: "Cancel", "Keep In Group Queues Only" (marks item as `group_only`), or "Remove All"
+  - Items marked as `group_only` remain invisible in the main queue but continue processing group operations until those complete
+  - Auto-cleans `group_only` items once all group retry states complete
+- **Per-platform upload status indicators on queue cards**
+  - Added ✓ (success) and ✗ (failed) markers under platform icons on each queue card
+  - Markers only appear after an upload has been attempted; pending items show no marker
+- **File Missing badge on queue cards**
+  - Queue cards now display a red `File Missing` badge when the file at the stored path cannot be resolved
 
 ### Changed
-- **Local development version rev and metadata alignment**
-  - Bumped local app version to `0.9.6c` in package/build metadata and UI fallback version display
+- **Version bump to 0.9.7**
+  - Bumped local app version to `0.9.7` in package/build metadata and UI fallback version display
 - **Delete completion guidance**
   - Updated the delete-complete popup to explicitly tell users files can be recovered from the OS `Recycle Bin`/`Trash Can`
 - **Native text context menu parity**
@@ -46,6 +57,37 @@ All notable changes to ShutterQueue will be documented in this file.
   - Import normalization now accepts older path keys (`path`, `filePath`, `sourcePath`) and normalizes legacy `file://` / encoded photo paths so thumbnail generation can resolve older exported queues reliably
 - **Missing relink no-op edge case**
   - Fixed relink behavior when ID filters were passed as an empty list so relinking now applies correctly instead of matching nothing
+- **Flickr group-only items preserved through all queue operations**
+  - Import (replace mode), `Remove`, and `Clear Uploaded` no longer destroy `group_only` queue entries
+  - `group_only` status now recognized as valid during queue normalization on JSON import
+- **Original file delete now uses strict path matching only**
+  - Removed case-insensitive filename fallback from file path resolution to prevent accidental mismatched deletions
+  - Delete action is blocked entirely when any selected item has a missing or unmapped file path
+- **Platform status markers reset correctly with queue status**
+  - Resetting a failed queue item's status via the Retry/Reset dialog now clears all per-service ✓/✗ markers
+- **Bluesky token refresh retry now works reliably**
+  - Fixed a variable scoping bug where post composition options (post text mode, alt text, resize options) were declared inside the `try` block, causing a `ReferenceError` in the token-refresh retry code path
+  - Auto-refresh on `ExpiredToken` now correctly retries the full upload with the refreshed access token
+- **Lemmy community picker sort stability**
+  - Community list is always alphabetically ordered
+  - Clicking items no longer causes the list to jump mid-interaction
+  - Selected communities are promoted to the top only when re-opening the picker for an item that already has a saved selection (not on first open)
+- **Lemmy upload image URL validated before post creation**
+  - Upload response URL is normalized to an absolute instance URL
+  - URL candidates from the upload response are ranked and quality-checked; API endpoint-style paths are rejected as image URLs
+  - A live HTTP probe verifies each candidate URL actually returns image content (`image/*` content-type) before submitting the post
+  - If all upload endpoint/field combinations fail to produce a valid image URL, the failure message includes full per-attempt diagnostics (endpoint, field name, HTTP status, content-type, reason)
+- **Lemmy upload endpoint discovery is now self-healing per instance**
+  - On first upload to an instance, ShutterQueue probes working endpoint + field-name combinations (which vary by Lemmy and pict-rs version)
+  - The working combination is cached per instance URL and reused automatically on subsequent uploads
+  - Cache survives app restarts (30-day TTL); stale or broken entries fall back to re-probing transparently
+- **Lemmy failure messages now show community name instead of numeric ID**
+  - Per-community errors now include the resolved community title, short name, and instance hostname
+  - Known Lemmy error codes are translated to readable text (e.g. `only_mods_can_post_in_community` → "Only moderators can post in this community")
+  - `invalid_url` errors immediately halt remaining community attempts with a clear explanation
+
+### Tests
+- Added Lemmy regression tests covering URL candidate ranking, image-URL heuristics, and candidate collection ordering
 
 ## [0.9.6b] - 2026-03-26
 

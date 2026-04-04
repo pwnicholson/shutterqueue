@@ -544,12 +544,18 @@ const store = new Store({
     blueskyPostTextMode: "merge_title_description_tags",
     blueskyLongPostMode: "truncate",
     blueskyUseDescriptionAsAltText: true,
+    blueskyImageResizeEnabled: false,
+    blueskyImageResizeMaxWidth: 0,
+    blueskyImageResizeMaxHeight: 0,
     pixelfedInstanceUrl: pixelfed.DEFAULT_PIXELFED_INSTANCE,
     pixelfedAccessTokenEnc: "",
     pixelfedHasAccessToken: false,
     pixelfedUsername: "",
     pixelfedPostTextMode: "merge_title_description_tags",
     pixelfedUseDescriptionAsAltText: true,
+    pixelfedImageResizeEnabled: false,
+    pixelfedImageResizeMaxWidth: 0,
+    pixelfedImageResizeMaxHeight: 0,
     pixelfedClientId: "",
     pixelfedClientSecretEnc: "",
     pixelfedHasClientSecret: false,
@@ -561,11 +567,17 @@ const store = new Store({
     mastodonUsername: "",
     mastodonPostTextMode: "merge_title_description_tags",
     mastodonUseDescriptionAsAltText: true,
+    mastodonImageResizeEnabled: false,
+    mastodonImageResizeMaxWidth: 0,
+    mastodonImageResizeMaxHeight: 0,
     lemmyInstanceUrl: lemmy.DEFAULT_LEMMY_INSTANCE,
     lemmyAccessTokenEnc: "",
     lemmyHasAccessToken: false,
     lemmyUsername: "",
     lemmyPostTextMode: "merge_title_description_tags",
+    lemmyImageResizeEnabled: false,
+    lemmyImageResizeMaxWidth: 0,
+    lemmyImageResizeMaxHeight: 0,
     lemmyCommunitiesCache: [],
     blueskyPrependText: "",
     blueskyAppendText: "",
@@ -575,6 +587,10 @@ const store = new Store({
     lemmyAppendText: "",
     pixelfedPrependText: "",
     pixelfedAppendText: "",
+    pixelfedInstanceLimitsCache: {},
+    mastodonInstanceLimitsCache: {},
+    lemmyInstanceLimitsCache: {},
+    lemmyInstanceUploadConfigCache: {},
     tumblrPrependText: "",
     tumblrAppendText: "",
     tumblrGlobalTags: "",
@@ -1197,7 +1213,8 @@ function setItemLastErrorFromGroupStates(item, baseParts) {
   
   // Only set done_warn if there are actual problems (retries, gave_up, failed)
   // Informational messages (moderation queue, already in pool) don't trigger warning status
-  if (errorParts.length > 0) {
+  // Preserve group_only status — items detached from main queue but kept for group retries
+  if (errorParts.length > 0 && item.status !== "group_only") {
     item.status = "done_warn";
   }
 }
@@ -1435,7 +1452,12 @@ async function processDueGroupRetries({ apiKey, apiSecret, token, tokenSecret, m
       if (!cur) continue; // item was removed
       byId.set(it.id, it);
     }
-    queue.saveQueue(Array.from(byId.values()));
+    // Auto-remove group_only items that have no remaining retry states.
+    const merged = Array.from(byId.values()).filter(it => {
+      if (it.status !== "group_only") return true;
+      return Object.values(it.groupAddStates || {}).some(st => st?.status === "retry");
+    });
+    queue.saveQueue(merged);
   }
   return { ok: true, attempts };
 }
@@ -1782,16 +1804,18 @@ if (process.platform !== "darwin") {
   const args = process.argv.slice(1);
   for (const arg of args) {
     if (!arg || typeof arg !== "string") continue;
+    const trimmed = String(arg).trim();
+    if (!trimmed || trimmed === "." || trimmed === "./" || trimmed === ".\\") continue;
     // Skip flags (start with -)
-    if (arg.startsWith("-")) continue;
+    if (trimmed.startsWith("-")) continue;
     // Skip if it looks like an electron dev/build argument
-    if (arg.includes("=") || arg.includes("@")) continue;
+    if (trimmed.includes("=") || trimmed.includes("@")) continue;
     // Skip the executable path itself
-    if (arg.endsWith(".exe") || arg.endsWith(".js") || arg.includes("electron")) continue;
+    if (trimmed.endsWith(".exe") || trimmed.endsWith(".js") || trimmed.includes("electron")) continue;
     // This should be a file path - add it
     // We'll let the queue handler validate if it exists and is a valid image
-    pendingFilesToOpen.push(arg);
-    console.log("[main] Command-line file to open:", arg);
+    pendingFilesToOpen.push(trimmed);
+    console.log("[main] Command-line file to open:", trimmed);
   }
   if (pendingFilesToOpen.length > 0) {
     console.log("[main] Queued", pendingFilesToOpen.length, "file(s) from command line");
@@ -1960,23 +1984,38 @@ ipcMain.handle("cfg:get", async () => ({
   blueskyPostTextMode: String(store.get("blueskyPostTextMode") || "merge_title_description_tags"),
   blueskyLongPostMode: String(store.get("blueskyLongPostMode") || "truncate"),
   blueskyUseDescriptionAsAltText: store.get("blueskyUseDescriptionAsAltText") !== false,
+  blueskyImageResizeEnabled: Boolean(store.get("blueskyImageResizeEnabled")),
+  blueskyImageResizeMaxWidth: Math.max(0, Math.round(Number(store.get("blueskyImageResizeMaxWidth") || 0))),
+  blueskyImageResizeMaxHeight: Math.max(0, Math.round(Number(store.get("blueskyImageResizeMaxHeight") || 0))),
   pixelfedInstanceUrl: String(store.get("pixelfedInstanceUrl") || pixelfed.DEFAULT_PIXELFED_INSTANCE),
   pixelfedHasAccessToken: Boolean(store.get("pixelfedHasAccessToken")),
   pixelfedAuthed: isPixelfedAuthed(),
   pixelfedUsername: String(store.get("pixelfedUsername") || ""),
   pixelfedPostTextMode: String(store.get("pixelfedPostTextMode") || "merge_title_description_tags"),
   pixelfedUseDescriptionAsAltText: store.get("pixelfedUseDescriptionAsAltText") !== false,
+  pixelfedImageResizeEnabled: Boolean(store.get("pixelfedImageResizeEnabled")),
+  pixelfedImageResizeMaxWidth: Math.max(0, Math.round(Number(store.get("pixelfedImageResizeMaxWidth") || 0))),
+  pixelfedImageResizeMaxHeight: Math.max(0, Math.round(Number(store.get("pixelfedImageResizeMaxHeight") || 0))),
+  pixelfedInstanceLimitsCache: store.get("pixelfedInstanceLimitsCache") || {},
   mastodonInstanceUrl: String(store.get("mastodonInstanceUrl") || mastodon.DEFAULT_MASTODON_INSTANCE),
   mastodonHasAccessToken: Boolean(store.get("mastodonHasAccessToken")),
   mastodonAuthed: isMastodonAuthed(),
   mastodonUsername: String(store.get("mastodonUsername") || ""),
   mastodonPostTextMode: String(store.get("mastodonPostTextMode") || "merge_title_description_tags"),
   mastodonUseDescriptionAsAltText: store.get("mastodonUseDescriptionAsAltText") !== false,
+  mastodonImageResizeEnabled: Boolean(store.get("mastodonImageResizeEnabled")),
+  mastodonImageResizeMaxWidth: Math.max(0, Math.round(Number(store.get("mastodonImageResizeMaxWidth") || 0))),
+  mastodonImageResizeMaxHeight: Math.max(0, Math.round(Number(store.get("mastodonImageResizeMaxHeight") || 0))),
+  mastodonInstanceLimitsCache: store.get("mastodonInstanceLimitsCache") || {},
   lemmyInstanceUrl: String(store.get("lemmyInstanceUrl") || lemmy.DEFAULT_LEMMY_INSTANCE),
   lemmyHasAccessToken: Boolean(store.get("lemmyHasAccessToken")),
   lemmyAuthed: isLemmyAuthed(),
   lemmyUsername: String(store.get("lemmyUsername") || ""),
   lemmyPostTextMode: String(store.get("lemmyPostTextMode") || "merge_title_description_tags"),
+  lemmyImageResizeEnabled: Boolean(store.get("lemmyImageResizeEnabled")),
+  lemmyImageResizeMaxWidth: Math.max(0, Math.round(Number(store.get("lemmyImageResizeMaxWidth") || 0))),
+  lemmyImageResizeMaxHeight: Math.max(0, Math.round(Number(store.get("lemmyImageResizeMaxHeight") || 0))),
+  lemmyInstanceLimitsCache: store.get("lemmyInstanceLimitsCache") || {},
   lemmyCommunitiesCache: Array.isArray(store.get("lemmyCommunitiesCache")) ? store.get("lemmyCommunitiesCache") : [],
   blueskyPrependText: String(store.get("blueskyPrependText") || ""),
   blueskyAppendText: String(store.get("blueskyAppendText") || ""),
@@ -2523,10 +2562,38 @@ ipcMain.handle("queue:remove", async (_e, { ids }) => {
   logEvent("INFO", "Removed items from queue", { removed: list.length, queueSize: Array.isArray(out) ? out.length : 0 });
   return out;
 });
+
+function resolvePhotoPathOnDisk(photoPath) {
+  const original = String(photoPath || "").trim();
+  if (!original) return "";
+  try {
+    if (fs.existsSync(original)) return original;
+  } catch {
+    // ignore
+  }
+  return "";
+}
+ipcMain.handle("queue:detachToGroupOnly", async (_e, { ids }) => {
+  const list = Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
+  const out = queue.detachToGroupOnly(list);
+  logEvent("INFO", "Detached items to group-only mode", { detached: list.length, queueSize: Array.isArray(out) ? out.length : 0 });
+  return out;
+});
 ipcMain.handle("queue:removeAndTrash", async (_e, { ids }) => {
   const list = Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
   const before = queue.loadQueue();
-  const photoPaths = trash.collectUniquePhotoPathsByQueueIds(before, list);
+  const byId = new Map((Array.isArray(before) ? before : []).map((it) => [String(it?.id || ""), it]));
+  const photoPaths = [];
+  const seen = new Set();
+  for (const id of list) {
+    const it = byId.get(String(id || ""));
+    if (!it) continue;
+    const resolved = resolvePhotoPathOnDisk(it.photoPath);
+    const p = resolved;
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    photoPaths.push(p);
+  }
 
   let movedCount = 0;
   let skippedMissing = 0;
@@ -2568,11 +2635,68 @@ ipcMain.handle("queue:removeAndTrash", async (_e, { ids }) => {
     trashLabel,
   };
 });
+ipcMain.handle("queue:trashOriginalsByIds", async (_e, { ids }) => {
+  const list = Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
+  const current = queue.loadQueue();
+  const byId = new Map((Array.isArray(current) ? current : []).map((it) => [String(it?.id || ""), it]));
+  const photoPaths = [];
+  const seen = new Set();
+  for (const id of list) {
+    const it = byId.get(String(id || ""));
+    if (!it) continue;
+    const resolved = resolvePhotoPathOnDisk(it.photoPath);
+    const p = resolved;
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    photoPaths.push(p);
+  }
+
+  let movedCount = 0;
+  let skippedMissing = 0;
+  let failedCount = 0;
+  for (const photoPath of photoPaths) {
+    try {
+      if (!fs.existsSync(photoPath)) {
+        skippedMissing++;
+        continue;
+      }
+      await shell.trashItem(photoPath);
+      movedCount++;
+    } catch (e) {
+      failedCount++;
+      logEvent("WARN", "Failed to move original file to trash", {
+        photoPath,
+        error: String(e),
+      });
+    }
+  }
+
+  const trashLabel = trash.getTrashLabel(process.platform);
+  logEvent("INFO", "Moved original files to trash", {
+    requested: list.length,
+    movedCount,
+    skippedMissing,
+    failedCount,
+  });
+
+  return {
+    ok: true,
+    movedCount,
+    skippedMissing,
+    failedCount,
+    trashLabel,
+  };
+});
 ipcMain.handle("queue:getMissingPathGroups", async () => {
   const q = queue.loadQueue();
   const byDir = new Map();
+  let normalizedInPlace = false;
 
   for (const it of Array.isArray(q) ? q : []) {
+    // group_only items are intentionally detached from main queue; they should
+    // not trigger relink prompts for missing original files.
+    if (it?.status === "group_only") continue;
+
     const id = String(it?.id || "");
     const photoPath = String(it?.photoPath || "").trim();
     if (!id || !photoPath) continue;
@@ -2585,7 +2709,38 @@ ipcMain.handle("queue:getMissingPathGroups", async () => {
     }
     if (exists) continue;
 
+    // If the parent folder exists, try resolving the same filename in that
+    // folder before prompting the user. This fixes path-format/case drift for
+    // imported/legacy queues on Windows.
     const expectedDir = path.dirname(photoPath) || photoPath;
+    const basename = path.basename(photoPath);
+    if (expectedDir && basename) {
+      try {
+        if (fs.existsSync(expectedDir) && fs.statSync(expectedDir).isDirectory()) {
+          const directCandidate = path.join(expectedDir, basename);
+          if (fs.existsSync(directCandidate)) {
+            it.photoPath = directCandidate;
+            normalizedInPlace = true;
+            continue;
+          }
+
+          const entries = fs.readdirSync(expectedDir);
+          const lower = basename.toLowerCase();
+          const caseMatch = entries.find((name) => String(name || "").toLowerCase() === lower);
+          if (caseMatch) {
+            const resolvedPath = path.join(expectedDir, caseMatch);
+            if (fs.existsSync(resolvedPath)) {
+              it.photoPath = resolvedPath;
+              normalizedInPlace = true;
+              continue;
+            }
+          }
+        }
+      } catch {
+        // ignore local probing errors and continue with missing-group prompt
+      }
+    }
+
     const key = String(expectedDir || "").trim();
     if (!byDir.has(key)) {
       byDir.set(key, { expectedDir: key, ids: [], missingCount: 0 });
@@ -2598,6 +2753,10 @@ ipcMain.handle("queue:getMissingPathGroups", async () => {
   const groups = Array.from(byDir.values())
     .filter((g) => g && g.missingCount > 0)
     .sort((a, b) => String(a.expectedDir || "").localeCompare(String(b.expectedDir || "")));
+
+  if (normalizedInPlace) {
+    queue.saveQueue(q);
+  }
 
   return {
     ok: true,
@@ -2650,7 +2809,18 @@ ipcMain.handle("queue:relinkMissingFromFolder", async (_e, { folderPath, ids } =
 });
 ipcMain.handle("queue:update", async (_e, { items }) => {
   const before = queue.loadQueue();
-  const out = await queue.updateItems(items || []);
+  let out = await queue.updateItems(items || []);
+
+  // Keep detached items only while they still have at least one pending
+  // Flickr group retry. Once retries are cleared/completed, remove them fully.
+  const pruned = (Array.isArray(out) ? out : []).filter((it) => {
+    if (it?.status !== "group_only") return true;
+    return Object.values(it?.groupAddStates || {}).some((st) => st?.status === "retry");
+  });
+  if (pruned.length !== out.length) {
+    out = queue.saveQueue(pruned);
+  }
+
   pruneImageCacheForRemovedItems(before, out);
   return out;
 });
@@ -2730,7 +2900,15 @@ ipcMain.handle("queue:importFromFile", async (_e, { mode } = {}) => {
       });
       out = queue.saveQueue([...(Array.isArray(before) ? before : []), ...appended]);
     } else {
-      out = queue.saveQueue(items);
+      const preservedGroupOnly = (Array.isArray(before) ? before : []).filter((it) => it?.status === "group_only");
+      const usedIds = new Set(items.map((it) => String(it?.id || "")).filter(Boolean));
+      const preserved = preservedGroupOnly.map((it) => {
+        let id = String(it?.id || "").trim() || crypto.randomBytes(8).toString("hex");
+        while (usedIds.has(id)) id = crypto.randomBytes(8).toString("hex");
+        usedIds.add(id);
+        return id === it.id ? it : { ...it, id };
+      });
+      out = queue.saveQueue([...items, ...preserved]);
     }
     pruneImageCacheForRemovedItems(before, out);
 
@@ -2850,6 +3028,50 @@ ipcMain.handle("cfg:setUseLightTheme", async (_e, { enabled }) => {
   const next = Boolean(enabled);
   store.set("useLightTheme", next);
   return { ok: true, useLightTheme: next };
+});
+
+function sanitizeResizeOptionsPayload(payload) {
+  const maxWidthRaw = Number(payload?.maxWidth);
+  const maxHeightRaw = Number(payload?.maxHeight);
+  const maxWidth = Number.isFinite(maxWidthRaw) && maxWidthRaw > 0 ? Math.floor(maxWidthRaw) : 0;
+  const maxHeight = Number.isFinite(maxHeightRaw) && maxHeightRaw > 0 ? Math.floor(maxHeightRaw) : 0;
+  return {
+    enabled: Boolean(payload?.enabled),
+    maxWidth,
+    maxHeight,
+  };
+}
+
+ipcMain.handle("cfg:setBlueskyImageResizeOptions", async (_e, payload) => {
+  const next = sanitizeResizeOptionsPayload(payload);
+  store.set("blueskyImageResizeEnabled", next.enabled);
+  store.set("blueskyImageResizeMaxWidth", next.maxWidth);
+  store.set("blueskyImageResizeMaxHeight", next.maxHeight);
+  return { ok: true, ...next };
+});
+
+ipcMain.handle("cfg:setPixelfedImageResizeOptions", async (_e, payload) => {
+  const next = sanitizeResizeOptionsPayload(payload);
+  store.set("pixelfedImageResizeEnabled", next.enabled);
+  store.set("pixelfedImageResizeMaxWidth", next.maxWidth);
+  store.set("pixelfedImageResizeMaxHeight", next.maxHeight);
+  return { ok: true, ...next };
+});
+
+ipcMain.handle("cfg:setMastodonImageResizeOptions", async (_e, payload) => {
+  const next = sanitizeResizeOptionsPayload(payload);
+  store.set("mastodonImageResizeEnabled", next.enabled);
+  store.set("mastodonImageResizeMaxWidth", next.maxWidth);
+  store.set("mastodonImageResizeMaxHeight", next.maxHeight);
+  return { ok: true, ...next };
+});
+
+ipcMain.handle("cfg:setLemmyImageResizeOptions", async (_e, payload) => {
+  const next = sanitizeResizeOptionsPayload(payload);
+  store.set("lemmyImageResizeEnabled", next.enabled);
+  store.set("lemmyImageResizeMaxWidth", next.maxWidth);
+  store.set("lemmyImageResizeMaxHeight", next.maxHeight);
+  return { ok: true, ...next };
 });
 
 ipcMain.handle("cfg:setTumblrPostTextMode", async (_e, { mode }) => {
@@ -3496,7 +3718,9 @@ async function uploadNowOneInternal(options = {}) {
       successfulServices += 1;
     }
 
-    if (next.targetServices.includes("bluesky") && next.serviceStates?.bluesky?.status !== "done") {
+    if (next.targetServices.includes("bluesky") && (
+      next.serviceStates?.bluesky?.status !== "done" || !String(next.serviceStates?.bluesky?.remoteId || "").trim()
+    )) {
       if (!isBlueskyAuthed()) {
         const msg = "Bluesky target selected but Bluesky is not authorized.";
         next.serviceStates.bluesky = { status: "failed", lastError: msg };
@@ -3505,12 +3729,17 @@ async function uploadNowOneInternal(options = {}) {
         const msg = `visibility \"${String(next.privacy || "private")}\" is not supported and was not applied.`;
         warningParts.push(`Bluesky: ${msg}`);
         const bauth = getBlueskyAuth();
+        const blueskyPostTextMode = String(store.get("blueskyPostTextMode") || "merge_title_description_tags");
+        const blueskyLongPostMode = String(store.get("blueskyLongPostMode") || "truncate");
+        const blueskyUseDescriptionAsAltText = store.get("blueskyUseDescriptionAsAltText") !== false;
+        const blueskyImageResizeOptions = {
+          enabled: store.get("blueskyImageResizeEnabled") === true,
+          maxWidth: Number(store.get("blueskyImageResizeMaxWidth") || 0),
+          maxHeight: Number(store.get("blueskyImageResizeMaxHeight") || 0),
+        };
+        const blueskyPrependText = String(store.get("blueskyPrependText") || "");
+        const blueskyAppendText = String(store.get("blueskyAppendText") || "");
         try {
-          const blueskyPostTextMode = String(store.get("blueskyPostTextMode") || "merge_title_description_tags");
-          const blueskyLongPostMode = String(store.get("blueskyLongPostMode") || "truncate");
-          const blueskyUseDescriptionAsAltText = store.get("blueskyUseDescriptionAsAltText") !== false;
-          const blueskyPrependText = String(store.get("blueskyPrependText") || "");
-          const blueskyAppendText = String(store.get("blueskyAppendText") || "");
           const post = await bluesky.createImagePost({
             accessJwt: bauth.accessJwt,
             did: bauth.did,
@@ -3523,12 +3752,17 @@ async function uploadNowOneInternal(options = {}) {
             longPostMode: blueskyLongPostMode,
             safetyLevel: next.safetyLevel,
             useDescriptionAsAltText: blueskyUseDescriptionAsAltText,
+            imageResizeOptions: blueskyImageResizeOptions,
             prependText: blueskyPrependText,
             appendText: blueskyAppendText,
           });
+          const remoteId = String(post.uri || post.cid || "").trim();
+          if (!remoteId) {
+            throw new Error("Bluesky upload returned no post identifier.");
+          }
           next.serviceStates.bluesky = {
             status: "done",
-            remoteId: post.uri || post.cid || "",
+            remoteId,
             uploadedAt: new Date().toISOString(),
           };
           successfulServices += 1;
@@ -3536,18 +3770,70 @@ async function uploadNowOneInternal(options = {}) {
           logEvent("INFO", "Uploaded to Bluesky", { id: next.id, uri: post.uri || "" });
         } catch (e) {
           const msg2 = e?.message ? String(e.message) : String(e);
-          next.serviceStates.bluesky = { status: "failed", lastError: msg2 };
-          errorParts.push(`Bluesky: ${msg2}`);
-          logEvent("WARN", "Bluesky upload failed", { id: next.id, error: msg2 });
+          const canRefresh = /ExpiredToken/i.test(msg2) && String(bauth.refreshJwt || "").trim();
+          if (canRefresh) {
+            try {
+              const refreshed = await bluesky.refreshSession({
+                refreshJwt: bauth.refreshJwt,
+                serviceUrl: bauth.serviceUrl,
+              });
+              if (refreshed.accessJwt) store.set("blueskyAccessJwtEnc", encryptCredential(refreshed.accessJwt));
+              if (refreshed.refreshJwt) store.set("blueskyRefreshJwtEnc", encryptCredential(refreshed.refreshJwt));
+              if (refreshed.did) store.set("blueskyDid", refreshed.did);
+              if (refreshed.handle) store.set("blueskyHandle", refreshed.handle);
+
+              const retryPost = await bluesky.createImagePost({
+                accessJwt: refreshed.accessJwt || bauth.accessJwt,
+                did: refreshed.did || bauth.did,
+                serviceUrl: refreshed.serviceUrl || bauth.serviceUrl,
+                item: {
+                  ...next,
+                  tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+                },
+                postTextMode: blueskyPostTextMode,
+                longPostMode: blueskyLongPostMode,
+                safetyLevel: next.safetyLevel,
+                useDescriptionAsAltText: blueskyUseDescriptionAsAltText,
+                imageResizeOptions: blueskyImageResizeOptions,
+                prependText: blueskyPrependText,
+                appendText: blueskyAppendText,
+              });
+              const retryRemoteId = String(retryPost.uri || retryPost.cid || "").trim();
+              if (!retryRemoteId) {
+                throw new Error("Bluesky upload returned no post identifier after refresh.");
+              }
+              next.serviceStates.bluesky = {
+                status: "done",
+                remoteId: retryRemoteId,
+                uploadedAt: new Date().toISOString(),
+              };
+              successfulServices += 1;
+              logEvent("INFO", "Uploaded to Bluesky after token refresh", { id: next.id, uri: retryPost.uri || "" });
+            } catch (refreshErr) {
+              const finalMsg = refreshErr?.message ? String(refreshErr.message) : String(refreshErr);
+              next.serviceStates.bluesky = { status: "failed", lastError: finalMsg };
+              errorParts.push(`Bluesky: ${finalMsg}`);
+              logEvent("WARN", "Bluesky upload failed after token refresh", { id: next.id, error: finalMsg });
+            }
+          } else {
+            next.serviceStates.bluesky = { status: "failed", lastError: msg2 };
+            errorParts.push(`Bluesky: ${msg2}`);
+            logEvent("WARN", "Bluesky upload failed", { id: next.id, error: msg2 });
+          }
         }
       } else {
         const bauth = getBlueskyAuth();
+        const blueskyPostTextMode = String(store.get("blueskyPostTextMode") || "merge_title_description_tags");
+        const blueskyLongPostMode = String(store.get("blueskyLongPostMode") || "truncate");
+        const blueskyUseDescriptionAsAltText = store.get("blueskyUseDescriptionAsAltText") !== false;
+        const blueskyImageResizeOptions = {
+          enabled: store.get("blueskyImageResizeEnabled") === true,
+          maxWidth: Number(store.get("blueskyImageResizeMaxWidth") || 0),
+          maxHeight: Number(store.get("blueskyImageResizeMaxHeight") || 0),
+        };
+        const blueskyPrependText = String(store.get("blueskyPrependText") || "");
+        const blueskyAppendText = String(store.get("blueskyAppendText") || "");
         try {
-          const blueskyPostTextMode = String(store.get("blueskyPostTextMode") || "merge_title_description_tags");
-          const blueskyLongPostMode = String(store.get("blueskyLongPostMode") || "truncate");
-          const blueskyUseDescriptionAsAltText = store.get("blueskyUseDescriptionAsAltText") !== false;
-          const blueskyPrependText = String(store.get("blueskyPrependText") || "");
-          const blueskyAppendText = String(store.get("blueskyAppendText") || "");
           const post = await bluesky.createImagePost({
             accessJwt: bauth.accessJwt,
             did: bauth.did,
@@ -3560,12 +3846,17 @@ async function uploadNowOneInternal(options = {}) {
             longPostMode: blueskyLongPostMode,
             safetyLevel: next.safetyLevel,
             useDescriptionAsAltText: blueskyUseDescriptionAsAltText,
+            imageResizeOptions: blueskyImageResizeOptions,
             prependText: blueskyPrependText,
             appendText: blueskyAppendText,
           });
+          const remoteId = String(post.uri || post.cid || "").trim();
+          if (!remoteId) {
+            throw new Error("Bluesky upload returned no post identifier.");
+          }
           next.serviceStates.bluesky = {
             status: "done",
-            remoteId: post.uri || post.cid || "",
+            remoteId,
             uploadedAt: new Date().toISOString(),
           };
           successfulServices += 1;
@@ -3573,9 +3864,56 @@ async function uploadNowOneInternal(options = {}) {
           logEvent("INFO", "Uploaded to Bluesky", { id: next.id, uri: post.uri || "" });
         } catch (e) {
           const msg = e?.message ? String(e.message) : String(e);
-          next.serviceStates.bluesky = { status: "failed", lastError: msg };
-          errorParts.push(`Bluesky: ${msg}`);
-          logEvent("WARN", "Bluesky upload failed", { id: next.id, error: msg });
+          const canRefresh = /ExpiredToken/i.test(msg) && String(bauth.refreshJwt || "").trim();
+          if (canRefresh) {
+            try {
+              const refreshed = await bluesky.refreshSession({
+                refreshJwt: bauth.refreshJwt,
+                serviceUrl: bauth.serviceUrl,
+              });
+              if (refreshed.accessJwt) store.set("blueskyAccessJwtEnc", encryptCredential(refreshed.accessJwt));
+              if (refreshed.refreshJwt) store.set("blueskyRefreshJwtEnc", encryptCredential(refreshed.refreshJwt));
+              if (refreshed.did) store.set("blueskyDid", refreshed.did);
+              if (refreshed.handle) store.set("blueskyHandle", refreshed.handle);
+
+              const retryPost = await bluesky.createImagePost({
+                accessJwt: refreshed.accessJwt || bauth.accessJwt,
+                did: refreshed.did || bauth.did,
+                serviceUrl: refreshed.serviceUrl || bauth.serviceUrl,
+                item: {
+                  ...next,
+                  tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+                },
+                postTextMode: blueskyPostTextMode,
+                longPostMode: blueskyLongPostMode,
+                safetyLevel: next.safetyLevel,
+                useDescriptionAsAltText: blueskyUseDescriptionAsAltText,
+                imageResizeOptions: blueskyImageResizeOptions,
+                prependText: blueskyPrependText,
+                appendText: blueskyAppendText,
+              });
+              const retryRemoteId = String(retryPost.uri || retryPost.cid || "").trim();
+              if (!retryRemoteId) {
+                throw new Error("Bluesky upload returned no post identifier after refresh.");
+              }
+              next.serviceStates.bluesky = {
+                status: "done",
+                remoteId: retryRemoteId,
+                uploadedAt: new Date().toISOString(),
+              };
+              successfulServices += 1;
+              logEvent("INFO", "Uploaded to Bluesky after token refresh", { id: next.id, uri: retryPost.uri || "" });
+            } catch (refreshErr) {
+              const finalMsg = refreshErr?.message ? String(refreshErr.message) : String(refreshErr);
+              next.serviceStates.bluesky = { status: "failed", lastError: finalMsg };
+              errorParts.push(`Bluesky: ${finalMsg}`);
+              logEvent("WARN", "Bluesky upload failed after token refresh", { id: next.id, error: finalMsg });
+            }
+          } else {
+            next.serviceStates.bluesky = { status: "failed", lastError: msg };
+            errorParts.push(`Bluesky: ${msg}`);
+            logEvent("WARN", "Bluesky upload failed", { id: next.id, error: msg });
+          }
         }
       }
     } else if (next.targetServices.includes("bluesky")) {
@@ -3594,6 +3932,12 @@ async function uploadNowOneInternal(options = {}) {
           if (mapped.warning) warningParts.push(`PixelFed: ${mapped.warning}`);
           const pixelfedPostTextMode = String(store.get("pixelfedPostTextMode") || "merge_title_description_tags");
           const pixelfedUseDescriptionAsAltText = store.get("pixelfedUseDescriptionAsAltText") !== false;
+          const pixelfedImageResizeOptions = {
+            enabled: store.get("pixelfedImageResizeEnabled") === true,
+            maxWidth: Number(store.get("pixelfedImageResizeMaxWidth") || 0),
+            maxHeight: Number(store.get("pixelfedImageResizeMaxHeight") || 0),
+          };
+          const pixelfedInstanceLimitsCache = store.get("pixelfedInstanceLimitsCache") || {};
           const pixelfedPrependText = String(store.get("pixelfedPrependText") || "");
           const pixelfedAppendText = String(store.get("pixelfedAppendText") || "");
           const post = await pixelfed.createImagePost({
@@ -3605,6 +3949,13 @@ async function uploadNowOneInternal(options = {}) {
             },
             postTextMode: pixelfedPostTextMode,
             useDescriptionAsAltText: pixelfedUseDescriptionAsAltText,
+            imageResizeOptions: pixelfedImageResizeOptions,
+            instanceLimitsCache: pixelfedInstanceLimitsCache,
+            onDiscoveredLimits: ({ instanceKey, limits, cachedAt }) => {
+              const current = store.get("pixelfedInstanceLimitsCache") || {};
+              current[String(instanceKey)] = { limits, cachedAt: Number(cachedAt) || Date.now() };
+              store.set("pixelfedInstanceLimitsCache", current);
+            },
             visibility: mapped.visibility,
             sensitive: Number(next.safetyLevel || 1) >= 2,
             prependText: pixelfedPrependText,
@@ -3640,6 +3991,12 @@ async function uploadNowOneInternal(options = {}) {
           if (mapped.warning) warningParts.push(`Mastodon: ${mapped.warning}`);
           const mastodonPostTextMode = String(store.get("mastodonPostTextMode") || "merge_title_description_tags");
           const mastodonUseDescriptionAsAltText = store.get("mastodonUseDescriptionAsAltText") !== false;
+          const mastodonImageResizeOptions = {
+            enabled: store.get("mastodonImageResizeEnabled") === true,
+            maxWidth: Number(store.get("mastodonImageResizeMaxWidth") || 0),
+            maxHeight: Number(store.get("mastodonImageResizeMaxHeight") || 0),
+          };
+          const mastodonInstanceLimitsCache = store.get("mastodonInstanceLimitsCache") || {};
           const mastodonPrependText = String(store.get("mastodonPrependText") || "");
           const mastodonAppendText = String(store.get("mastodonAppendText") || "");
           const post = await mastodon.createImagePost({
@@ -3651,6 +4008,13 @@ async function uploadNowOneInternal(options = {}) {
             },
             postTextMode: mastodonPostTextMode,
             useDescriptionAsAltText: mastodonUseDescriptionAsAltText,
+            imageResizeOptions: mastodonImageResizeOptions,
+            instanceLimitsCache: mastodonInstanceLimitsCache,
+            onDiscoveredLimits: ({ instanceKey, limits, cachedAt }) => {
+              const current = store.get("mastodonInstanceLimitsCache") || {};
+              current[String(instanceKey)] = { limits, cachedAt: Number(cachedAt) || Date.now() };
+              store.set("mastodonInstanceLimitsCache", current);
+            },
             visibility: mapped.visibility,
             sensitive: Number(next.safetyLevel || 1) >= 2,
             prependText: mastodonPrependText,
@@ -3674,7 +4038,9 @@ async function uploadNowOneInternal(options = {}) {
       successfulServices += 1;
     }
 
-    if (next.targetServices.includes("lemmy") && next.serviceStates?.lemmy?.status !== "done") {
+    if (next.targetServices.includes("lemmy") && (
+      next.serviceStates?.lemmy?.status !== "done" || !String(next.serviceStates?.lemmy?.remoteId || "").trim()
+    )) {
       if (!isLemmyAuthed()) {
         const msg = "Lemmy target selected but Lemmy is not authorized.";
         next.serviceStates.lemmy = { status: "failed", lastError: msg };
@@ -3694,15 +4060,73 @@ async function uploadNowOneInternal(options = {}) {
           errorParts.push(`Lemmy: ${msg}`);
         } else {
           try {
+            const communityLabelCache = new Map();
+            const lemmyInstanceHost = (() => {
+              try {
+                return new URL(String(lauth.instanceUrl || "")).host || String(lauth.instanceUrl || "");
+              } catch {
+                return String(lauth.instanceUrl || "");
+              }
+            })();
+            const humanizeLemmyError = (rawMsg) => {
+              const msg = String(rawMsg || "");
+              if (/only_mods_can_post_in_community/i.test(msg)) {
+                return "Only moderators can post in this community. (only_mods_can_post_in_community)";
+              }
+              if (/invalid_url/i.test(msg)) {
+                return "Lemmy rejected the image URL as invalid. (invalid_url)";
+              }
+              return msg;
+            };
+            const describeCommunity = async (communityId) => {
+              const key = String(communityId || "").trim();
+              if (!key) return `community@${lemmyInstanceHost}`;
+              if (communityLabelCache.has(key)) return communityLabelCache.get(key);
+
+              let label = `community ${key}@${lemmyInstanceHost}`;
+              try {
+                const info = await lemmy.getCommunityInfo({
+                  instanceUrl: lauth.instanceUrl,
+                  accessToken: lauth.accessToken,
+                  communityId: key,
+                });
+                const name = String(info?.name || key).trim();
+                const title = String(info?.title || "").trim();
+                let host = lemmyInstanceHost;
+                try {
+                  host = new URL(String(info?.actorId || "")).host || host;
+                } catch {
+                  // keep default instance host
+                }
+                label = title
+                  ? `${title} (${name}@${host})`
+                  : `${name}@${host}`;
+              } catch {
+                // keep fallback label
+              }
+
+              communityLabelCache.set(key, label);
+              return label;
+            };
+
             if (String(next.privacy || "private") !== "public") {
               warningParts.push(`Lemmy: visibility "${String(next.privacy || "private")}" is not supported and was not applied.`);
             }
             const lemmyPostTextMode = String(store.get("lemmyPostTextMode") || "merge_title_description_tags");
             const lemmyPrependText = String(store.get("lemmyPrependText") || "");
             const lemmyAppendText = String(store.get("lemmyAppendText") || "");
+            const lemmyImageResizeOptions = {
+              enabled: store.get("lemmyImageResizeEnabled") === true,
+              maxWidth: Number(store.get("lemmyImageResizeMaxWidth") || 0),
+              maxHeight: Number(store.get("lemmyImageResizeMaxHeight") || 0),
+            };
+            const lemmyInstanceLimitsCache = store.get("lemmyInstanceLimitsCache") || {};
+            const lemmyInstanceUploadConfigCache = store.get("lemmyInstanceUploadConfigCache") || {};
             let firstPost = null;
             let failedPosts = 0;
+            let stopRemainingCommunities = false;
             for (const communityId of communityIds) {
+              if (stopRemainingCommunities) break;
               try {
                 const post = await lemmy.createImagePost({
                   instanceUrl: lauth.instanceUrl,
@@ -3716,14 +4140,33 @@ async function uploadNowOneInternal(options = {}) {
                   prependText: lemmyPrependText,
                   appendText: lemmyAppendText,
                   nsfw: Number(next.safetyLevel || 1) >= 2,
+                  imageResizeOptions: lemmyImageResizeOptions,
+                  instanceLimitsCache: lemmyInstanceLimitsCache,
+                  onDiscoveredLimits: ({ instanceKey, limits, cachedAt }) => {
+                    const current = store.get("lemmyInstanceLimitsCache") || {};
+                    current[String(instanceKey)] = { limits, cachedAt: Number(cachedAt) || Date.now() };
+                    store.set("lemmyInstanceLimitsCache", current);
+                  },
+                  uploadConfigCache: lemmyInstanceUploadConfigCache,
+                  onDiscoveredUploadConfig: ({ instanceKey, apiPath, fieldName, cachedAt }) => {
+                    const current = store.get("lemmyInstanceUploadConfigCache") || {};
+                    current[String(instanceKey)] = { apiPath, fieldName, cachedAt: Number(cachedAt) || Date.now() };
+                    store.set("lemmyInstanceUploadConfigCache", current);
+                  },
                 });
                 if (!firstPost) firstPost = post;
                 logEvent("INFO", "Uploaded to Lemmy", { id: next.id, postId: post.id || "", communityId });
               } catch (postErr) {
                 failedPosts += 1;
                 const postMsg = postErr?.message ? String(postErr.message) : String(postErr);
-                warningParts.push(`Lemmy (${communityId}): ${postMsg}`);
-                logEvent("WARN", "Lemmy upload failed for community", { id: next.id, communityId, error: postMsg });
+                const communityLabel = await describeCommunity(communityId);
+                const readableMsg = humanizeLemmyError(postMsg);
+                warningParts.push(`Lemmy (${communityLabel}): ${readableMsg}`);
+                logEvent("WARN", "Lemmy upload failed for community", { id: next.id, communityId, communityLabel, error: postMsg });
+                if (/invalid_url/i.test(postMsg)) {
+                  stopRemainingCommunities = true;
+                  warningParts.push("Lemmy: stopped remaining community attempts after invalid_url (fatal URL validation error).");
+                }
               }
             }
 
@@ -3731,9 +4174,14 @@ async function uploadNowOneInternal(options = {}) {
               throw new Error("Failed to post to all selected Lemmy communities.");
             }
 
+            const remoteId = String(firstPost?.url || firstPost?.id || "").trim();
+            if (!remoteId) {
+              throw new Error("Lemmy upload returned no post identifier.");
+            }
+
             next.serviceStates.lemmy = {
               status: "done",
-              remoteId: firstPost?.url || firstPost?.id || "",
+              remoteId,
               uploadedAt: new Date().toISOString(),
             };
             successfulServices += 1;
@@ -3815,6 +4263,95 @@ ipcMain.handle("upload:nowOne", async (_e, options) => uploadNowOneInternal(opti
 let schedTimer = null;
 let uploadLock = false; // prevents overlapping uploads (fixes duplicate uploads)
 
+let batchRunProgress = {
+  totalServiceUnits: 0,
+  completedServiceUnits: 0,
+  currentItemId: "",
+  currentServiceId: "",
+  currentServiceLoadedKB: 0,
+  currentServiceTotalKB: 0,
+};
+
+function resetBatchRunProgress() {
+  batchRunProgress = {
+    totalServiceUnits: 0,
+    completedServiceUnits: 0,
+    currentItemId: "",
+    currentServiceId: "",
+    currentServiceLoadedKB: 0,
+    currentServiceTotalKB: 0,
+  };
+}
+
+function listBatchEligiblePendingItems(queueItems, maxItems, nowMs) {
+  const out = [];
+  const limit = Math.max(1, Math.min(999, Math.round(Number(maxItems || 1))));
+  for (const it of Array.isArray(queueItems) ? queueItems : []) {
+    if (out.length >= limit) break;
+    if (!it || it.status !== "pending") continue;
+    const scheduleMs = getManualScheduleMs(it);
+    if (scheduleMs != null && scheduleMs > nowMs) continue;
+    out.push(it);
+  }
+  return out;
+}
+
+function startBatchRunProgress(items) {
+  const plannedItems = Array.isArray(items) ? items : [];
+  let totalServiceUnits = 0;
+  for (const it of plannedItems) {
+    const targetServices = normalizeTargetServicesForItem(it);
+    totalServiceUnits += Math.max(0, targetServices.length);
+  }
+  batchRunProgress = {
+    totalServiceUnits,
+    completedServiceUnits: 0,
+    currentItemId: "",
+    currentServiceId: "",
+    currentServiceLoadedKB: 0,
+    currentServiceTotalKB: 0,
+  };
+}
+
+function beginBatchServiceProgress(itemId, serviceId) {
+  if (!store.get("batchRunActive")) return;
+  batchRunProgress.currentItemId = String(itemId || "");
+  batchRunProgress.currentServiceId = String(serviceId || "");
+  batchRunProgress.currentServiceLoadedKB = 0;
+  batchRunProgress.currentServiceTotalKB = 0;
+}
+
+function updateBatchServiceProgressBytes(itemId, serviceId, loadedBytes, totalBytes) {
+  if (!store.get("batchRunActive")) return;
+  if (batchRunProgress.currentItemId !== String(itemId || "")) return;
+  if (batchRunProgress.currentServiceId !== String(serviceId || "")) return;
+  const loaded = Number(loadedBytes);
+  const total = Number(totalBytes);
+  if (!Number.isFinite(loaded) || !Number.isFinite(total) || total <= 0) return;
+  const loadedKB = Math.max(0, Math.floor(loaded / 1024));
+  const totalKB = Math.max(1, Math.ceil(total / 1024));
+  batchRunProgress.currentServiceLoadedKB = Math.min(loadedKB, totalKB);
+  batchRunProgress.currentServiceTotalKB = totalKB;
+}
+
+function clearBatchServiceProgress(itemId, serviceId) {
+  if (batchRunProgress.currentItemId !== String(itemId || "")) return;
+  if (batchRunProgress.currentServiceId !== String(serviceId || "")) return;
+  batchRunProgress.currentItemId = "";
+  batchRunProgress.currentServiceId = "";
+  batchRunProgress.currentServiceLoadedKB = 0;
+  batchRunProgress.currentServiceTotalKB = 0;
+}
+
+function completeBatchServiceProgress(itemId, serviceId) {
+  if (!store.get("batchRunActive")) return;
+  clearBatchServiceProgress(itemId, serviceId);
+  batchRunProgress.completedServiceUnits = Math.max(0, Number(batchRunProgress.completedServiceUnits || 0) + 1);
+  if (batchRunProgress.totalServiceUnits > 0) {
+    batchRunProgress.completedServiceUnits = Math.min(batchRunProgress.completedServiceUnits, batchRunProgress.totalServiceUnits);
+  }
+}
+
 
 async function tickScheduler() {
   if (!store.get("schedulerOn")) return;
@@ -3885,10 +4422,13 @@ async function tickScheduler() {
     logEvent("WARN", "Group retry processing failed", { error: msg });
   }
   const bs = Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1))));
+  const qForBatch = queue.loadQueue();
+  const plannedBatchItems = listBatchEligiblePendingItems(qForBatch, bs, Date.now());
   // Mark an upload batch as active so the UI can display "current batch" instead of the nextRunAt time.
   store.set("batchRunActive", true);
   store.set("batchRunStartedAt", new Date(Date.now()).toISOString());
   store.set("batchRunSize", bs);
+  startBatchRunProgress(plannedBatchItems);
   try {
     for (let i = 0; i < bs; i++) {
       const res = await uploadNowOneInternal();
@@ -3897,6 +4437,7 @@ async function tickScheduler() {
     }
   } finally {
     store.set("batchRunActive", false);
+    resetBatchRunProgress();
   }
 }
 
@@ -4125,5 +4666,11 @@ ipcMain.handle("sched:status", async () => ({
   batchRunActive: Boolean(store.get("batchRunActive")),
   batchRunStartedAt: store.get("batchRunStartedAt") || null,
   batchRunSize: store.get("batchRunSize") || null,
+  batchRunTotalServiceUnits: Number(batchRunProgress.totalServiceUnits || 0),
+  batchRunCompletedServiceUnits: Number(batchRunProgress.completedServiceUnits || 0),
+  batchRunCurrentItemId: String(batchRunProgress.currentItemId || ""),
+  batchRunCurrentServiceId: String(batchRunProgress.currentServiceId || ""),
+  batchRunCurrentServiceLoadedKB: Number(batchRunProgress.currentServiceLoadedKB || 0),
+  batchRunCurrentServiceTotalKB: Number(batchRunProgress.currentServiceTotalKB || 0),
   uploadBatchSize: Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1))))
 }));

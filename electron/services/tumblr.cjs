@@ -290,6 +290,7 @@ async function createPhotoPost({
   prependText,
   appendText,
   postTimingMode,
+  onProgress,
 }) {
   const oauth = makeOAuth(consumerKey, consumerSecret);
   const cleanBlog = String(blogIdentifier || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
@@ -320,10 +321,24 @@ async function createPhotoPost({
   }
 
   const contentType = mime.lookup(item.photoPath) || "application/octet-stream";
-  form.append("data", fs.createReadStream(item.photoPath), {
+  const fileStream = fs.createReadStream(item.photoPath);
+  form.append("data", fileStream, {
     contentType,
     filename: path.basename(item.photoPath),
   });
+
+  // Byte progress reporting
+  const totalLength = fs.statSync(item.photoPath).size;
+  if (onProgress && totalLength != null) {
+    let loaded = 0;
+    fileStream.on('data', (chunk) => {
+      loaded += chunk.length;
+      try { onProgress(loaded, totalLength); } catch (_) {}
+    });
+    fileStream.on('end', () => {
+      try { onProgress(totalLength, totalLength); } catch (_) {}
+    });
+  }
 
   const signatureData = {
     type: "photo",

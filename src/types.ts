@@ -2,7 +2,7 @@ export type Privacy = "public" | "friends" | "family" | "friends_family" | "priv
 
 export type GeoPrivacy = "public" | "contacts" | "friends" | "family" | "friends_family" | "private";
 
-export type QueueStatus = "pending" | "uploading" | "done" | "done_warn" | "failed";
+export type QueueStatus = "pending" | "uploading" | "done" | "done_warn" | "failed" | "group_only";
 
 export type UploadService = "flickr" | "tumblr" | "bluesky" | "pixelfed" | "mastodon" | "lemmy";
 

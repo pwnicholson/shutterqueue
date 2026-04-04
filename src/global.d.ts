@@ -71,6 +71,14 @@ declare global {
       queueGet: () => Promise<QueueItem[]>;
       queueAdd: (paths: string[]) => Promise<QueueItem[]>;
       queueRemove: (ids: string[]) => Promise<QueueItem[]>;
+      queueDetachToGroupOnly: (ids: string[]) => Promise<QueueItem[]>;
+      queueTrashOriginalsByIds: (ids: string[]) => Promise<{
+        ok: boolean;
+        movedCount: number;
+        skippedMissing: number;
+        failedCount: number;
+        trashLabel: string;
+      }>;
       queueRemoveAndTrash: (ids: string[]) => Promise<{
         ok: boolean;
         queue: QueueItem[];
@@ -140,13 +148,17 @@ declare global {
       setTumblrPostTimingMode: (mode: "publish_now" | "add_to_queue") => Promise<any>;
       setBlueskyPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
       setBlueskyLongPostMode: (mode: "truncate" | "thread") => Promise<any>;
+      setBlueskyImageResizeOptions: (payload: { enabled: boolean; maxWidth?: number; maxHeight?: number }) => Promise<any>;
       setTumblrUseDescriptionAsImageDescription: (enabled: boolean) => Promise<any>;
       setBlueskyUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
       setPixelfedPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
+      setPixelfedImageResizeOptions: (payload: { enabled: boolean; maxWidth?: number; maxHeight?: number }) => Promise<any>;
       setPixelfedUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
       setMastodonPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
+      setMastodonImageResizeOptions: (payload: { enabled: boolean; maxWidth?: number; maxHeight?: number }) => Promise<any>;
       setMastodonUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
       setLemmyPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
+      setLemmyImageResizeOptions: (payload: { enabled: boolean; maxWidth?: number; maxHeight?: number }) => Promise<any>;
       setBlueskyPrependText: (text: string) => Promise<any>;
       setBlueskyAppendText: (text: string) => Promise<any>;
       setMastodonPrependText: (text: string) => Promise<any>;
@@ -177,10 +189,10 @@ declare global {
       }>;
       logSave: () => Promise<any>;
     };
-    // custom event emitted from preload when an upload is in progress
-    interface WindowEventMap {
-      "sq-upload-progress": CustomEvent<{loaded:number; total:number}>;
-      "sq-add-photos": CustomEvent<{paths:string[]}>;
-    }
+  }
+  // custom event emitted from preload when an upload is in progress
+  interface WindowEventMap {
+    "sq-upload-progress": CustomEvent<{ loaded: number; total: number }>;
+    "sq-add-photos": CustomEvent<{ paths: string[] }>;
   }
 }

@@ -1,9 +1,27 @@
 const fs = require("fs");
 const https = require("https");
 const mime = require("mime-types");
+const { prepareImageForUpload } = require("./image-prep.cjs");
 
 const DEFAULT_BSKY_SERVICE = "https://bsky.social";
 const MAX_BSKY_TEXT = 300;
+const MAX_BSKY_IMAGE_BYTES = 1000000;
+
+function parsePositiveInt(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
+}
+
+function buildBlueskyImageLimits(imageResizeOptions) {
+  const limits = { maxBytes: MAX_BSKY_IMAGE_BYTES };
+  if (!imageResizeOptions || !imageResizeOptions.enabled) return limits;
+  const maxWidth = parsePositiveInt(imageResizeOptions.maxWidth);
+  const maxHeight = parsePositiveInt(imageResizeOptions.maxHeight);
+  if (maxWidth) limits.maxWidth = maxWidth;
+  if (maxHeight) limits.maxHeight = maxHeight;
+  return limits;
+}
 
 function requestJson({ serviceUrl, path, method, accessJwt, body, headers }) {
   const base = new URL(String(serviceUrl || DEFAULT_BSKY_SERVICE));
@@ -268,24 +286,51 @@ async function createSession({ identifier, appPassword, serviceUrl }) {
   };
 }
 
-async function uploadBlob({ accessJwt, photoPath, serviceUrl }) {
-  const binary = fs.readFileSync(photoPath);
-  const contentType = mime.lookup(photoPath) || "application/octet-stream";
-  const out = await requestBinary({
+async function refreshSession({ refreshJwt, serviceUrl }) {
+  const out = await requestJson({
     serviceUrl,
-    path: "/xrpc/com.atproto.repo.uploadBlob",
-    accessJwt,
-    contentType,
-    bodyBuffer: binary,
+    path: "/xrpc/com.atproto.server.refreshSession",
+    method: "POST",
+    accessJwt: String(refreshJwt || "").trim(),
   });
-  return out?.blob || out;
+
+  return {
+    accessJwt: String(out?.accessJwt || ""),
+    refreshJwt: String(out?.refreshJwt || refreshJwt || ""),
+    did: String(out?.did || ""),
+    handle: String(out?.handle || ""),
+    serviceUrl: String(serviceUrl || DEFAULT_BSKY_SERVICE),
+  };
 }
 
-async function createImagePost({ accessJwt, did, serviceUrl, item, postTextMode, longPostMode, safetyLevel, useDescriptionAsAltText, prependText, appendText }) {
+async function uploadBlob({ accessJwt, photoPath, serviceUrl, onProgress, imageResizeOptions }) {
+  const prepared = await prepareImageForUpload(photoPath, buildBlueskyImageLimits(imageResizeOptions));
+
+  try {
+    const binary = fs.readFileSync(prepared.filePath);
+    const contentType = prepared.contentType || mime.lookup(prepared.filePath) || "application/octet-stream";
+    // Simulate progress for Bluesky (sync read)
+    if (onProgress && binary.length) {
+      try { onProgress(binary.length, binary.length); } catch (_) {}
+    }
+    const out = await requestBinary({
+      serviceUrl,
+      path: "/xrpc/com.atproto.repo.uploadBlob",
+      accessJwt,
+      contentType,
+      bodyBuffer: binary,
+    });
+    return out?.blob || out;
+  } finally {
+    await prepared.cleanup();
+  }
+}
+
+async function createImagePost({ accessJwt, did, serviceUrl, item, postTextMode, longPostMode, safetyLevel, useDescriptionAsAltText, prependText, appendText, onProgress, imageResizeOptions }) {
   if (!String(did || "").trim()) throw new Error("Missing Bluesky DID.");
   if (!item?.photoPath) throw new Error("Missing local photo path for Bluesky upload.");
 
-  const blob = await uploadBlob({ accessJwt, photoPath: item.photoPath, serviceUrl });
+  const blob = await uploadBlob({ accessJwt, photoPath: item.photoPath, serviceUrl, onProgress, imageResizeOptions });
   const text = buildPostText({ item, postTextMode, prependText, appendText });
   const mode = String(longPostMode || "truncate");
   const chunks = mode === "thread" ? splitTextForPosts(text, MAX_BSKY_TEXT) : [];
@@ -351,6 +396,7 @@ async function createImagePost({ accessJwt, did, serviceUrl, item, postTextMode,
 
 module.exports = {
   createSession,
+  refreshSession,
   createImagePost,
   DEFAULT_BSKY_SERVICE,
   // Exported for regression tests around text composition/truncation behavior.

@@ -524,7 +524,9 @@ function normalizeSavedIdSets(input: any): SavedIdSet[] {
     const key = name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    const ids = Array.isArray(raw?.ids) ? uniq(raw.ids.map((x: any) => String(x)).filter(Boolean)) : [];
+    const ids: string[] = Array.isArray(raw?.ids)
+      ? Array.from(new Set(raw.ids.map((x: any) => String(x)).filter(Boolean)))
+      : [];
     out.push({ name, ids });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -755,25 +757,39 @@ export default function App() {
   const [blueskyPostTextMode, setBlueskyPostTextMode] = useState<BlueskyPostTextMode>("merge_title_description_tags");
   const [blueskyLongPostMode, setBlueskyLongPostMode] = useState<BlueskyLongPostMode>("truncate");
   const [blueskyUseDescriptionAsAltText, setBlueskyUseDescriptionAsAltText] = useState(true);
+  const [blueskyImageResizeEnabled, setBlueskyImageResizeEnabled] = useState(false);
+  const [blueskyImageResizeMaxWidth, setBlueskyImageResizeMaxWidth] = useState(0);
+  const [blueskyImageResizeMaxHeight, setBlueskyImageResizeMaxHeight] = useState(0);
   const [blueskyAuthError, setBlueskyAuthError] = useState("");
   const [pixelfedInstanceUrl, setPixelfedInstanceUrl] = useState("https://pixelfed.social");
   const [pixelfedAccessToken, setPixelfedAccessToken] = useState("");
   const [pixelfedPostTextMode, setPixelfedPostTextMode] = useState<PixelFedPostTextMode>("merge_title_description_tags");
   const [pixelfedUseDescriptionAsAltText, setPixelfedUseDescriptionAsAltText] = useState(true);
+  const [pixelfedImageResizeEnabled, setPixelfedImageResizeEnabled] = useState(false);
+  const [pixelfedImageResizeMaxWidth, setPixelfedImageResizeMaxWidth] = useState(0);
+  const [pixelfedImageResizeMaxHeight, setPixelfedImageResizeMaxHeight] = useState(0);
   const [pixelfedAuthError, setPixelfedAuthError] = useState("");
   const [pixelfedOAuthPending, setPixelfedOAuthPending] = useState(false);
   const [mastodonInstanceUrl, setMastodonInstanceUrl] = useState("https://mastodon.social");
   const [mastodonAccessToken, setMastodonAccessToken] = useState("");
   const [mastodonPostTextMode, setMastodonPostTextMode] = useState<MastodonPostTextMode>("merge_title_description_tags");
   const [mastodonUseDescriptionAsAltText, setMastodonUseDescriptionAsAltText] = useState(true);
+  const [mastodonImageResizeEnabled, setMastodonImageResizeEnabled] = useState(false);
+  const [mastodonImageResizeMaxWidth, setMastodonImageResizeMaxWidth] = useState(0);
+  const [mastodonImageResizeMaxHeight, setMastodonImageResizeMaxHeight] = useState(0);
   const [lemmyInstanceUrl, setLemmyInstanceUrl] = useState("https://lemmy.world");
   const [lemmyAccessToken, setLemmyAccessToken] = useState("");
   const [lemmyPostTextMode, setLemmyPostTextMode] = useState<LemmyPostTextMode>("merge_title_description_tags");
+  const [lemmyImageResizeEnabled, setLemmyImageResizeEnabled] = useState(false);
+  const [lemmyImageResizeMaxWidth, setLemmyImageResizeMaxWidth] = useState(0);
+  const [lemmyImageResizeMaxHeight, setLemmyImageResizeMaxHeight] = useState(0);
   const [lemmyPrependText, setLemmyPrependText] = useState("");
   const [lemmyAppendText, setLemmyAppendText] = useState("");
   const [lemmyAuthError, setLemmyAuthError] = useState("");
   const [lemmyCommunities, setLemmyCommunities] = useState<LemmyCommunity[]>([]);
   const [lemmyCommunitiesFilter, setLemmyCommunitiesFilter] = useState("");
+  const [lemmyPinnedSelectedIds, setLemmyPinnedSelectedIds] = useState<string[]>([]);
+  const lemmySortSeenKeysRef = useRef<Set<string>>(new Set());
   const [platformEditorTab, setPlatformEditorTab] = useState<"flickr" | "lemmy">("flickr");
   const [blueskyPrependText, setBlueskyPrependText] = useState("");
   const [blueskyAppendText, setBlueskyAppendText] = useState("");
@@ -832,6 +848,12 @@ const groupNameById = useMemo(() => {
   return m;
 }, [groups]);
 
+const groupById = useMemo(() => {
+  const m = new Map<string, Group>();
+  for (const g of groups) m.set(String(g.id), g);
+  return m;
+}, [groups]);
+
 const albumTitleById = useMemo(() => {
   const m = new Map<string, string>();
   for (const a of albums) m.set(String(a.id), String(a.title));
@@ -873,16 +895,18 @@ const filteredAlbums = useMemo(() => {
 
 const filteredLemmyCommunities = useMemo(() => {
   const q = lemmyCommunitiesFilter.trim().toLowerCase();
-  return (lemmyCommunities || []).filter((c) => {
-    const inSet = !activeLemmyCommunitySetIdSet || activeLemmyCommunitySetIdSet.has(String(c.id));
-    if (!inSet) return false;
-    if (!q) return true;
-    return (
-      String(c.title || "").toLowerCase().includes(q) ||
-      String(c.name || "").toLowerCase().includes(q) ||
-      String(c.actorId || "").toLowerCase().includes(q)
-    );
-  });
+  return (lemmyCommunities || [])
+    .filter((c) => {
+      const inSet = !activeLemmyCommunitySetIdSet || activeLemmyCommunitySetIdSet.has(String(c.id));
+      if (!inSet) return false;
+      if (!q) return true;
+      return (
+        String(c.title || "").toLowerCase().includes(q) ||
+        String(c.name || "").toLowerCase().includes(q) ||
+        String(c.actorId || "").toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => String(a.title || a.name || "").localeCompare(String(b.title || b.name || "")));
 }, [lemmyCommunities, lemmyCommunitiesFilter, activeLemmyCommunitySetIdSet]);
 
 const groupsWithCounts = useMemo(() => {
@@ -998,10 +1022,26 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const [missingRelinkPrompt, setMissingRelinkPrompt] = useState<{ expectedDir: string; missingCount: number } | null>(null);
   const [missingRelinkPromptBusy, setMissingRelinkPromptBusy] = useState(false);
   const [missingRelinkPromptSuppressed, setMissingRelinkPromptSuppressed] = useState(false);
-  const [unuploadedDeleteDialog, setUnuploadedDeleteDialog] = useState<{ ids: string[]; fileCount: number } | null>(null);
-  const [typedDeleteDialog, setTypedDeleteDialog] = useState<{ ids: string[]; fileCount: number; requiredText: string } | null>(null);
+  const [missingFileIds, setMissingFileIds] = useState<string[]>([]);
+  const [unuploadedDeleteDialog, setUnuploadedDeleteDialog] = useState<{
+    ids: string[];
+    removeIds: string[];
+    detachIds: string[];
+    trashIds: string[];
+    fileCount: number;
+  } | null>(null);
+  const [typedDeleteDialog, setTypedDeleteDialog] = useState<{
+    ids: string[];
+    removeIds: string[];
+    detachIds: string[];
+    trashIds: string[];
+    fileCount: number;
+    requiredText: string;
+  } | null>(null);
   const [typedDeleteInput, setTypedDeleteInput] = useState("");
   const typedDeleteInputRef = useRef<HTMLInputElement | null>(null);
+  const [groupRemoveDialog, setGroupRemoveDialog] = useState<{ waitingCount: number } | null>(null);
+  const groupRemoveDialogResolveRef = useRef<((choice: "all" | "keep" | "cancel") => void) | null>(null);
   const dismissedDuplicateKeysRef = useRef<Set<string>>(new Set());
 
   const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
@@ -1253,14 +1293,20 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
         if (st?.status === "retry") counts.set(gid, (counts.get(gid) || 0) + 1);
       }
     }
-    const out = Array.from(counts.entries()).map(([groupId, count]) => ({
-      groupId,
-      count,
-      groupName: groupNameById.get(groupId) || groupId,
-    }));
+    const out = Array.from(counts.entries()).map(([groupId, count]) => {
+      const known = groupById.get(groupId);
+      const groupName = known?.name || groupNameById.get(groupId) || groupId;
+      return {
+        groupId,
+        count,
+        groupName,
+        memberCount: Number(known?.memberCount || 0),
+        group: known || { id: groupId, name: groupName },
+      };
+    });
     out.sort((a, b) => a.groupName.localeCompare(b.groupName));
     return out;
-  }, [queue, groupNameById]);
+  }, [queue, groupById, groupNameById]);
 
   const pendingRetryItemsForFocus = useMemo(() => {
     if (!pendingGroupFocus) return [];
@@ -1308,6 +1354,40 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
+
+  useEffect(() => {
+    if (displayTab !== "queue" || platformEditorTab !== "lemmy") return;
+
+    const key = selectedIds.length > 1
+      ? `multi:${[...selectedIds].sort().join("|")}`
+      : `single:${String(activeId || "")}`;
+
+    const q = queueRef.current;
+    const seen = lemmySortSeenKeysRef.current;
+
+    if (!seen.has(key)) {
+      // First time opening this item/selection: keep pure alphabetical order.
+      seen.add(key);
+      setLemmyPinnedSelectedIds([]);
+      return;
+    }
+
+    // Returning to this item/selection: show selected communities on top.
+    let pinned: string[] = [];
+    if (selectedIds.length > 1) {
+      const selectedItemsNow = q.filter((it) => selectedIds.includes(it.id));
+      const set = new Set<string>();
+      for (const it of selectedItemsNow) {
+        for (const cid of getItemLemmyCommunityIds(it)) set.add(String(cid));
+      }
+      pinned = Array.from(set);
+    } else {
+      const focused = q.find((it) => it.id === activeId) || null;
+      pinned = getItemLemmyCommunityIds(focused || undefined).map((cid) => String(cid));
+    }
+
+    setLemmyPinnedSelectedIds(pinned);
+  }, [displayTab, platformEditorTab, activeId, selectedIds]);
 
   useEffect(() => {
     undoStackRef.current = undoStack;
@@ -1388,8 +1468,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
 
   const active = useMemo(() => queue.find(q => q.id === activeId) || null, [queue, activeId]);
-  const isUploaded = useMemo(() => active?.photoId && (active.status === "done" || active.status === "done_warn"), [active]);
+  const isUploaded = useMemo(() => Boolean(active?.photoId) && (active?.status === "done" || active?.status === "done_warn"), [active]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const visibleMainQueue = useMemo(() => queue.filter((it) => it.status !== "group_only"), [queue]);
 
   // Smart-sorted groups/albums for edit lists (only resorts when selectedIds changes)
   // Smart-sorted groups/albums for edit lists (only resorts when selectedIds changes)
@@ -1403,12 +1484,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         const it = queue.find(x => x.id === sid);
         if (it?.groupIds?.includes(g.id)) on += 1;
       }
-      const state = on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
+      const state: "none" | "all" | "some" = on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
       return { ...g, state };
     });
     
     withState.sort((a, b) => {
-      const order = { all: 0, some: 1, none: 2 };
+      const order: Record<"all" | "some" | "none", number> = { all: 0, some: 1, none: 2 };
       const stateCompare = order[a.state] - order[b.state];
       if (stateCompare !== 0) return stateCompare;
       return (a.name || "").localeCompare(b.name || "");
@@ -1478,7 +1559,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         _index: index,
       }))
       .sort((a, b) => {
-        const stateCompare = sortStateOrder(a.state) - sortStateOrder(b.state);
+        const stateCompare = sortStateOrder(a.state as "all" | "some" | "none") - sortStateOrder(b.state as "all" | "some" | "none");
         if (stateCompare !== 0) return stateCompare;
         if (a.isPendingNew !== b.isPendingNew) return a.isPendingNew ? -1 : 1;
         const titleCompare = String(a.title || "").localeCompare(String(b.title || ""));
@@ -1506,31 +1587,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   }, [selectedIds, selectedItems, active]);
 
   const sortedFilteredLemmyCommunities = useMemo(() => {
-    if (!selectedIds.length) return filteredLemmyCommunities;
+    const pinnedSet = new Set(lemmyPinnedSelectedIds.map((id) => String(id || "")));
+    if (!pinnedSet.size) return filteredLemmyCommunities;
 
-    return filteredLemmyCommunities
-      .map((community, index) => ({
-        ...community,
-        state: (() => {
-          let on = 0;
-          for (const sid of selectedIds) {
-            const it = queue.find((x) => x.id === sid);
-            if (!it) continue;
-            if (getItemLemmyCommunityIds(it).includes(String(community.id))) on += 1;
-          }
-          return on === 0 ? "none" : on === selectedIds.length ? "all" : "some";
-        })(),
-        _index: index,
-      }))
-      .sort((a, b) => {
-        const stateCompare = sortStateOrder(a.state) - sortStateOrder(b.state);
-        if (stateCompare !== 0) return stateCompare;
-        const titleCompare = String(a.title || a.name || "").localeCompare(String(b.title || b.name || ""));
-        if (titleCompare !== 0) return titleCompare;
-        return a._index - b._index;
-      })
-        .map(({ _index, ...community }) => community);
-      }, [filteredLemmyCommunities, selectedIds, queue]);
+    return [...filteredLemmyCommunities].sort((a, b) => {
+      const aSel = pinnedSet.has(String(a.id));
+      const bSel = pinnedSet.has(String(b.id));
+      if (aSel !== bSel) return aSel ? -1 : 1;
+      return String(a.title || a.name || "").localeCompare(String(b.title || b.name || ""));
+    });
+  }, [filteredLemmyCommunities, lemmyPinnedSelectedIds]);
+
+      const missingFileIdSet = useMemo(() => new Set(missingFileIds), [missingFileIds]);
 
   const configuredServiceIds = useMemo(() => {
     const out: UploadService[] = [];
@@ -1916,6 +1984,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setBlueskyLongPostMode(rawBlueskyLongMode === "thread" ? "thread" : "truncate");
     setTumblrUseDescriptionAsImageDescription((c as any).tumblrUseDescriptionAsImageDescription !== false);
     setBlueskyUseDescriptionAsAltText((c as any).blueskyUseDescriptionAsAltText !== false);
+    setBlueskyImageResizeEnabled(Boolean((c as any).blueskyImageResizeEnabled));
+    setBlueskyImageResizeMaxWidth(Math.max(0, Math.round(Number((c as any).blueskyImageResizeMaxWidth || 0))));
+    setBlueskyImageResizeMaxHeight(Math.max(0, Math.round(Number((c as any).blueskyImageResizeMaxHeight || 0))));
     const rawPixelfedMode = String((c as any).pixelfedPostTextMode || "merge_title_description_tags");
     const pixelfedMode: PixelFedPostTextMode =
       rawPixelfedMode === "merge_title_description" || rawPixelfedMode === "merge_title_tags" || rawPixelfedMode === "merge_description_tags" || rawPixelfedMode === "title_only" || rawPixelfedMode === "description_only"
@@ -1923,6 +1994,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         : "merge_title_description_tags";
     setPixelfedPostTextMode(pixelfedMode);
     setPixelfedUseDescriptionAsAltText((c as any).pixelfedUseDescriptionAsAltText !== false);
+    setPixelfedImageResizeEnabled(Boolean((c as any).pixelfedImageResizeEnabled));
+    setPixelfedImageResizeMaxWidth(Math.max(0, Math.round(Number((c as any).pixelfedImageResizeMaxWidth || 0))));
+    setPixelfedImageResizeMaxHeight(Math.max(0, Math.round(Number((c as any).pixelfedImageResizeMaxHeight || 0))));
     const rawMastodonMode = String((c as any).mastodonPostTextMode || "merge_title_description_tags");
     const mastodonMode: MastodonPostTextMode =
       rawMastodonMode === "merge_title_description" || rawMastodonMode === "merge_title_tags" || rawMastodonMode === "merge_description_tags" || rawMastodonMode === "title_only" || rawMastodonMode === "description_only"
@@ -1930,12 +2004,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         : "merge_title_description_tags";
     setMastodonPostTextMode(mastodonMode);
     setMastodonUseDescriptionAsAltText((c as any).mastodonUseDescriptionAsAltText !== false);
+    setMastodonImageResizeEnabled(Boolean((c as any).mastodonImageResizeEnabled));
+    setMastodonImageResizeMaxWidth(Math.max(0, Math.round(Number((c as any).mastodonImageResizeMaxWidth || 0))));
+    setMastodonImageResizeMaxHeight(Math.max(0, Math.round(Number((c as any).mastodonImageResizeMaxHeight || 0))));
     const rawLemmyMode = String((c as any).lemmyPostTextMode || "merge_title_description_tags");
     const lemmyMode: LemmyPostTextMode =
       rawLemmyMode === "merge_title_description" || rawLemmyMode === "merge_title_tags" || rawLemmyMode === "merge_description_tags" || rawLemmyMode === "title_only" || rawLemmyMode === "description_only"
         ? rawLemmyMode
         : "merge_title_description_tags";
     setLemmyPostTextMode(lemmyMode);
+    setLemmyImageResizeEnabled(Boolean((c as any).lemmyImageResizeEnabled));
+    setLemmyImageResizeMaxWidth(Math.max(0, Math.round(Number((c as any).lemmyImageResizeMaxWidth || 0))));
+    setLemmyImageResizeMaxHeight(Math.max(0, Math.round(Number((c as any).lemmyImageResizeMaxHeight || 0))));
     setBlueskyPrependText(String((c as any).blueskyPrependText || ""));
     setBlueskyAppendText(String((c as any).blueskyAppendText || ""));
     setMastodonPrependText(String((c as any).mastodonPrependText || ""));
@@ -1989,7 +2069,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const q = await window.sq.queueGet();
     startTransition(() => {
       setQueue(q);
-      if (!activeId && q.length) setActiveId(q[0].id);
+      const firstVisible = q.find((it) => it.status !== "group_only");
+      if (!activeId && firstVisible) setActiveId(firstVisible.id);
     });
     setSched(await window.sq.schedulerStatus());
     try { setLogs(await window.sq.logGet()); } catch { /* ignore */ }
@@ -2028,7 +2109,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     // The user's locally-entered secret should persist until they logout or refresh the page.
     const q = await window.sq.queueGet();
     setQueue(q);
-    if (!activeId && q.length) setActiveId(q[0].id);
+    const firstVisible = q.find((it) => it.status !== "group_only");
+    if (!activeId && firstVisible) setActiveId(firstVisible.id);
 
     // Ensure default titles (filename without extension) for items missing a title
     try {
@@ -2485,6 +2567,44 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     await refreshAll();
   };
 
+  const sanitizeResizeDimension = (value: number) => {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.floor(n);
+  };
+
+  const saveBlueskyImageResizeOptions = (enabled: boolean, maxWidth: number, maxHeight: number) => {
+    window.sq.setBlueskyImageResizeOptions({
+      enabled,
+      maxWidth: sanitizeResizeDimension(maxWidth),
+      maxHeight: sanitizeResizeDimension(maxHeight),
+    }).catch(console.error);
+  };
+
+  const savePixelfedImageResizeOptions = (enabled: boolean, maxWidth: number, maxHeight: number) => {
+    window.sq.setPixelfedImageResizeOptions({
+      enabled,
+      maxWidth: sanitizeResizeDimension(maxWidth),
+      maxHeight: sanitizeResizeDimension(maxHeight),
+    }).catch(console.error);
+  };
+
+  const saveMastodonImageResizeOptions = (enabled: boolean, maxWidth: number, maxHeight: number) => {
+    window.sq.setMastodonImageResizeOptions({
+      enabled,
+      maxWidth: sanitizeResizeDimension(maxWidth),
+      maxHeight: sanitizeResizeDimension(maxHeight),
+    }).catch(console.error);
+  };
+
+  const saveLemmyImageResizeOptions = (enabled: boolean, maxWidth: number, maxHeight: number) => {
+    window.sq.setLemmyImageResizeOptions({
+      enabled,
+      maxWidth: sanitizeResizeDimension(maxWidth),
+      maxHeight: sanitizeResizeDimension(maxHeight),
+    }).catch(console.error);
+  };
+
   const saveBlueskyCredentials = async () => {
     try {
       setBlueskyAuthError("");
@@ -2806,7 +2926,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     showToast(`Cleared ${result.deletedFiles || 0} cached image file(s).`);
   };
 
-  const selectAll = () => setSelectedIds(queue.map(q => q.id));
+  const selectAll = () => setSelectedIds(visibleMainQueue.map(q => q.id));
   const clearSelection = () => setSelectedIds([]);
 
   useEffect(() => {
@@ -2833,15 +2953,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       if (isTextEditingTarget) return;
 
       e.preventDefault();
-      if (!queue.length) return;
-      setSelectedIds(queue.map((q) => q.id));
-      if (!activeId) setActiveId(queue[0].id);
-      if (!anchorId) setAnchorId(queue[0].id);
+      if (!visibleMainQueue.length) return;
+      setSelectedIds(visibleMainQueue.map((q) => q.id));
+      if (!activeId) setActiveId(visibleMainQueue[0].id);
+      if (!anchorId) setAnchorId(visibleMainQueue[0].id);
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [displayTab, queue, activeId, anchorId, undoBusy, undoStack]);
+  }, [displayTab, visibleMainQueue, activeId, anchorId, undoBusy, undoStack]);
 
   useEffect(() => {
     if (!typedDeleteDialog) return;
@@ -2857,13 +2977,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   }, [queuePathSignature]);
 
   const refreshMissingRelinkPrompt = useCallback(async () => {
-    if (!queue.length) return;
-    if (missingRelinkPrompt) return;
+    // Only check items that are displayed (exclude group_only items kept for backend processing)
+    const displayedQueue = queue.filter(it => it.status !== "group_only");
+    if (!displayedQueue.length) {
+      setMissingFileIds([]);
+      setMissingRelinkPrompt(null);
+      return;
+    }
     if (missingRelinkPromptBusy) return;
-    if (missingRelinkPromptSuppressed) return;
 
     const result = await window.sq.queueGetMissingPathGroups();
-    if (!result?.ok || !Array.isArray(result.groups) || !result.groups.length) return;
+    if (!result?.ok || !Array.isArray(result.groups)) {
+      setMissingFileIds([]);
+      return;
+    }
+
+    const missingIds = Array.from(new Set(result.groups.flatMap((g: any) => Array.isArray(g?.ids) ? g.ids.map((id: any) => String(id || "")).filter(Boolean) : [])));
+    setMissingFileIds(missingIds);
+
+    if (!result.groups.length) {
+      setMissingRelinkPrompt(null);
+      return;
+    }
+
+    if (missingRelinkPrompt || missingRelinkPromptSuppressed) return;
 
     const first = result.groups[0];
     setMissingRelinkPrompt({
@@ -3190,8 +3327,21 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     void window.sq.openExternal({ url });
   };
 
-  const resolveRemovableIds = (ids: string[]) => {
-    if (!ids.length) return [];
+  const promptGroupRemoveChoice = (waitingCount: number): Promise<"all" | "keep" | "cancel"> => {
+    return new Promise((resolve) => {
+      groupRemoveDialogResolveRef.current = resolve;
+      setGroupRemoveDialog({ waitingCount });
+    });
+  };
+
+  const resolveGroupRemoveChoice = (choice: "all" | "keep" | "cancel") => {
+    setGroupRemoveDialog(null);
+    groupRemoveDialogResolveRef.current?.(choice);
+    groupRemoveDialogResolveRef.current = null;
+  };
+
+  const resolveRemovableIds = async (ids: string[]): Promise<{ removeIds: string[]; detachIds: string[] } | null> => {
+    if (!ids.length) return null;
 
     const waitingIds = ids.filter(id => {
       const it = queue.find(q => q.id === id);
@@ -3199,23 +3349,36 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       return Object.values(it.groupAddStates).some(st => st?.status === "retry");
     });
 
-    let finalIds = ids;
-    if (waitingIds.length) {
-      const removeAll = window.confirm(
-        "One or more items being removed is still waiting to be added to a group.\n\nOK = Remove items from queue.\nCancel = Keep photos that are waiting."
-      );
-      if (!removeAll) {
-        finalIds = ids.filter(id => !waitingIds.includes(id));
-      }
+    if (!waitingIds.length) {
+      return { removeIds: ids, detachIds: [] };
     }
 
-    return finalIds;
+    const choice = await promptGroupRemoveChoice(waitingIds.length);
+    if (choice === "cancel") return null;
+    if (choice === "all") return { removeIds: ids, detachIds: [] };
+    
+    // "keep" option: detach waiting items to group_only, remove non-waiting items
+    const nonWaiting = ids.filter(id => !waitingIds.includes(id));
+    return { removeIds: nonWaiting, detachIds: waitingIds };
   };
 
   const removeContextMenuItems = async () => {
     const idsToRemove = selectedIds.length > 0 ? selectedIds : (contextMenu ? [contextMenu.itemId] : []);
     setContextMenu(null);
     if (!idsToRemove.length) return;
+    
+    // Check if any items have pending group retries
+    const hasGroupRetries = idsToRemove.some(id => {
+      const it = queue.find(q => q.id === id);
+      if (!it?.groupAddStates) return false;
+      return Object.values(it.groupAddStates).some(st => st?.status === "retry");
+    });
+    
+    // If there are group retries, skip the generic confirm and go straight to the group dialog
+    if (hasGroupRetries) {
+      await removeSelected();
+      return;
+    }
     
     const confirmed = window.confirm(
       idsToRemove.length === 1
@@ -3233,23 +3396,46 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         setContextMenu(null);
         if (!idsToDelete.length) return;
 
-        const finalIds = resolveRemovableIds(idsToDelete);
-        if (!finalIds.length) return;
+        const resolved = await resolveRemovableIds(idsToDelete);
+        if (!resolved) return;
 
-        const hasNotYetUploadedItems = finalIds.some((id) => {
+        const removeIds = resolved.removeIds;
+        const detachIds = resolved.detachIds;
+        const trashIds = Array.from(new Set([...removeIds, ...detachIds]));
+        if (!trashIds.length) return;
+
+        if (trashIds.some((id) => missingFileIdSet.has(id))) {
+          showToast("Cannot delete: one or more selected items are marked File Missing.");
+          return;
+        }
+
+        const hasNotYetUploadedItems = trashIds.some((id) => {
           const it = queue.find((q) => q.id === id);
           if (!it) return false;
           return it.status === "pending" || it.status === "uploading" || it.status === "failed";
         });
 
         if (hasNotYetUploadedItems) {
-          setUnuploadedDeleteDialog({ ids: finalIds, fileCount: finalIds.length });
+          setUnuploadedDeleteDialog({
+            ids: trashIds,
+            removeIds,
+            detachIds,
+            trashIds,
+            fileCount: trashIds.length,
+          });
           return;
         }
 
-        const fileCount = finalIds.length;
+        const fileCount = trashIds.length;
         setTypedDeleteInput("");
-        setTypedDeleteDialog({ ids: finalIds, fileCount, requiredText: `Delete ${fileCount}` });
+        setTypedDeleteDialog({
+          ids: trashIds,
+          removeIds,
+          detachIds,
+          trashIds,
+          fileCount,
+          requiredText: `Delete ${fileCount}`,
+        });
       };
 
   const uploadContextMenuItemsNow = async () => {
@@ -3305,6 +3491,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       ...it,
       status: "pending" as const,
       lastError: "",
+      serviceStates: {},
     }));
 
     setQueue((prev) => prev.map((it) => resetItems.find((x) => x.id === it.id) || it));
@@ -3426,13 +3613,26 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const removeSelected = async () => {
     const ids = selectedIds.length ? selectedIds : (activeId ? [activeId] : []);
     if (!ids.length) return;
-    const finalIds = resolveRemovableIds(ids);
-    if (!finalIds.length) return;
+    const resolved = await resolveRemovableIds(ids);
+    if (!resolved) return;
 
-    const q = await window.sq.queueRemove(finalIds);
-    setQueue(q);
+    // First, mark items with group retries as group_only (keeps them in queue for backend processing)
+    if (resolved.detachIds.length > 0) {
+      await window.sq.queueDetachToGroupOnly(resolved.detachIds);
+    }
+    
+    // Then remove items that should be fully removed from queue
+    if (resolved.removeIds.length > 0) {
+      await window.sq.queueRemove(resolved.removeIds);
+    }
+    
+    // Reload full queue so detached group_only items remain manageable in
+    // Flickr group retry controls.
+    const fullQueue = await window.sq.queueGet();
+    setQueue(fullQueue);
     setSelectedIds([]);
-    setActiveId(q[0]?.id || null);
+    const firstVisible = fullQueue.find((it) => it.status !== "group_only");
+    setActiveId(firstVisible?.id || null);
   };
 
   const dismissMissingRelinkPrompt = () => {
@@ -3474,12 +3674,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
       const missingAfter = await window.sq.queueGetMissingPathGroups();
       if (missingAfter?.ok && Array.isArray(missingAfter.groups) && missingAfter.groups.length) {
+        const missingIds = Array.from(new Set(missingAfter.groups.flatMap((g: any) => Array.isArray(g?.ids) ? g.ids.map((id: any) => String(id || "")).filter(Boolean) : [])));
+        setMissingFileIds(missingIds);
         const first = missingAfter.groups[0];
         setMissingRelinkPrompt({
           expectedDir: String(first.expectedDir || ""),
           missingCount: Number(first.missingCount || 0),
         });
       } else {
+        setMissingFileIds([]);
         setMissingRelinkPrompt(null);
       }
     } finally {
@@ -3497,9 +3700,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     if (!unuploadedDeleteDialog) return;
     const fileCount = unuploadedDeleteDialog.fileCount;
     const ids = [...unuploadedDeleteDialog.ids];
+    const removeIds = [...unuploadedDeleteDialog.removeIds];
+    const detachIds = [...unuploadedDeleteDialog.detachIds];
+    const trashIds = [...unuploadedDeleteDialog.trashIds];
     setUnuploadedDeleteDialog(null);
     setTypedDeleteInput("");
-    setTypedDeleteDialog({ ids, fileCount, requiredText: `Delete ${fileCount}` });
+    setTypedDeleteDialog({ ids, removeIds, detachIds, trashIds, fileCount, requiredText: `Delete ${fileCount}` });
   };
 
   const matchesTypedDeleteConfirmation = typedDeleteDialog
@@ -3510,16 +3716,28 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     if (!typedDeleteDialog) return;
     if (!matchesTypedDeleteConfirmation) return;
 
-    const result = await window.sq.queueRemoveAndTrash(typedDeleteDialog.ids);
-    const nextQueue = Array.isArray(result?.queue) ? result.queue : [];
-    const movedCount = Number(result?.movedCount || 0);
-    const failedCount = Number(result?.failedCount || 0);
-    const skippedMissing = Number(result?.skippedMissing || 0);
-    const trashLabel = String(result?.trashLabel || "Recycle Bin");
+    const removeIds = Array.isArray(typedDeleteDialog.removeIds) ? typedDeleteDialog.removeIds : [];
+    const detachIds = Array.isArray(typedDeleteDialog.detachIds) ? typedDeleteDialog.detachIds : [];
+    const trashIds = Array.isArray(typedDeleteDialog.trashIds) ? typedDeleteDialog.trashIds : typedDeleteDialog.ids;
+
+    const trashResult = await window.sq.queueTrashOriginalsByIds(trashIds);
+    if (detachIds.length > 0) {
+      await window.sq.queueDetachToGroupOnly(detachIds);
+    }
+    if (removeIds.length > 0) {
+      await window.sq.queueRemove(removeIds);
+    }
+
+    const nextQueue = await window.sq.queueGet();
+    const movedCount = Number(trashResult?.movedCount || 0);
+    const failedCount = Number(trashResult?.failedCount || 0);
+    const skippedMissing = Number(trashResult?.skippedMissing || 0);
+    const trashLabel = String(trashResult?.trashLabel || "Recycle Bin");
 
     setQueue(nextQueue);
     setSelectedIds([]);
-    setActiveId(nextQueue[0]?.id || null);
+    const firstVisible = nextQueue.find((it) => it.status !== "group_only");
+    setActiveId(firstVisible?.id || null);
     setTypedDeleteDialog(null);
     setTypedDeleteInput("");
 
@@ -4207,26 +4425,109 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return () => window.removeEventListener('sq-add-photos', handleAddPhotos as any);
   }, [addPhotosFromPaths, tab]);
 
+  const LIMIT_DISCOVERY_REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
+
+  const normalizeInstanceCacheKey = (raw: string) => {
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) return "";
+    const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    try {
+      const u = new URL(withProtocol);
+      if (u.protocol !== "https:") return "";
+      u.pathname = "";
+      u.search = "";
+      u.hash = "";
+      return u.toString().replace(/\/+$/, "");
+    } catch {
+      return "";
+    }
+  };
+
+  const formatDateTimeLabel = (ts: number) => {
+    if (!Number.isFinite(ts) || ts <= 0) return "unknown";
+    return new Date(ts).toLocaleString();
+  };
+
+  const getDiscoveredLimitCacheStatus = (cacheObject: any, rawInstanceUrl: string) => {
+    const key = normalizeInstanceCacheKey(rawInstanceUrl);
+    if (!key || !cacheObject || typeof cacheObject !== "object") {
+      return {
+        found: false,
+        message: "Limit cache: not discovered yet for this instance.",
+      };
+    }
+
+    const entry = cacheObject[key];
+    const cachedAt = Number(entry?.cachedAt || 0);
+    if (!entry || !Number.isFinite(cachedAt) || cachedAt <= 0) {
+      return {
+        found: false,
+        message: "Limit cache: not discovered yet for this instance.",
+      };
+    }
+
+    const nextRefreshAt = cachedAt + LIMIT_DISCOVERY_REFRESH_MS;
+    const due = Date.now() >= nextRefreshAt;
+    return {
+      found: true,
+      message: `Limit cache: last discovered ${formatDateTimeLabel(cachedAt)}. Next scheduled refresh ${formatDateTimeLabel(nextRefreshAt)}${due ? " (due now)" : ""}.`,
+    };
+  };
+
+  const pixelfedLimitCacheStatus = getDiscoveredLimitCacheStatus(
+    (cfg as any)?.pixelfedInstanceLimitsCache,
+    String((cfg as any)?.pixelfedInstanceUrl || pixelfedInstanceUrl || "")
+  );
+
+  const mastodonLimitCacheStatus = getDiscoveredLimitCacheStatus(
+    (cfg as any)?.mastodonInstanceLimitsCache,
+    String((cfg as any)?.mastodonInstanceUrl || mastodonInstanceUrl || "")
+  );
+
+  const lemmyLimitCacheStatus = getDiscoveredLimitCacheStatus(
+    (cfg as any)?.lemmyInstanceLimitsCache,
+    String((cfg as any)?.lemmyInstanceUrl || lemmyInstanceUrl || "")
+  );
+
   const batchProgressInfo = useMemo(() => {
     const isBatchActive = Boolean((sched as any)?.batchRunActive);
-    if (!isBatchActive) return null as { progress: number; completed: number; batchSize: number } | null;
+    if (!isBatchActive) return null as { progress: number; label: string | null } | null;
 
+    const totalServiceUnits = Math.max(0, Math.round(Number((sched as any)?.batchRunTotalServiceUnits || 0)));
+    const completedServiceUnits = Math.max(0, Math.round(Number((sched as any)?.batchRunCompletedServiceUnits || 0)));
+    const currentServiceId = String((sched as any)?.batchRunCurrentServiceId || "").trim();
+    const loadedKB = Math.max(0, Number((sched as any)?.batchRunCurrentServiceLoadedKB || 0));
+    const totalKB = Math.max(0, Number((sched as any)?.batchRunCurrentServiceTotalKB || 0));
+
+    if (totalServiceUnits > 0) {
+      const currentPartialFromKB = totalKB > 0 ? Math.max(0, Math.min(1, loadedKB / totalKB)) : 0;
+      const currentPartialFallback = currentServiceId ? Math.max(0, Math.min(1, uploadByteProgress ?? 0)) : 0;
+      const currentPartial = totalKB > 0 ? currentPartialFromKB : currentPartialFallback;
+      const pct = (completedServiceUnits + currentPartial) / totalServiceUnits;
+      return {
+        progress: Math.max(0, Math.min(1, pct)),
+        label: `${Math.min(completedServiceUnits, totalServiceUnits)}/${totalServiceUnits} svc`,
+      };
+    }
+
+    // Fallback for legacy scheduler runs that do not expose service-unit progress.
     const startedAtRaw = (sched as any)?.batchRunStartedAt ? String((sched as any).batchRunStartedAt) : "";
     const startedAtMs = Date.parse(startedAtRaw);
-    if (!Number.isFinite(startedAtMs)) return null as { progress: number; completed: number; batchSize: number } | null;
+    if (!Number.isFinite(startedAtMs)) return null as { progress: number; label: string | null } | null;
 
     const batchSize = Math.max(1, Math.min(999, Math.round(Number((sched as any)?.batchRunSize || uploadBatchSize || 1))));
     const completed = queue.filter(it => it.uploadedAt && Date.parse(it.uploadedAt) >= startedAtMs).length;
     const hasUploading = queue.some(it => it.status === "uploading");
     const currentPartial = hasUploading ? Math.max(0, Math.min(1, uploadByteProgress ?? 0)) : 0;
     const pct = (completed + currentPartial) / batchSize;
-    return { progress: Math.max(0, Math.min(1, pct)), completed, batchSize };
+    return {
+      progress: Math.max(0, Math.min(1, pct)),
+      label: batchSize > 1 ? `${Math.min(completed, batchSize)}/${batchSize}` : null,
+    };
   }, [sched, queue, uploadBatchSize, uploadByteProgress]);
 
   const uploadProgress = batchProgressInfo?.progress ?? uploadByteProgress;
-  const batchProgressLabel = batchProgressInfo && batchProgressInfo.batchSize > 1
-    ? `${Math.min(batchProgressInfo.completed, batchProgressInfo.batchSize)}/${batchProgressInfo.batchSize}`
-    : null;
+  const batchProgressLabel = batchProgressInfo?.label ?? null;
 
   // Clear the batch tag input whenever the selection changes in multi-select mode.
   useEffect(() => {
@@ -4922,12 +5223,40 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 ))}
               </span>
             ) : <span className="badge warn" onClick={() => switchTab("setup")} style={{ cursor: "pointer" }} title="Click to jump to Setup">Not authorized</span>}
-            <span className="badge" onClick={() => switchTab("queue")} style={{ cursor: "pointer" }} title="Click to jump to Queue">{queue.length} in queue</span>
+            <span className="badge" onClick={() => switchTab("queue")} style={{ cursor: "pointer" }} title="Click to jump to Queue">{visibleMainQueue.length} in queue</span>
             {sched?.schedulerOn ? (
               <span className="badge good" onClick={async () => { await stopSched(); }} style={{ cursor: "pointer" }} title="Click to stop scheduler">Scheduler ON</span>
             ) : (
               <span className="badge" onClick={async () => { switchTab("schedule"); await startSched(); }} style={{ cursor: "pointer" }} title="Click to start scheduler">Scheduler OFF</span>
             )}
+            {/* Upload subtitle moved to banner area below */}
+                  {/* Uploading subtitle/info as a notice badge in the banner area */}
+                  {(() => {
+                    // Show only if uploading is active and we have a current service
+                    const isBatchActive = Boolean((sched as any)?.batchRunActive);
+                    const currentServiceId = String((sched as any)?.batchRunCurrentServiceId || '').trim();
+                    let currentItemTitle = '';
+                    if (isBatchActive && currentServiceId) {
+                      // Try to find the uploading item
+                      const uploadingItem = queue.find(it => it.status === 'uploading');
+                      if (uploadingItem) {
+                        currentItemTitle = uploadingItem.title || fileNameFromPath(uploadingItem.photoPath) || '(untitled)';
+                      }
+                    }
+                    if (isBatchActive && currentServiceId && currentItemTitle) {
+                      return (
+                        <div className="badge warn" style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 500 }}>
+                          <span>Uploading:</span>
+                          <span style={{ fontWeight: 700 }}>{currentItemTitle}</span>
+                          <span style={{ ...platformChipStyle(currentServiceId), marginLeft: 4 }} title={platformLabel(currentServiceId)}>
+                            {PLATFORM_META[currentServiceId]?.icon || platformLabel(currentServiceId).charAt(0).toUpperCase()}
+                          </span>
+                          <span style={{ fontSize: 12, color: 'var(--text-secondary)', marginLeft: 2 }}>{platformLabel(currentServiceId)}</span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
             <div style={{position:'relative', width:200, height:6, marginLeft:12, background:'rgba(255,255,255,0.05)', borderRadius:3, overflow:'hidden'}}>
               {uploadProgress != null && (
                 <div style={{position:'absolute', left:0, top:0, bottom:0, width:`${Math.round(uploadProgress*100)}%`, background:'var(--accent)'}} />
@@ -4971,7 +5300,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <button
             className="btn"
             style={{ padding: "0 6px", minHeight: 22 }}
-            onClick={() => { void dismissGlobalBanner(msg); }}
+            onClick={() => { void dismissMessagesEverywhere([msg]); }}
             title="Dismiss error"
           >
             x
@@ -4984,7 +5313,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           <button
             className="btn"
             style={{ padding: "0 6px", minHeight: 22 }}
-            onClick={() => { void dismissGlobalBanner(msg); }}
+            onClick={() => { void dismissMessagesEverywhere([msg]); }}
             title="Dismiss notice"
           >
             x
@@ -5454,6 +5783,58 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div style={{ height: 12 }} />
                   <div className="small">Bluesky status: {((cfg as any)?.blueskyAuthed) ? `Authorized${(cfg as any)?.blueskyHandle ? ` as ${(cfg as any).blueskyHandle}` : ""}` : "Not authorized"}</div>
                   <div style={{ height: 12 }} />
+                  <div className="small" style={{ color: "var(--warn)", marginBottom: 6 }}>
+                    Upload note: Bluesky image uploads are capped at 1 MB. ShutterQueue auto-resizes/compresses before upload (JPEG quality scale 0-100, never below 70).
+                  </div>
+                  <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={blueskyImageResizeEnabled}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setBlueskyImageResizeEnabled(next);
+                        saveBlueskyImageResizeOptions(next, blueskyImageResizeMaxWidth, blueskyImageResizeMaxHeight);
+                      }}
+                    />
+                    <span>Optional manual image scaling before Bluesky upload</span>
+                  </label>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, opacity: blueskyImageResizeEnabled ? 1 : 0.6 }}>
+                    <div>
+                      <label className="small">Max width (px)</label>
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        disabled={!blueskyImageResizeEnabled}
+                        value={blueskyImageResizeMaxWidth || ""}
+                        onChange={(e) => {
+                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          setBlueskyImageResizeMaxWidth(next);
+                          saveBlueskyImageResizeOptions(blueskyImageResizeEnabled, next, blueskyImageResizeMaxHeight);
+                        }}
+                        placeholder="e.g. 3000"
+                      />
+                    </div>
+                    <div>
+                      <label className="small">Max height (px)</label>
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        disabled={!blueskyImageResizeEnabled}
+                        value={blueskyImageResizeMaxHeight || ""}
+                        onChange={(e) => {
+                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          setBlueskyImageResizeMaxHeight(next);
+                          saveBlueskyImageResizeOptions(blueskyImageResizeEnabled, blueskyImageResizeMaxWidth, next);
+                        }}
+                        placeholder="e.g. 3000"
+                      />
+                    </div>
+                  </div>
+                  <div style={{ height: 12 }} />
                   <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>When posting to Bluesky...</div>
                   <div style={{ display: "grid", gap: 6 }}>
                     <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -5644,6 +6025,61 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div style={{ height: 12 }} />
                   <div className="small">PixelFed status: {((cfg as any)?.pixelfedAuthed) ? `Authorized${(cfg as any)?.pixelfedUsername ? ` as @${(cfg as any).pixelfedUsername}` : ""}` : "Not authorized"}</div>
                   <div style={{ height: 12 }} />
+                  <div className="small" style={{ color: "var(--warn)", marginBottom: 6 }}>
+                    Upload note: PixelFed limits vary by instance. ShutterQueue discovers and caches your instance limits, then auto-resizes/compresses (JPEG quality scale 0-100, floor 70).
+                  </div>
+                  <div className="small" style={{ color: "var(--text-dim)", marginBottom: 6 }}>
+                    {pixelfedLimitCacheStatus.message}
+                  </div>
+                  <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={pixelfedImageResizeEnabled}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setPixelfedImageResizeEnabled(next);
+                        savePixelfedImageResizeOptions(next, pixelfedImageResizeMaxWidth, pixelfedImageResizeMaxHeight);
+                      }}
+                    />
+                    <span>Optional manual image scaling before PixelFed upload</span>
+                  </label>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, opacity: pixelfedImageResizeEnabled ? 1 : 0.6 }}>
+                    <div>
+                      <label className="small">Max width (px)</label>
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        disabled={!pixelfedImageResizeEnabled}
+                        value={pixelfedImageResizeMaxWidth || ""}
+                        onChange={(e) => {
+                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          setPixelfedImageResizeMaxWidth(next);
+                          savePixelfedImageResizeOptions(pixelfedImageResizeEnabled, next, pixelfedImageResizeMaxHeight);
+                        }}
+                        placeholder="e.g. 3000"
+                      />
+                    </div>
+                    <div>
+                      <label className="small">Max height (px)</label>
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        disabled={!pixelfedImageResizeEnabled}
+                        value={pixelfedImageResizeMaxHeight || ""}
+                        onChange={(e) => {
+                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          setPixelfedImageResizeMaxHeight(next);
+                          savePixelfedImageResizeOptions(pixelfedImageResizeEnabled, pixelfedImageResizeMaxWidth, next);
+                        }}
+                        placeholder="e.g. 3000"
+                      />
+                    </div>
+                  </div>
+                  <div style={{ height: 12 }} />
                   <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>When posting to PixelFed...</div>
                   <div style={{ display: "grid", gap: 6 }}>
                     <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -5808,6 +6244,61 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <div style={{ height: 12 }} />
                   <div className="small">Mastodon status: {((cfg as any)?.mastodonAuthed) ? `Authorized${(cfg as any)?.mastodonUsername ? ` as @${(cfg as any).mastodonUsername}` : ""}` : "Not authorized"}</div>
                   <div style={{ height: 12 }} />
+                  <div className="small" style={{ color: "var(--warn)", marginBottom: 6 }}>
+                    Upload note: Mastodon limits vary by instance. ShutterQueue discovers and caches your instance limits, then auto-resizes/compresses (JPEG quality scale 0-100, floor 70).
+                  </div>
+                  <div className="small" style={{ color: "var(--text-dim)", marginBottom: 6 }}>
+                    {mastodonLimitCacheStatus.message}
+                  </div>
+                  <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={mastodonImageResizeEnabled}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setMastodonImageResizeEnabled(next);
+                        saveMastodonImageResizeOptions(next, mastodonImageResizeMaxWidth, mastodonImageResizeMaxHeight);
+                      }}
+                    />
+                    <span>Optional manual image scaling before Mastodon upload</span>
+                  </label>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, opacity: mastodonImageResizeEnabled ? 1 : 0.6 }}>
+                    <div>
+                      <label className="small">Max width (px)</label>
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        disabled={!mastodonImageResizeEnabled}
+                        value={mastodonImageResizeMaxWidth || ""}
+                        onChange={(e) => {
+                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          setMastodonImageResizeMaxWidth(next);
+                          saveMastodonImageResizeOptions(mastodonImageResizeEnabled, next, mastodonImageResizeMaxHeight);
+                        }}
+                        placeholder="e.g. 3000"
+                      />
+                    </div>
+                    <div>
+                      <label className="small">Max height (px)</label>
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        disabled={!mastodonImageResizeEnabled}
+                        value={mastodonImageResizeMaxHeight || ""}
+                        onChange={(e) => {
+                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          setMastodonImageResizeMaxHeight(next);
+                          saveMastodonImageResizeOptions(mastodonImageResizeEnabled, mastodonImageResizeMaxWidth, next);
+                        }}
+                        placeholder="e.g. 3000"
+                      />
+                    </div>
+                  </div>
+                  <div style={{ height: 12 }} />
                   <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>When posting to Mastodon...</div>
                   <div style={{ display: "grid", gap: 6 }}>
                     <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -5936,6 +6427,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 <>
                   <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Lemmy API Access + Communities</div>
                   <div className="small">Lemmy uses a personal JWT token. ShutterQueue stores Lemmy credentials encrypted locally.</div>
+                  <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: "8px 12px", marginTop: 10, marginBottom: 4, borderRadius: 4 }}>
+                    <div className="small" style={{ color: "var(--warn)", fontWeight: 600 }}>⚠ Lemmy integration is still unreliable. Images may not display correctly on Lemmy posts.</div>
+                  </div>
                   {!((cfg as any)?.lemmyAuthed) ? (
                     <div className="card" style={{ marginTop: 12, backgroundColor: "rgba(255,255,255,0.02)", borderRadius: 12, padding: 12, borderLeft: "4px solid var(--accent)" }}>
                       <div className="small" style={{ fontWeight: 600, marginBottom: 8 }}>Lemmy Setup Help:</div>
@@ -5982,6 +6476,61 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   ) : null}
                   <div style={{ height: 12 }} />
                   <div className="small">Lemmy status: {((cfg as any)?.lemmyAuthed) ? `Authorized${(cfg as any)?.lemmyUsername ? ` as @${(cfg as any).lemmyUsername}` : ""}` : "Not authorized"}</div>
+                  <div style={{ height: 12 }} />
+                  <div className="small" style={{ color: "var(--warn)", marginBottom: 6 }}>
+                    Upload note: Lemmy limits vary by instance. ShutterQueue discovers and caches your instance limits, then auto-resizes/compresses (JPEG quality scale 0-100, floor 70).
+                  </div>
+                  <div className="small" style={{ color: "var(--text-dim)", marginBottom: 6 }}>
+                    {lemmyLimitCacheStatus.message}
+                  </div>
+                  <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={lemmyImageResizeEnabled}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setLemmyImageResizeEnabled(next);
+                        saveLemmyImageResizeOptions(next, lemmyImageResizeMaxWidth, lemmyImageResizeMaxHeight);
+                      }}
+                    />
+                    <span>Optional manual image scaling before Lemmy upload</span>
+                  </label>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, opacity: lemmyImageResizeEnabled ? 1 : 0.6 }}>
+                    <div>
+                      <label className="small">Max width (px)</label>
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        disabled={!lemmyImageResizeEnabled}
+                        value={lemmyImageResizeMaxWidth || ""}
+                        onChange={(e) => {
+                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          setLemmyImageResizeMaxWidth(next);
+                          saveLemmyImageResizeOptions(lemmyImageResizeEnabled, next, lemmyImageResizeMaxHeight);
+                        }}
+                        placeholder="e.g. 3000"
+                      />
+                    </div>
+                    <div>
+                      <label className="small">Max height (px)</label>
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        disabled={!lemmyImageResizeEnabled}
+                        value={lemmyImageResizeMaxHeight || ""}
+                        onChange={(e) => {
+                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          setLemmyImageResizeMaxHeight(next);
+                          saveLemmyImageResizeOptions(lemmyImageResizeEnabled, lemmyImageResizeMaxWidth, next);
+                        }}
+                        placeholder="e.g. 3000"
+                      />
+                    </div>
+                  </div>
                   <div style={{ height: 12 }} />
                   <div className="row" style={{ justifyContent: "space-between" }}>
                     <div className="small">Subscribed communities loaded: {lemmyCommunities.length}</div>
@@ -6229,10 +6778,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   <button className="btn primary" onClick={addPhotos} disabled={!cfg?.authed}>Add Photos</button>
                   <button className="btn danger" onClick={removeSelected} disabled={!selectedIds.length}>Remove Selected</button>
                   <button className="btn" onClick={() => { void undoLastUserEdit(); }} disabled={undoBusy || undoStack.length === 0}>Undo</button>
-                  <button className="btn" onClick={async () => { const q = await window.sq.queueClearUploaded(); setQueue(q); showToast("Cleared successfully uploaded photos."); }} disabled={!queue.length}>Clear Uploaded</button>
+                  <button className="btn" onClick={async () => { const q = await window.sq.queueClearUploaded(); setQueue(q); showToast("Cleared successfully uploaded photos."); }} disabled={!visibleMainQueue.length}>Clear Uploaded</button>
                 </div>
                 <div className="btnrow">
-                  <button className="btn" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
+                  <button className="btn" onClick={uploadNext} disabled={!cfg?.authed || !visibleMainQueue.length}>Upload Next Item Now</button>
                   <button className="btn" onClick={openScheduleSelectedDialog} disabled={!hasPendingSelected}>Schedule Selected</button>
                   {manuallyScheduledCount > 0 ? (
                     <button className="btn" onClick={clearManualSchedule} disabled={!hasSelectedManualSchedule}>Clear Selected Manual Schedule</button>
@@ -6240,23 +6789,23 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 </div>
                 <div className="btncluster btncluster-secondary" style={{ justifySelf: "start" }}>
                   <span className="small">{selectedIds.length > 1 ? "Sort Selected" : "Sort Queue"}</span>
-                  <button className="btn btn-sm" onClick={shuffleQueue} disabled={queue.length === 0}>Shuffle</button>
-                  <button className="btn btn-sm" onClick={() => sortQueueByFilename(false)} disabled={queue.length === 0}>Filename A-Z</button>
-                  <button className="btn btn-sm" onClick={() => sortQueueByFilename(true)} disabled={queue.length === 0}>Filename Z-A</button>
-                  <button className="btn btn-sm" onClick={() => sortQueueByTitle(false)} disabled={queue.length === 0}>Title A-Z</button>
-                  <button className="btn btn-sm" onClick={() => sortQueueByTitle(true)} disabled={queue.length === 0}>Title Z-A</button>
-                  <button className="btn btn-sm" onClick={() => sortQueueByDateTaken(false)} disabled={queue.length === 0}>Date Taken Old-New</button>
-                  <button className="btn btn-sm" onClick={() => sortQueueByDateTaken(true)} disabled={queue.length === 0}>Date Taken New-Old</button>
+                  <button className="btn btn-sm" onClick={shuffleQueue} disabled={visibleMainQueue.length === 0}>Shuffle</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByFilename(false)} disabled={visibleMainQueue.length === 0}>Filename A-Z</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByFilename(true)} disabled={visibleMainQueue.length === 0}>Filename Z-A</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByTitle(false)} disabled={visibleMainQueue.length === 0}>Title A-Z</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByTitle(true)} disabled={visibleMainQueue.length === 0}>Title Z-A</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByDateTaken(false)} disabled={visibleMainQueue.length === 0}>Date Taken Old-New</button>
+                  <button className="btn btn-sm" onClick={() => sortQueueByDateTaken(true)} disabled={visibleMainQueue.length === 0}>Date Taken New-Old</button>
                 </div>
                 <div className="queue-toolbar-row-spread">
                   <div className="btncluster btncluster-secondary" style={{ justifySelf: "start" }}>
                     <span className="small">Selection</span>
-                    <button className="btn btn-sm" onClick={selectAll} disabled={!queue.length}>Select all</button>
+                    <button className="btn btn-sm" onClick={selectAll} disabled={!visibleMainQueue.length}>Select all</button>
                     <button className="btn btn-sm" onClick={clearSelection} disabled={!selectedIds.length}>Clear ({selectedIds.length})</button>
                   </div>
                   <div className="btncluster btncluster-secondary queue-backup-actions" style={{ justifySelf: "end" }}>
                     <span className="small">Queue backup</span>
-                    <button className="btn btn-sm" onClick={exportQueueToFile} disabled={!queue.length}>Export</button>
+                    <button className="btn btn-sm" onClick={exportQueueToFile} disabled={!visibleMainQueue.length}>Export</button>
                     <button className="btn btn-sm" onClick={importQueueFromFile}>Import</button>
                   </div>
                 </div>
@@ -6365,7 +6914,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 }}
               >
                 <div className="queue">
-                  {queue.map((it) => {
+                  {visibleMainQueue.map((it) => {
 	                  const srcs = resolveThumbSrc(it, thumbs, flickrUrls);
 	                  const thumb = srcs.thumbSrc;
                   const isSelected = selectedSet.has(it.id);
@@ -6512,11 +7061,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           ) : null}
                           {servicesForBadgeDisplay((it.targetServices as string[] | undefined))
                             .filter((svc) => configuredServiceIds.includes(svc as UploadService))
-                            .map((svc) => (
-                            <span key={`${it.id}-svc-${svc}`} style={platformChipStyle(svc)} title={`Target: ${platformLabel(svc)}`}>
-                              {PLATFORM_META[svc]?.icon || platformLabel(svc).charAt(0).toUpperCase()}
-                            </span>
-                          ))}
+                            .map((svc) => {
+                              const serviceStatus = (it as any)?.serviceStates?.[svc]?.status;
+                              const isWarnDone = it.status === "done_warn" && serviceStatus === "done";
+                              const marker = serviceStatus === "failed" ? "x" : (serviceStatus === "done" ? "✓" : "");
+                              const color = serviceStatus === "failed"
+                                ? "var(--bad)"
+                                : (isWarnDone ? "var(--warn)" : "var(--good)");
+                              const title = `${platformLabel(svc)}: ${serviceStatus || "pending"}${isWarnDone ? " (with warnings)" : ""}`;
+                              return (
+                                <span key={`${it.id}-svc-${svc}`} title={title} style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                                  <span style={platformChipStyle(svc)}>
+                                    {PLATFORM_META[svc]?.icon || platformLabel(svc).charAt(0).toUpperCase()}
+                                  </span>
+                                  {marker ? (
+                                    <span style={{ color, fontSize: 10, fontWeight: 700, lineHeight: 1 }}>
+                                      {marker}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              );
+                            })}
+                          {missingFileIdSet.has(it.id) ? (
+                            <span className="badge bad" title="Original file could not be found on disk">File Missing</span>
+                          ) : null}
                           {it.status === "done_warn" && !hasPendingGroupRetries && it.lastError ? (
                             visibleItemMessageParts(it.lastError).length > 0
                               ? <span className="badge warn" title={friendlyIdInMessage(visibleItemMessageParts(it.lastError).join(" | "))}>warnings: see details</span>
@@ -6580,7 +7148,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   );
                 })}
                 </div>
-                {!queue.length && <div className="small">Queue is empty. Click “Add Photos”.</div>}
+                {!visibleMainQueue.length && <div className="small">Queue is empty. Click “Add Photos”.</div>}
                 <div className="small queue-scroll-footnote">
                   Selection: click • shift-click (range) • cmd/ctrl-click (toggle) • right-click (menu)
                 </div>
@@ -6612,6 +7180,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   const items = queue.filter(it => idsToCheck.includes(it.id));
                   const hasPending = items.some(it => it.status === "pending");
                   const hasFailed = items.some(it => it.status === "failed");
+                  const hasMissingSourceOnSelection = idsToCheck.some((id) => missingFileIdSet.has(String(id || "")));
                   const hasScheduled = items.some(it => it.scheduledUploadAt);
                   const isSingleItem = idsToCheck.length === 1;
                   const hasCopyPasteBlock = isSingleItem || copiedSettings !== null;
@@ -6664,14 +7233,22 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       </div>
                       <div
                         className="context-menu-item"
-                        onClick={() => { void deleteContextMenuItems(); }}
+                        onClick={() => {
+                          if (hasMissingSourceOnSelection) return;
+                          void deleteContextMenuItems();
+                        }}
                         style={{
                           padding: "8px 12px",
-                          cursor: "pointer",
-                          color: "var(--bad)",
+                          cursor: hasMissingSourceOnSelection ? "not-allowed" : "pointer",
+                          color: hasMissingSourceOnSelection ? "var(--muted)" : "var(--bad)",
                           borderBottom: (hasFailed || hasPending) ? "1px solid var(--border)" : "none",
+                          opacity: hasMissingSourceOnSelection ? 0.6 : 1,
                         }}
-                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--hover)")}
+                        title={hasMissingSourceOnSelection ? "Cannot delete: original file path is missing/unmapped." : undefined}
+                        onMouseEnter={(e) => {
+                          if (hasMissingSourceOnSelection) return;
+                          e.currentTarget.style.backgroundColor = "var(--hover)";
+                        }}
                         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                       >
                         Remove + delete file{selectedIds.length > 1 ? "s" : ""}
@@ -7147,6 +7724,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   {shouldShowLemmyOnlyFields && platformEditorTab === "lemmy" && (
                     <div>
+                      <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: "8px 12px", marginBottom: 12, borderRadius: 4 }}>
+                        <div className="small" style={{ color: "var(--warn)", fontWeight: 600 }}>⚠ Lemmy integration is still unreliable. Images may not display correctly on Lemmy posts.</div>
+                      </div>
                       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
                         <span>Communities</span>
                         {showLemmyOnlyFieldHint ? <span className="small" style={{ opacity: 0.75 }}>Lemmy only</span> : null}
@@ -7579,6 +8159,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   {shouldShowLemmyOnlyFields && platformEditorTab === "lemmy" && (
                     <div>
+                      <div style={{ backgroundColor: "var(--warn-bg)", borderLeft: "3px solid var(--warn)", padding: "8px 12px", marginBottom: 12, borderRadius: 4 }}>
+                        <div className="small" style={{ color: "var(--warn)", fontWeight: 600 }}>⚠ Lemmy integration is still unreliable. Images may not display correctly on Lemmy posts.</div>
+                      </div>
                       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
                         <span>Communities</span>
                         {showLemmyOnlyFieldHint ? <span className="small" style={{ opacity: 0.75 }}>Lemmy only</span> : null}
@@ -7858,7 +8441,25 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         onClick={() => setPendingGroupFocus(g.groupId)}
                       >
                         <div style={{ flex: 1 }}>
-                          <div>{g.groupName}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <span>{g.groupName}</span>
+                            <span className="small" style={{ color: "var(--text-dim)" }}>
+                              Users: {g.memberCount > 0 ? formatCompactCount(g.memberCount) : "unknown"}
+                            </span>
+                            <button
+                              className="btn btn-sm"
+                              type="button"
+                              title="View group info"
+                              style={{ padding: "0 6px", lineHeight: 1.1, minHeight: 18, borderRadius: 10 }}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                              }}
+                              onClick={(e) => onGroupInfoClick(e, g.group)}
+                            >
+                              i
+                            </button>
+                          </div>
                           <div className="small" style={{ fontFamily: "ui-monospace" }}>{g.groupId}</div>
                         </div>
                         <div
@@ -7906,6 +8507,21 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           <div style={{ flex: 1, display: "flex", gap: 10, alignItems: "center" }}>
                             {(() => {
                               const fullItem = queue.find(q => q.id === it.itemId);
+                              if (!fullItem) {
+                                return (
+                                  <>
+                                    <img
+                                      className="thumb empty"
+                                      src=""
+                                      alt=""
+                                      style={{ width: 34, height: 34, cursor: "default" }}
+                                    />
+                                    <div>
+                                      <div>{it.title} <span className="small">({fileNameFromPath(it.photoPath)})</span></div>
+                                    </div>
+                                  </>
+                                );
+                              }
                               const srcs = resolveThumbSrc(fullItem, thumbs, flickrUrls);
                               const fname = fileNameFromPath(it.photoPath);
                               return (
@@ -8022,7 +8638,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
         <div className="footer-right">
           {isDevRuntime && <span className="dev-runtime-badge">DEV {devSessionStamp}</span>}
-          <span className="mono">v{appVersion || "0.9.6c"}</span>
+          <span className="mono">v{appVersion || "0.9.7"}</span>
         </div>
       </div>
 
@@ -8259,6 +8875,24 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               >
                 Delete
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {groupRemoveDialog && (
+        <div className="schedule-dialog-backdrop" onClick={() => resolveGroupRemoveChoice("cancel")}>
+          <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 650, marginBottom: 8 }}>
+              Remove from Main Queue?
+            </div>
+            <div className="small" style={{ marginBottom: 10 }}>
+              {groupRemoveDialog.waitingCount} item{groupRemoveDialog.waitingCount !== 1 ? "s" : ""} {groupRemoveDialog.waitingCount !== 1 ? "have" : "has"} pending Flickr group additions. What would you like to do?
+            </div>
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={() => resolveGroupRemoveChoice("cancel")}>Cancel</button>
+              <button className="btn" onClick={() => resolveGroupRemoveChoice("keep")}>Keep In Group Additions Queue Only</button>
+              <button className="btn danger" onClick={() => resolveGroupRemoveChoice("all")}>Remove All</button>
             </div>
           </div>
         </div>

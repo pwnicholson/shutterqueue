@@ -11,7 +11,7 @@ const duplicateHashCacheByItemId = new Map();
 const VALID_TARGET_SERVICES = new Set(["flickr", "tumblr", "bluesky", "pixelfed", "mastodon", "lemmy"]);
 const VALID_PRIVACY = new Set(["public", "friends", "family", "friends_family", "private"]);
 const VALID_GEO_PRIVACY = new Set(["public", "contacts", "friends", "family", "friends_family", "private"]);
-const VALID_STATUS = new Set(["pending", "uploading", "done", "done_warn", "failed"]);
+const VALID_STATUS = new Set(["pending", "uploading", "done", "done_warn", "failed", "group_only"]);
 
 function ensureRoot() {
   if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT, { recursive: true });
@@ -413,7 +413,18 @@ function normalizeImportedQueue(input) {
 
 function removeIds(ids) {
   const set = new Set(ids);
-  const q = loadQueue().filter(it => !set.has(it.id));
+  // Preserve detached group-only retry entries; main-queue removals should not
+  // wipe group retry queues unless handled explicitly.
+  const q = loadQueue().filter(it => !(set.has(it.id) && it.status !== "group_only"));
+  return saveQueue(q);
+}
+
+function detachToGroupOnly(ids) {
+  const set = new Set(ids);
+  const q = loadQueue().map(it => {
+    if (!set.has(it.id)) return it;
+    return { ...it, status: "group_only" };
+  });
   return saveQueue(q);
 }
 
@@ -556,11 +567,14 @@ function relinkMissingPhotoPaths(queueItems, candidatePaths, options = {}) {
   };
 }
 
-module.exports = { loadQueue, saveQueue, addPaths, removeIds, updateItems, reorder, QUEUE_PATH, parseDateTakenToMs };
+module.exports = { loadQueue, saveQueue, addPaths, removeIds, detachToGroupOnly, updateItems, reorder, QUEUE_PATH, parseDateTakenToMs };
 
 
 function clearUploaded() {
   const q = loadQueue().filter(it => {
+    // group_only entries are managed by group-retry lifecycle cleanup.
+    if (it.status === "group_only") return true;
+
     // Keep items that are not done at all
     if (it.status !== "done" && it.status !== "done_warn") return true;
 

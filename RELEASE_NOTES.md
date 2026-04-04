@@ -1,8 +1,76 @@
-# ShutterQueue v0.9.6c Release Notes
+# ShutterQueue v0.9.7 Release Notes
 
-**Release Date:** March 26, 2026
+**Release Date:** April 4, 2026
 
-## What's New in 0.9.6c
+## Fixes & Improvements in 0.9.7
+
+### Platform Status Indicators on Queue Cards
+
+Queue cards now display upload status visually under each platform icon:
+
+- ✓ (green) shown after a successful upload to that service
+- ✗ (red) shown after a failed upload to that service
+- No indicator shown while upload is still pending—only status after an actual attempt
+- Status markers now clear correctly when resetting a failed item's upload status via the Retry / Reset dialog
+
+### File Missing Badge
+
+Queue cards now show a red `File Missing` badge when the file at the stored path can no longer be found.
+
+### Bluesky Token Refresh Fix
+
+Bluesky uploads with an expired access token now recover correctly:
+
+- Fixed a variable scoping bug that caused a crash (`blueskyPostTextMode is not defined`) during the token-refresh retry path
+- After a successful token refresh the upload now retries automatically with the new access token
+
+### Lemmy Community Picker Stability
+
+- Community list is always alphabetically ordered and stays stable while you click through it
+- Selected communities bubble to the top only when re-opening the picker for an item that already has saved selections, not on first open
+
+### Lemmy Upload Reliability
+
+Several fixes combine to prevent ShutterQueue from reporting a Lemmy post as successful when the image link was actually broken:
+
+- Image URL returned by the upload endpoint is now normalized to an absolute URL before the post is created
+- URL is quality-checked: API endpoint-style paths are no longer mistaken for image URLs
+- A live network probe confirms the URL actually returns an image (`image/*`) before the post creation request is sent
+- If the URL does not resolve as an image, ShutterQueue automatically tries other upload endpoint/field-name combinations (varying by Lemmy and pict-rs version)
+- On first upload to a new instance ShutterQueue discovers and caches the working combination invisibly; subsequent uploads skip the probing step entirely
+- If every combination fails, the error message includes full per-attempt diagnostics (endpoint, field name, HTTP status, content-type) to aid diagnosis
+
+### Lemmy Failure Message Improvements
+
+- Per-community errors now show the community name and instance host instead of a bare numeric ID
+- Known Lemmy error codes are translated to readable text (e.g. `only_mods_can_post_in_community` → "Only moderators can post in this community")
+- `invalid_url` errors now immediately stop remaining community attempts with a clear explanation
+
+### In-App Lemmy Unreliability Warning
+
+An amber warning banner is now shown in two places so users know upfront that Lemmy support is still a work in progress:
+
+- **Lemmy Settings panel** — permanent banner at the top of Lemmy setup, always visible
+- **Lemmy tab in the queue editor** — appears in both batch and single-item edit modes whenever the Lemmy tab is active
+
+Banner text: *"Lemmy integration is still unreliable. Images may not display correctly on Lemmy posts."*
+
+### Flickr Group-Only Entry Preservation
+
+Items that were kept in Flickr group retry queues (`group_only` status) are now correctly preserved through:
+
+- Queue import in replace mode
+- Remove from queue
+- Clear Uploaded
+
+### Strict File Path Handling for Delete
+
+- File path resolution no longer falls back to case-insensitive filename guessing
+- Delete is blocked when any selected item has a missing or unmapped file path
+
+---
+
+## What's New in 0.9.7
 
 ### Delete Original Files to Recycle Bin / Trash Can
 
@@ -114,7 +182,7 @@ If the scheduler is active and there are still queue items not yet uploaded, clo
 ### Notes
 
 - This release combines safer file deletion controls, context-menu/spell-check reliability, richer Flickr metadata UI, light-theme support, and initial Lemmy integration.
-- Features listed in prior release notes remain available in 0.9.6c.
+- Features listed in prior release notes remain available in 0.9.7.
 
 ## Download & Install
 
