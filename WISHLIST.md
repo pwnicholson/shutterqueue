@@ -2,7 +2,6 @@
 
 ## Soon
 
-* \[ ] Fix broken Lemmy implementation
 * \[ ] Implement support for Substack
 * \[ ] Implement support for Pixfed.com
 

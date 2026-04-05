@@ -1,8 +1,8 @@
-# ShutterQueue v0.9.7 Release Notes
+# ShutterQueue v0.9.7a Release Notes
 
-**Release Date:** April 4, 2026
+**Release Date:** April 5, 2026
 
-## Post-Release Fixes (April 4, 2026)
+## What's New in 0.9.7a
 
 ### Lemmy Image Upload Fix
 
@@ -10,7 +10,7 @@ Lemmy uploads were failing on all endpoints for lemmy.world and most standard Le
 
 ---
 
-## Fixes & Improvements in 0.9.7
+## Previous Release: v0.9.7 (April 4, 2026)
 
 ### Platform Status Indicators on Queue Cards
 
@@ -190,7 +190,7 @@ If the scheduler is active and there are still queue items not yet uploaded, clo
 ### Notes
 
 - This release combines safer file deletion controls, context-menu/spell-check reliability, richer Flickr metadata UI, light-theme support, and initial Lemmy integration.
-- Features listed in prior release notes remain available in 0.9.7.
+- Features listed in prior release notes remain available in 0.9.7a.
 
 ## Download & Install
 

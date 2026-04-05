@@ -8638,7 +8638,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
         <div className="footer-right">
           {isDevRuntime && <span className="dev-runtime-badge">DEV {devSessionStamp}</span>}
-          <span className="mono">v{appVersion || "0.9.7"}</span>
+          <span className="mono">v{appVersion || "0.9.7a"}</span>
         </div>
       </div>
 
