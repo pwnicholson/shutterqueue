@@ -2,6 +2,10 @@
 
 ## Soon
 
+* \[ ] Fix 'untitled' images uploading to Flickr with their filename instead of blank title
+* \[ ] Show groupings in the queue when multi-item batches are selected in settings
+* \[ ] Ability to set batches of various sizes to upload together ("Manual batch"?)
+* \[ ] Ability to start scheduler at a specific time (not just 'now' or 'on delay')
 * \[ ] Implement support for Substack
 * \[ ] Implement support for Pixfed.com
 

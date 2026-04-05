@@ -8,6 +8,7 @@
     "build": "vite build",
     "test": "node --test \"electron/**/*.test.cjs\"",
     "dist": "npm run generate-licenses && npm run build && electron-builder",
+    "dist:mac": "npm run generate-licenses && npm run build && cross-env npm_config_os=darwin npm_config_cpu=arm64 npm install --no-save @img/sharp-darwin-arm64 @img/sharp-libvips-darwin-arm64 && electron-builder --mac",
     "pack": "npm run generate-licenses && npm run build && electron-builder --dir",
     "generate-licenses": "node scripts/generate-licenses.cjs"
   },
@@ -48,6 +49,7 @@
       "output": "release"
     },
     "asar": true,
+    "npmRebuild": false,
     "asarUnpack": [
       "node_modules/sharp/**/*",
       "node_modules/@img/**/*"

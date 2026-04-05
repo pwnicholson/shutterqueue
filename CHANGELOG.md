@@ -4,6 +4,20 @@ All notable changes to ShutterQueue will be documented in this file.
 
 ## [0.9.7a] - 2026-04-05
 
+### Post-Release Fixes (2026-04-05)
+
+- **Tumblr uploads failing with "Bad Request"**
+  - Tumblr's API requires a `User-Agent` header; Node.js `https.request` does not add one automatically
+  - All requests (OAuth handshake and photo post) now send `User-Agent: ShutterQueue/1.0` as required by the Tumblr API agreement
+  - Additionally removed the non-standard `description` field that was being sent in photo post requests — Tumblr's legacy photo post endpoint does not accept this field and had started rejecting it
+  - Removed `description` from the OAuth signature data accordingly
+
+- **Lemmy image upload improvements for pict-rs 0.5+**
+  - pict-rs 0.5+ changed the upload response format: the image identifier field is now called `identifier` instead of `file` in the `files[0]` object
+  - Added `fileRow.identifier` to the candidate URL extraction list so pict-rs 0.5+ responses are handled correctly
+  - Reordered probe list to try `POST /api/v4/image` with both `images[]` and `image` field names first, as this is the current `lemmy-js-client` upload method — improves chances of success on recently-updated Lemmy instances
+  - Note: 502 and socket hang-up errors seen on some instances (lemmy.world, lemmy.sdf.org, lemmy.ml) are server-side infrastructure failures unrelated to these changes
+
 ### Fixed
 - **Lemmy image upload broken on lemmy.world and most instances**
   - The `/pictrs/image` upload endpoint returns a bare filename (e.g. `uuid.jpeg`) with no path in the response

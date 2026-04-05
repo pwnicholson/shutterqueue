@@ -2,7 +2,28 @@
 
 **Release Date:** April 5, 2026
 
-## What's New in 0.9.7a
+## Post-Release Fixes (April 5, 2026)
+
+### Tumblr "Bad Request" Fix
+
+Tumblr uploads were failing with a generic 400 Bad Request error. Two causes were identified and fixed:
+
+1. **Missing User-Agent header** — Tumblr's API Agreement requires all apps to send a consistent `User-Agent` header. Node.js's built-in HTTP module does not add one automatically. ShutterQueue now sends `User-Agent: ShutterQueue/1.0` on all Tumblr requests.
+
+2. **Invalid form field** — The photo post request was including a `description` field that is not part of Tumblr's legacy photo post API. This field had previously been silently ignored but Tumblr appears to have started rejecting requests that include it. The field has been removed.
+
+### Lemmy Probe List and Response Parsing Updates
+
+Improvements to handle pict-rs 0.5+ and recent Lemmy API changes:
+
+- The pict-rs 0.5 upload response changed the image identifier key from `file` to `identifier` inside the `files[0]` object. ShutterQueue now checks both fields.
+- The probe list was reordered and expanded to try the current `lemmy-js-client` upload path (`POST /api/v4/image` with both `images[]` and `image` field names) before falling back to older combinations.
+
+Note: Some instances (lemmy.world, lemmy.sdf.org, lemmy.ml) returned HTTP 502 or socket hang-up errors during testing. Those are server-side infrastructure failures outside ShutterQueue's control and are unrelated to these fixes.
+
+---
+
+## What's New in 0.9.7a (April 5, 2026)
 
 ### Lemmy Image Upload Fix
 

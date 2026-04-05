@@ -470,6 +470,7 @@ function collectUploadedImageUrlCandidates(parsedPayload) {
   const fileRow = Array.isArray(parsedPayload?.files) ? parsedPayload.files[0] : null;
   return [
     fileRow?.file,
+    fileRow?.identifier,
     fileRow?.image_url,
     parsedPayload?.image_url,
     parsedPayload?.file,
@@ -648,6 +649,8 @@ async function uploadImage({ instanceUrl, accessToken, photoPath, onProgress, im
   if (!token) throw new Error("Missing Lemmy access token");
   const instanceKey = normalizeInstanceUrl(instanceUrl);
   const ALL_ATTEMPTS = [
+    ["/api/v4/image", "images[]"],
+    ["/api/v4/image", "image"],
     ["/api/v4/image", "images"],
     ["/api/v4/image", "file"],
     ["/api/v3/image/upload", "images"],
@@ -656,7 +659,7 @@ async function uploadImage({ instanceUrl, accessToken, photoPath, onProgress, im
     ["/pictrs/image", "images"],
     ["/api/v4/image/upload", "images"],
     ["/api/v4/image/upload", "file"],
-    ["/api/v4/image", "images[]"],
+    ["/api/v4/image/upload", "images[]"],
     ["/api/v3/image/upload", "images[]"],
     ["/pictrs/image", "images[]"],
   ];

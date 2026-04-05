@@ -21,6 +21,8 @@ function makeOAuth(consumerKey, consumerSecret) {
   });
 }
 
+const USER_AGENT = "ShutterQueue/1.0";
+
 function request(url, method, headers, body) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -29,7 +31,7 @@ function request(url, method, headers, body) {
         method,
         hostname: u.hostname,
         path: u.pathname + u.search,
-        headers,
+        headers: { "User-Agent": USER_AGENT, ...headers },
       },
       (res) => {
         let data = "";
@@ -300,7 +302,6 @@ async function createPhotoPost({
   const form = new FormData();
 
   const description = String(item?.description || "");
-  const imageDescription = String(item?.description || "").trim();
   const title = String(item?.title || "");
   const caption = buildCaption({ title, description, postTextMode, prependText, appendText });
   const tags = normalizeTagsCsv(item?.tags || "");
@@ -308,11 +309,7 @@ async function createPhotoPost({
   const postState = resolveTumblrPostState({ privacy, postTimingMode });
 
   form.append("type", "photo");
-  form.append("title", title);
   form.append("caption", caption);
-  if (useDescriptionAsImageDescription && imageDescription) {
-    form.append("description", imageDescription);
-  }
   form.append("tags", tags);
   form.append("state", postState);
   if (markMature) {
@@ -342,9 +339,7 @@ async function createPhotoPost({
 
   const signatureData = {
     type: "photo",
-    title,
     caption,
-    ...(useDescriptionAsImageDescription && imageDescription ? { description: imageDescription } : {}),
     tags,
     state: postState,
     ...(markMature ? { is_nsfw: "true", content_rating: "adult" } : {}),
@@ -354,7 +349,7 @@ async function createPhotoPost({
     oauth.authorize({ url: endpointUrl, method: "POST", data: signatureData }, { key: token, secret: tokenSecret })
   );
 
-  const headers = { ...auth, ...form.getHeaders() };
+  const headers = { "User-Agent": USER_AGENT, ...auth, ...form.getHeaders() };
 
   const res = await new Promise((resolve, reject) => {
     const u = new URL(endpointUrl);
