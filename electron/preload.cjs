@@ -62,8 +62,8 @@ contextBridge.exposeInMainWorld("sq", {
   geoSearch: (query) => ipcRenderer.invoke("geo:search", { query }),
 
   uploadNowOne: (options) => ipcRenderer.invoke("upload:nowOne", options),
-  schedulerStart: (intervalHours, uploadImmediately, settings) =>
-    ipcRenderer.invoke("sched:start", { intervalHours, uploadImmediately, settings }),
+  schedulerStart: (intervalHours, uploadImmediately, settings, firstRunAt) =>
+    ipcRenderer.invoke("sched:start", { intervalHours, uploadImmediately, settings, firstRunAt }),
   schedulerStop: () => ipcRenderer.invoke("sched:stop"),
   schedulerStatus: () => ipcRenderer.invoke("sched:status"),
 

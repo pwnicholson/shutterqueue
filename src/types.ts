@@ -2,7 +2,7 @@ export type Privacy = "public" | "friends" | "family" | "friends_family" | "priv
 
 export type GeoPrivacy = "public" | "contacts" | "friends" | "family" | "friends_family" | "private";
 
-export type QueueStatus = "pending" | "uploading" | "done" | "done_warn" | "failed" | "group_only";
+export type QueueStatus = "pending" | "uploading" | "done" | "done_warn" | "failed" | "group_only" | "retry";
 
 export type UploadService = "flickr" | "tumblr" | "bluesky" | "pixelfed" | "mastodon" | "lemmy";
 
@@ -64,10 +64,14 @@ export type QueueItem = {
   }>;
   // Per-service upload state allows retrying failed services without re-uploading successful ones.
   serviceStates?: Partial<Record<UploadService, {
-    status: "pending" | "done" | "failed";
+    status: "pending" | "done" | "failed" | "retry";
     remoteId?: string;
     uploadedAt?: string;
     lastError?: string;
+    // Populated when status === "retry" (transient server error, retrying automatically)
+    retryAfter?: string;
+    retryCount?: number;
+    firstFailedAt?: string;
   }>>;
 };
 

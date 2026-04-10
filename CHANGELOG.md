@@ -2,9 +2,34 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
-## [0.9.7a] - 2026-04-05
+## [0.9.7b] - 2026-04-05
 
-### Post-Release Fixes (2026-04-05)
+### Post-Release Fixes (2026-04-06)
+- **Scheduler start now uses an in-app datetime picker instead of the native OS dialog** — "Start Scheduler" now opens an in-app modal with two options: "Upload first item now" (immediate) or "Schedule first upload at: [date/time picker]" (defaults to tomorrow at 06:00 local time); the chosen time is passed through `bumpToNextAllowed` and the configured time-window/days rules before being set as `nextRunAt`; removes the limited native OS dialog that only offered "now", "on delay", or "cancel"
+- **Lemmy retry now fires even when another platform (e.g. Tumblr) also failed** — `processLemmyRetries` was skipping items whose overall status was `"failed"` (which happens when a non-transient failure like Tumblr "Bad Request" co-occurs with the Lemmy transient error); the filter now also processes `"failed"` items that have a Lemmy retry pending
+- **Lemmy HTTP requests now time out after 30 seconds** — `lemmyRequest` (API/post creation calls) and the multipart image upload had no socket timeout; if a Lemmy server dropped the TCP connection without returning an HTTP response the upload lock would be held for the OS-level TCP timeout (~2–4 min on Windows), blocking all subsequent scheduler retries; both requests now call `req.setTimeout(30000)` to destroy and reject after 30 s
+- **Detail panel error display cleaned up** — Lemmy probe-list errors are now truncated to a single summary line ("Lemmy image upload failed on all endpoints. (see log for details)"); all error lines now append "(see log for details)"; the Lemmy transient-retry notice no longer appears as a separate "Waiting:" entry (the inline "Lemmy — Waiting to retry" line replaces it); the Lemmy retry box is now a plain inline line instead of a bordered box; dismiss buttons now correctly map back to the raw message even after truncation
+- **Lemmy retry info line now always shows the scheduled time** — was showing "shortly (overdue)" which is vague; now shows the actual timestamp with "(overdue)" appended if it is in the past
+- **Lemmy retry items incorrectly converted to `done` on app restart** — `loadQueue`'s `done_warn`→`done` migration was only checking `groupAddStates` for pending problems, not `serviceStates`; items with a pending Lemmy retry in `serviceStates.lemmy.status === "retry"` were being silently demoted to `done` on every `loadQueue` call, and when anything triggered a `saveQueue` on that array the `done` status was written to disk, permanently orphaning the retry; the migration now also checks `serviceStates` for any pending service retry, and a second migration converts any already-saved `done` items back to `done_warn` if they have a pending service retry
+- **`processLemmyRetries` also covers `done` items** — added as belt-and-suspenders so items incorrectly saved as `done` (due to the above) are still picked up for retry
+- **Tumblr upload now resizes large files** — `prepareImageForUpload` is now called before sending to Tumblr with a 20 MB limit, matching the Tumblr API maximum; previously the raw original file was sent and files over 20 MB received a "Bad Request" rejection
+
+### Fixed
+- **Empty title now stays blank on upload across all platforms**
+  - Flickr was silently replacing a blank title with the photo's filename (server-side behaviour when `title=""` is sent); ShutterQueue now calls `flickr.photos.setMeta` after upload to explicitly clear the title field when the item title is blank (best-effort; a `setMeta` failure does not block or fail the upload)
+  - Lemmy was showing the photo's filename as the post title when the item title was empty; `derivePostName` now returns `"Photo"` as a neutral placeholder instead of the filename (Lemmy's `name` field is required and cannot be left blank)
+  - Tumblr, Bluesky, Mastodon, and PixelFed already skipped empty titles correctly — no changes needed for those platforms
+
+- **Lemmy 502/503 server outages now show yellow "retrying" instead of red "failed"**
+  - Transient server/network errors (HTTP 502, 503, 504, 500, socket hang-up, ECONNRESET, ETIMEDOUT, etc.) are now detected and treated separately from permanent failures
+  - Items affected by transient Lemmy errors display as yellow "retrying…" with an ↻ marker on the Lemmy chip, instead of red "failed"
+  - ShutterQueue automatically retries Lemmy uploads approximately every hour while the scheduler is active — no user action required
+  - If other platforms (Bluesky, Mastodon, etc.) succeeded but Lemmy failed transiently, the item shows as yellow "done (warnings)" with Lemmy marked ↻ and a next-retry timestamp
+  - When the Lemmy server recovers, the retry succeeds and the item transitions to normal "done" or "done_warn" state
+  - The retry count and first-failed timestamp are preserved across retries for diagnostics
+  - Added `processLemmyRetries()` called on every scheduler tick (independent of upload batch interval, same pattern as Flickr group retries)
+  - Added `isLemmyTransientError()` helper to classify server/network errors
+  - New `"retry"` status added to `QueueStatus` and `serviceStates[svc].status` in types
 
 - **Tumblr uploads failing with "Bad Request"**
   - Tumblr's API requires a `User-Agent` header; Node.js `https.request` does not add one automatically
@@ -12,13 +37,13 @@ All notable changes to ShutterQueue will be documented in this file.
   - Additionally removed the non-standard `description` field that was being sent in photo post requests — Tumblr's legacy photo post endpoint does not accept this field and had started rejecting it
   - Removed `description` from the OAuth signature data accordingly
 
-- **Lemmy image upload improvements for pict-rs 0.5+**
+- **Lemmy image upload improvements for pict-rs 0.5+ and Lemmy 0.19.x**
   - pict-rs 0.5+ changed the upload response format: the image identifier field is now called `identifier` instead of `file` in the `files[0]` object
   - Added `fileRow.identifier` to the candidate URL extraction list so pict-rs 0.5+ responses are handled correctly
-  - Reordered probe list to try `POST /api/v4/image` with both `images[]` and `image` field names first, as this is the current `lemmy-js-client` upload method — improves chances of success on recently-updated Lemmy instances
-  - Note: 502 and socket hang-up errors seen on some instances (lemmy.world, lemmy.sdf.org, lemmy.ml) are server-side infrastructure failures unrelated to these changes
+  - Reordered probe list to try `POST /api/v4/image` with `images[]` first (Lemmy 0.20+ method), then `POST /pictrs/image` with `images[]` second — this is the correct method for Lemmy 0.19.x instances including lemmy.world (the largest Lemmy instance, running 0.19.17)
+  - Previously `/pictrs/image` + `images[]` was last of 13 combinations; it's now second, meaning lemmy.world will be identified on the 2nd probe attempt instead of the 13th
+  - Note: 502 and socket hang-up errors seen on some instances are server-side infrastructure failures unrelated to these changes
 
-### Fixed
 - **Lemmy image upload broken on lemmy.world and most instances**
   - The `/pictrs/image` upload endpoint returns a bare filename (e.g. `uuid.jpeg`) with no path in the response
   - ShutterQueue was incorrectly constructing `https://instance/uuid.jpeg` instead of the correct `https://instance/pictrs/image/uuid.jpeg`
@@ -26,11 +51,22 @@ All notable changes to ShutterQueue will be documented in this file.
   - Fix: bare filenames from `/pictrs/image` responses are now prefixed with `/pictrs/image/` before URL normalization
 
 ### Changed
-- **Version bump to 0.9.7a**
-  - Bumped local app version to `0.9.7a` in package/build metadata and UI fallback version display
+- **Version bump to 0.9.7b**
+  - Bumped local app version to `0.9.7b` in package/build metadata and UI fallback version display
 
 ### Tests
 - Added regression test for pictrs bare filename path prefixing
+- Added regression tests for `derivePostName` (blank title uses "Photo" not filename)
+
+## [0.9.7a] - 2026-04-05
+
+### Fixed
+- **macOS build compilation fix**
+  - Fixed a compilation issue that prevented the app from building on macOS
+
+### Changed
+- **Version bump to 0.9.7a**
+  - Bumped local app version to `0.9.7a` in package/build metadata and UI fallback version display
 
 ## [0.9.7] - 2026-04-04
 

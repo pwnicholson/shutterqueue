@@ -3,7 +3,7 @@
 ## Project Overview
 
 ShutterQueue is an Electron + React (TypeScript) desktop app for photographers to batch-queue
-and publish photos to multiple social/photo platforms simultaneously. Current version: **0.9.7a**.
+and publish photos to multiple social/photo platforms simultaneously. Current version: **0.9.7b**.
 
 ## Architecture
 
@@ -48,7 +48,7 @@ Registered in `VALID_TARGET_SERVICES` in `electron/services/queue.cjs`:
 
 ## Version & Docs Policy
 
-- Current release: `0.9.7a` (package.json `"version"` field).
+- Current release: `0.9.7b` (package.json `"version"` field).
 - When bumping versions, update **all** references consistently (package.json, UI fallback, docs).
 - **Update CHANGELOG.md and RELEASE_NOTES.md after every significant fix**, not in batches.
   - Post-release fixes go under a `### Post-Release Fixes (YYYY-MM-DD)` subsection inside the current version block in CHANGELOG.

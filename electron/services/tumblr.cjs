@@ -5,7 +5,9 @@ const FormData = require("form-data");
 const fs = require("fs");
 const mime = require("mime-types");
 const path = require("path");
+const { prepareImageForUpload } = require("./image-prep.cjs");
 
+const TUMBLR_MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20 MB — Tumblr legacy photo post limit
 const TUMBLR_OAUTH_REQUEST = "https://www.tumblr.com/oauth/request_token";
 const TUMBLR_OAUTH_AUTHORIZE = "https://www.tumblr.com/oauth/authorize";
 const TUMBLR_OAUTH_ACCESS = "https://www.tumblr.com/oauth/access_token";
@@ -317,55 +319,60 @@ async function createPhotoPost({
     form.append("content_rating", "adult");
   }
 
-  const contentType = mime.lookup(item.photoPath) || "application/octet-stream";
-  const fileStream = fs.createReadStream(item.photoPath);
-  form.append("data", fileStream, {
-    contentType,
-    filename: path.basename(item.photoPath),
-  });
+  const prepared = await prepareImageForUpload(item.photoPath, { maxBytes: TUMBLR_MAX_IMAGE_BYTES });
+  try {
+    const contentType = prepared.contentType || mime.lookup(prepared.filePath) || "application/octet-stream";
+    const fileStream = fs.createReadStream(prepared.filePath);
+    form.append("data", fileStream, {
+      contentType,
+      filename: path.basename(item.photoPath),
+    });
 
-  // Byte progress reporting
-  const totalLength = fs.statSync(item.photoPath).size;
-  if (onProgress && totalLength != null) {
-    let loaded = 0;
-    fileStream.on('data', (chunk) => {
-      loaded += chunk.length;
-      try { onProgress(loaded, totalLength); } catch (_) {}
+    // Byte progress reporting
+    const totalLength = Number(prepared.sizeBytes || fs.statSync(prepared.filePath).size || 0);
+    if (onProgress && totalLength != null) {
+      let loaded = 0;
+      fileStream.on('data', (chunk) => {
+        loaded += chunk.length;
+        try { onProgress(loaded, totalLength); } catch (_) {}
+      });
+      fileStream.on('end', () => {
+        try { onProgress(totalLength, totalLength); } catch (_) {}
+      });
+    }
+
+    const signatureData = {
+      type: "photo",
+      caption,
+      tags,
+      state: postState,
+      ...(markMature ? { is_nsfw: "true", content_rating: "adult" } : {}),
+    };
+
+    const auth = oauth.toHeader(
+      oauth.authorize({ url: endpointUrl, method: "POST", data: signatureData }, { key: token, secret: tokenSecret })
+    );
+
+    const headers = { "User-Agent": USER_AGENT, ...auth, ...form.getHeaders() };
+
+    const res = await new Promise((resolve, reject) => {
+      const u = new URL(endpointUrl);
+      const req = https.request({ method: "POST", hostname: u.hostname, path: u.pathname + u.search, headers }, (r) => {
+        let data = "";
+        r.on("data", (c) => (data += c));
+        r.on("end", () => resolve({ status: r.statusCode || 0, body: data }));
+      });
+      req.on("error", reject);
+      form.pipe(req);
     });
-    fileStream.on('end', () => {
-      try { onProgress(totalLength, totalLength); } catch (_) {}
-    });
+
+    const response = parseApiResponse(res.body, res.status).response;
+    const postId = String(response?.id || response?.id_string || "");
+    if (!postId) throw new Error("Tumblr post created but no post id was returned.");
+    return postId;
+  } finally {
+    await prepared.cleanup();
   }
-
-  const signatureData = {
-    type: "photo",
-    caption,
-    tags,
-    state: postState,
-    ...(markMature ? { is_nsfw: "true", content_rating: "adult" } : {}),
-  };
-
-  const auth = oauth.toHeader(
-    oauth.authorize({ url: endpointUrl, method: "POST", data: signatureData }, { key: token, secret: tokenSecret })
-  );
-
-  const headers = { "User-Agent": USER_AGENT, ...auth, ...form.getHeaders() };
-
-  const res = await new Promise((resolve, reject) => {
-    const u = new URL(endpointUrl);
-    const req = https.request({ method: "POST", hostname: u.hostname, path: u.pathname + u.search, headers }, (r) => {
-      let data = "";
-      r.on("data", (c) => (data += c));
-      r.on("end", () => resolve({ status: r.statusCode || 0, body: data }));
-    });
-    req.on("error", reject);
-    form.pipe(req);
-  });
-
-  const response = parseApiResponse(res.body, res.status).response;
-  const postId = String(response?.id || response?.id_string || "");
-  if (!postId) throw new Error("Tumblr post created but no post id was returned.");
-  return postId;
 }
 
 module.exports = {

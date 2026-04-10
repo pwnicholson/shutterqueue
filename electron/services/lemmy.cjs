@@ -75,6 +75,7 @@ function requestJson({ instanceUrl, apiPath, method, accessToken, query, body })
         });
       }
     );
+    req.setTimeout(30000, () => { req.destroy(new Error("Lemmy request timed out")); });
     req.on("error", reject);
     if (payload) req.write(payload);
     req.end();
@@ -649,19 +650,19 @@ async function uploadImage({ instanceUrl, accessToken, photoPath, onProgress, im
   if (!token) throw new Error("Missing Lemmy access token");
   const instanceKey = normalizeInstanceUrl(instanceUrl);
   const ALL_ATTEMPTS = [
-    ["/api/v4/image", "images[]"],
+    ["/api/v4/image", "images[]"],   // Lemmy 0.20+ (lemmy-js-client current method)
+    ["/pictrs/image", "images[]"],   // Lemmy 0.19.x (lemmy.world, largest instance)
     ["/api/v4/image", "image"],
     ["/api/v4/image", "images"],
     ["/api/v4/image", "file"],
-    ["/api/v3/image/upload", "images"],
-    ["/api/v3/image/upload", "file"],
     ["/pictrs/image", "file"],
     ["/pictrs/image", "images"],
+    ["/api/v3/image/upload", "images"],
+    ["/api/v3/image/upload", "file"],
     ["/api/v4/image/upload", "images"],
     ["/api/v4/image/upload", "file"],
     ["/api/v4/image/upload", "images[]"],
     ["/api/v3/image/upload", "images[]"],
-    ["/pictrs/image", "images[]"],
   ];
 
   // Prefer cached working combo; fall back to probing all combinations
@@ -751,6 +752,7 @@ async function uploadImage({ instanceUrl, accessToken, photoPath, onProgress, im
             });
           }
         );
+        req.setTimeout(30000, () => { req.destroy(new Error("Lemmy image upload timed out")); });
         req.on("error", reject);
         form.pipe(req);
       });
@@ -803,8 +805,9 @@ async function uploadImage({ instanceUrl, accessToken, photoPath, onProgress, im
 function derivePostName(item) {
   const title = String(item?.title || "").trim();
   if (title) return title;
-  const basename = path.basename(String(item?.photoPath || ""));
-  return basename || "Photo";
+  // Do not fall back to the filename — Lemmy's post `name` is required but we avoid
+  // leaking local paths. "Photo" is a neutral placeholder when no title is set.
+  return "Photo";
 }
 
 function normalizeUploadedImageUrlForPost(imageUrl, instanceUrl) {
@@ -888,5 +891,6 @@ module.exports = {
     looksLikeLikelyUploadedImageUrl,
     collectUploadedImageUrlCandidates,
     pickUploadedImageUrl,
+    derivePostName,
   },
 };

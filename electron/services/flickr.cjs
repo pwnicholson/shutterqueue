@@ -84,15 +84,27 @@ function request(url, method, headers, body) {
 
 async function flickrRestCall({ apiKey, apiSecret, token, tokenSecret, methodName, params }) {
   const oauth = makeOAuth(apiKey, apiSecret);
-  const url = new URL(FLICKR_API);
-  url.searchParams.set("method", methodName);
-  url.searchParams.set("format", "json");
-  url.searchParams.set("nojsoncallback", "1");
-  for (const [k, v] of Object.entries(params || {})) url.searchParams.set(k, String(v));
+  const baseUrl = FLICKR_API;
+
+  // Collect all parameters as a plain object so the oauth library encodes them
+  // directly via RFC 3986 percentEncode rather than parsing them back out of the URL.
+  // URLSearchParams encodes spaces as '+', but oauth-1.0a's deParam uses decodeURIComponent
+  // which does not decode '+' as a space — causing signature mismatches for values
+  // containing spaces (e.g., album titles like "2025 sfo/sea trip").
+  const allParams = {
+    method: methodName,
+    format: "json",
+    nojsoncallback: "1",
+    ...(params || {}),
+  };
 
   const auth = oauth.toHeader(
-    oauth.authorize({ url: url.toString(), method: "GET" }, token ? { key: token, secret: tokenSecret } : undefined)
+    oauth.authorize({ url: baseUrl, method: "GET", data: allParams }, token ? { key: token, secret: tokenSecret } : undefined)
   );
+
+  // Build the actual request URL with encoded query params.
+  const url = new URL(baseUrl);
+  for (const [k, v] of Object.entries(allParams)) url.searchParams.set(k, String(v));
 
   const res = await request(url.toString(), "GET", { ...auth }, null);
   if (res.status < 200 || res.status >= 300) {
@@ -247,7 +259,31 @@ async function uploadPhoto({ apiKey, apiSecret, token, tokenSecret, item, onProg
   // Flickr upload returns XML. Extract photoid.
   const m = String(res.body).match(/<photoid>(\d+)<\/photoid>/);
   if (!m) throw new Error(`Upload failed: ${res.body}`);
-  return m[1];
+  const photoId = m[1];
+
+  // Flickr uses the filename as the photo title when the title field is empty.
+  // Call setMeta to explicitly blank it out if no title was provided.
+  // We send title as " " (a single space) rather than "" — Flickr's setMeta
+  // requires at least one of title or description to be non-empty (error code 2),
+  // and an empty string is treated as "not set". A single space is trimmed on
+  // display and results in a visually blank title.
+  if (!String(item.title || "").trim()) {
+    try {
+      const setMetaParams = { photo_id: photoId, title: " " };
+      const desc = String(item.description || "").trim();
+      if (desc) setMetaParams.description = desc;
+      await flickrRestCall({
+        apiKey, apiSecret, token, tokenSecret,
+        methodName: "flickr.photos.setMeta",
+        params: setMetaParams,
+      });
+    } catch (setMetaErr) {
+      // Log but don't fail the upload — clearing the title is best-effort
+      console.warn("flickr setMeta (blank title) failed:", setMetaErr?.message || setMetaErr);
+    }
+  }
+
+  return photoId;
 }
 
 async function addPhotoToAlbum({ apiKey, apiSecret, token, tokenSecret, photoId, albumId }) {

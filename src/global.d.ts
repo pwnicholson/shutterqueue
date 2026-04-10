@@ -126,7 +126,7 @@ declare global {
       uploadNowOne: (options?: { itemId?: string; reason?: string }) => Promise<any>;
       logGet: () => Promise<string[]>;
       logClear: () => Promise<any>;
-      schedulerStart: (intervalHours: number, uploadImmediately: boolean, settings: any) => Promise<any>;
+      schedulerStart: (intervalHours: number, uploadImmediately: boolean, settings: any, firstRunAt?: string | null) => Promise<any>;
       showStartSchedulerDialog: () => Promise<"now" | "delay" | "cancel">;
       showQueueImportModeDialog: () => Promise<"replace" | "append" | "cancel">;
       showRetryUploadDialog: () => Promise<"retry_now" | "reset_status" | "cancel">;

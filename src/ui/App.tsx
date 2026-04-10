@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, startTransition } from "react";
 import type { Album, GeoPrivacy, Group, Privacy, QueueItem, UploadService } from "../types";
 
 type Tab = "setup" | "queue" | "schedule" | "logs";
@@ -747,6 +747,7 @@ export default function App() {
   const [tumblrKey, setTumblrKey] = useState("");
   const [tumblrSecret, setTumblrSecret] = useState("");
   const [tumblrVerifier, setTumblrVerifier] = useState("");
+  const [tumblrOAuthInProgress, setTumblrOAuthInProgress] = useState(false);
   const [tumblrBlogs, setTumblrBlogs] = useState<Array<{ id: string; name: string; title: string; url: string; primary?: boolean }>>([]);
   const [tumblrPrimaryBlogId, setTumblrPrimaryBlogId] = useState("");
   const [tumblrPostTextMode, setTumblrPostTextMode] = useState<TumblrPostTextMode>("bold_title_then_description");
@@ -948,8 +949,8 @@ const categorizeMessage = (msg: string): "success" | "waiting" | "error" => {
   if (/photo added to.*moderation queue|already in pool|^adding to group/i.test(msg)) {
     return "success";
   }
-  // Waiting: user limit reached (will retry)
-  if (/user limit reached|will attempt again/i.test(msg)) {
+  // Waiting: user limit reached (will retry), or transient server error retrying automatically
+  if (/user limit reached|will attempt again|will retry|temporarily unavailable/i.test(msg)) {
     return "waiting";
   }
   // Error: actual failures
@@ -1014,6 +1015,9 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const [pastTimeDialogOpen, setPastTimeDialogOpen] = useState(false);
   const [pastTimeValue, setPastTimeValue] = useState("");
   const [schedulerWarningDialogOpen, setSchedulerWarningDialogOpen] = useState(false);
+  const [startSchedDialogOpen, setStartSchedDialogOpen] = useState(false);
+  const [startSchedFirstRunAt, setStartSchedFirstRunAt] = useState("");
+  const [startSchedError, setStartSchedError] = useState("");
   const [pendingPhotoPaths, setPendingPhotoPaths] = useState<string[]>([]);
   const [duplicateDialogGroups, setDuplicateDialogGroups] = useState<DuplicateGroup[]>([]);
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
@@ -1040,6 +1044,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   } | null>(null);
   const [typedDeleteInput, setTypedDeleteInput] = useState("");
   const typedDeleteInputRef = useRef<HTMLInputElement | null>(null);
+  const deleteDialogRef = useRef<HTMLDivElement | null>(null);
   const [groupRemoveDialog, setGroupRemoveDialog] = useState<{ waitingCount: number } | null>(null);
   const groupRemoveDialogResolveRef = useRef<((choice: "all" | "keep" | "cancel") => void) | null>(null);
   const dismissedDuplicateKeysRef = useRef<Set<string>>(new Set());
@@ -1858,6 +1863,41 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [allowedDays, setAllowedDays] = useState<number[]>([1,2,3,4,5]);
   const [resumeOnLaunch, setResumeOnLaunch] = useState<boolean>(false);
   const [uploadBatchSize, setUploadBatchSize] = useState<number>(1);
+
+  // Batch grouping segments for queue display (only when batch size > 1)
+  const batchSegments = useMemo(() => {
+    if (uploadBatchSize <= 1) {
+      return visibleMainQueue.map(it => ({ type: 'single' as const, item: it }));
+    }
+    const segments: Array<
+      | { type: 'group'; groupIndex: number; items: typeof visibleMainQueue }
+      | { type: 'single'; item: typeof visibleMainQueue[number] }
+    > = [];
+    let globalPendingCount = 0;
+    let i = 0;
+    while (i < visibleMainQueue.length) {
+      const it = visibleMainQueue[i];
+      if (it.status === 'pending') {
+        const runStart = i;
+        while (i < visibleMainQueue.length && visibleMainQueue[i].status === 'pending') i++;
+        const runItems = visibleMainQueue.slice(runStart, i);
+        let runOffset = 0;
+        while (runOffset < runItems.length) {
+          const posInBatch = globalPendingCount % uploadBatchSize;
+          const take = Math.min(uploadBatchSize - posInBatch, runItems.length - runOffset);
+          const groupIndex = Math.floor(globalPendingCount / uploadBatchSize);
+          segments.push({ type: 'group', groupIndex, items: runItems.slice(runOffset, runOffset + take) });
+          globalPendingCount += take;
+          runOffset += take;
+        }
+      } else {
+        segments.push({ type: 'single', item: it });
+        i++;
+      }
+    }
+    return segments;
+  }, [visibleMainQueue, uploadBatchSize]);
+
   const [skipOvernight, setSkipOvernight] = useState<boolean>(false);
   const [sched, setSched] = useState<any>(null);
 
@@ -2499,6 +2539,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const startTumblrOAuth = async () => {
     await saveTumblrKeys();
     await window.sq.startTumblrOAuth();
+    setTumblrOAuthInProgress(true);
     showToast("Tumblr browser authorization opened. Authorize in browser. ShutterQueue will try to finish automatically.");
 
     if (tumblrOAuthPollTimerRef.current != null) {
@@ -2526,6 +2567,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         tumblrOAuthPollTimerRef.current = window.setTimeout(pollForTumblrVerifier, 1000);
       } else {
         tumblrOAuthPollTimerRef.current = null;
+        // Poll timed out — keep the manual verifier field visible so the user can paste it
       }
     };
 
@@ -2543,6 +2585,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
     await window.sq.finishTumblrOAuth(verifierToUse);
     setTumblrVerifier("");
+    setTumblrOAuthInProgress(false);
     const blogs = await window.sq.fetchTumblrBlogs({ force: true });
     setTumblrBlogs(blogs || []);
     await refreshAll();
@@ -2567,10 +2610,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     await refreshAll();
   };
 
-  const sanitizeResizeDimension = (value: number) => {
-    const n = Number(value);
+  // Accepts a raw text input string, strips non-digit characters, returns a valid positive integer or 0.
+  const sanitizeResizeDimension = (value: string | number) => {
+    const digits = String(value).replace(/[^\d]/g, "");
+    if (!digits) return 0;
+    const n = parseInt(digits, 10);
     if (!Number.isFinite(n) || n <= 0) return 0;
-    return Math.floor(n);
+    return n;
   };
 
   const saveBlueskyImageResizeOptions = (enabled: boolean, maxWidth: number, maxHeight: number) => {
@@ -2963,13 +3009,27 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [displayTab, visibleMainQueue, activeId, anchorId, undoBusy, undoStack]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!typedDeleteDialog) return;
-    const timer = window.setTimeout(() => {
-      typedDeleteInputRef.current?.focus();
-      typedDeleteInputRef.current?.select();
-    }, 0);
-    return () => window.clearTimeout(timer);
+    const el = typedDeleteInputRef.current;
+    if (!el) return;
+    // useLayoutEffect runs synchronously after DOM mutations, before paint —
+    // this wins the race against Electron restoring focus to a previous element.
+    el.focus();
+    el.select();
+
+    // Focus trap: if focus still escapes (e.g. Electron window-level focus events
+    // fire after paint), redirect it back on the next frame.
+    const onBlur = () => {
+      window.requestAnimationFrame(() => {
+        if (deleteDialogRef.current && !deleteDialogRef.current.contains(document.activeElement)) {
+          typedDeleteInputRef.current?.focus();
+        }
+      });
+    };
+
+    el.addEventListener('blur', onBlur);
+    return () => el.removeEventListener('blur', onBlur);
   }, [typedDeleteDialog]);
 
   useEffect(() => {
@@ -4352,30 +4412,28 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     }
   };
 
-  const startSched = async () => {
+  const startSched = async (overrideFirstRunAt?: string) => {
     const h = Math.max(1, Math.min(168, Math.round(Number(intervalHours || 24))));
+    const settings = { timeWindowEnabled, windowStart, windowEnd, daysEnabled, allowedDays, resumeOnLaunch, uploadBatchSize };
 
-    // ask user how they want to start the scheduler
-    const choice = await window.sq.showStartSchedulerDialog();
-    if (choice === "cancel") {
-      // user explicitly cancelled; do nothing
-      showToast("Scheduler start canceled.");
+    if (overrideFirstRunAt !== undefined) {
+      // Called from the modal with a resolved choice
+      const uploadImmediately = overrideFirstRunAt === "now";
+      const firstRunAt = overrideFirstRunAt === "now" ? null : overrideFirstRunAt || null;
+      await window.sq.schedulerStart(h, uploadImmediately, settings, firstRunAt);
+      await refreshAll();
+      switchTab("schedule");
+      showToast("Scheduler started.");
       return;
     }
 
-    const uploadImmediately = choice === "now";
-
-    await window.sq.schedulerStart(h, uploadImmediately, {
-      timeWindowEnabled,
-      windowStart,
-      windowEnd,
-      daysEnabled,
-      allowedDays,
-      resumeOnLaunch,
-      uploadBatchSize,
-    });
-    await refreshAll();
-    showToast("Scheduler started.");
+    // Open the in-app start dialog
+    // Default the datetime input to tomorrow at 06:00 in local time
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(6, 0, 0, 0);
+    setStartSchedFirstRunAt(toDateTimeLocalValue(tomorrow.toISOString()));
+    setStartSchedDialogOpen(true);
   };
 
   const stopSched = async () => {
@@ -5227,7 +5285,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             {sched?.schedulerOn ? (
               <span className="badge good" onClick={async () => { await stopSched(); }} style={{ cursor: "pointer" }} title="Click to stop scheduler">Scheduler ON</span>
             ) : (
-              <span className="badge" onClick={async () => { switchTab("schedule"); await startSched(); }} style={{ cursor: "pointer" }} title="Click to start scheduler">Scheduler OFF</span>
+              <span className="badge" onClick={() => startSched()} style={{ cursor: "pointer" }} title="Click to start scheduler">Scheduler OFF</span>
             )}
             {/* Upload subtitle moved to banner area below */}
                   {/* Uploading subtitle/info as a notice badge in the banner area */}
@@ -5554,10 +5612,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         <li style={{ marginBottom: 6 }}>
                           In Tumblr app settings, set callback/redirect URL to http://localhost:38945/tumblr/callback so ShutterQueue can complete authorization automatically.
                         </li>
+                        <li style={{ marginBottom: 6 }}>Click Start Tumblr Authorization and approve in browser — ShutterQueue will complete authorization automatically via the callback URL.</li>
                         <li style={{ marginBottom: 6 }}>
-                          If Tumblr forces https-only redirect URLs in your app settings, authorization can still work by pasting oauth_verifier manually.
+                          If your Tumblr app is configured for HTTPS-only redirects and the automatic capture fails, a verifier code entry field will appear so you can paste it manually.
                         </li>
-                        <li style={{ marginBottom: 6 }}>Click Start Tumblr Authorization, approve in browser, then paste the verifier code and click Finish Tumblr OAuth.</li>
                         <li>Select a Tumblr Blog after authorization so uploads know where to publish.</li>
                       </ol>
                     </div>
@@ -5574,12 +5632,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     <button className="btn primary" onClick={startTumblrOAuth} disabled={!tumblrKey || (!tumblrSecret && !cfg?.tumblrHasApiSecret)}>Start Tumblr Authorization</button>
                     <button className="btn danger" onClick={async () => { await window.sq.tumblrLogout(); await refreshAll(); setTumblrBlogs([]); showToast("Tumblr logged out."); }}>Logout Tumblr</button>
                   </div>
-                  <div className="small" style={{ marginTop: 10 }}>Paste verifier code shown by Tumblr (or oauth_verifier from redirected URL):</div>
-                  <div style={{ height: 10 }} />
-                  <div className="row">
-                    <input className="input" value={tumblrVerifier} onChange={(e) => setTumblrVerifier(e.target.value)} placeholder="Tumblr verifier code" style={{ maxWidth: 240 }} />
-                    <button className="btn primary" onClick={finishTumblrOAuth} disabled={!tumblrVerifier}>Finish Tumblr OAuth</button>
-                  </div>
+                  {(tumblrOAuthInProgress || tumblrVerifier) && (
+                    <>
+                      <div className="small" style={{ marginTop: 10, color: "var(--warn)" }}>Authorization not detected automatically. Paste the verifier code from Tumblr (or the oauth_verifier value from the redirected URL):</div>
+                      <div style={{ height: 10 }} />
+                      <div className="row">
+                        <input className="input" value={tumblrVerifier} onChange={(e) => setTumblrVerifier(e.target.value)} placeholder="Tumblr verifier code" style={{ maxWidth: 240 }} />
+                        <button className="btn primary" onClick={finishTumblrOAuth} disabled={!tumblrVerifier}>Finish Tumblr OAuth</button>
+                      </div>
+                    </>
+                  )}
 
                   <div style={{ height: 12 }} />
                   <div className="row" style={{ justifyContent: "space-between" }}>
@@ -5803,13 +5865,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <label className="small">Max width (px)</label>
                       <input
                         className="input"
-                        type="number"
-                        min={1}
-                        step={1}
+                        type="text"
+                        inputMode="numeric"
                         disabled={!blueskyImageResizeEnabled}
                         value={blueskyImageResizeMaxWidth || ""}
                         onChange={(e) => {
-                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          const next = sanitizeResizeDimension(e.target.value);
                           setBlueskyImageResizeMaxWidth(next);
                           saveBlueskyImageResizeOptions(blueskyImageResizeEnabled, next, blueskyImageResizeMaxHeight);
                         }}
@@ -5820,13 +5881,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <label className="small">Max height (px)</label>
                       <input
                         className="input"
-                        type="number"
-                        min={1}
-                        step={1}
+                        type="text"
+                        inputMode="numeric"
                         disabled={!blueskyImageResizeEnabled}
                         value={blueskyImageResizeMaxHeight || ""}
                         onChange={(e) => {
-                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          const next = sanitizeResizeDimension(e.target.value);
                           setBlueskyImageResizeMaxHeight(next);
                           saveBlueskyImageResizeOptions(blueskyImageResizeEnabled, blueskyImageResizeMaxWidth, next);
                         }}
@@ -6048,13 +6108,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <label className="small">Max width (px)</label>
                       <input
                         className="input"
-                        type="number"
-                        min={1}
-                        step={1}
+                        type="text"
+                        inputMode="numeric"
                         disabled={!pixelfedImageResizeEnabled}
                         value={pixelfedImageResizeMaxWidth || ""}
                         onChange={(e) => {
-                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          const next = sanitizeResizeDimension(e.target.value);
                           setPixelfedImageResizeMaxWidth(next);
                           savePixelfedImageResizeOptions(pixelfedImageResizeEnabled, next, pixelfedImageResizeMaxHeight);
                         }}
@@ -6065,13 +6124,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <label className="small">Max height (px)</label>
                       <input
                         className="input"
-                        type="number"
-                        min={1}
-                        step={1}
+                        type="text"
+                        inputMode="numeric"
                         disabled={!pixelfedImageResizeEnabled}
                         value={pixelfedImageResizeMaxHeight || ""}
                         onChange={(e) => {
-                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          const next = sanitizeResizeDimension(e.target.value);
                           setPixelfedImageResizeMaxHeight(next);
                           savePixelfedImageResizeOptions(pixelfedImageResizeEnabled, pixelfedImageResizeMaxWidth, next);
                         }}
@@ -6267,13 +6325,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <label className="small">Max width (px)</label>
                       <input
                         className="input"
-                        type="number"
-                        min={1}
-                        step={1}
+                        type="text"
+                        inputMode="numeric"
                         disabled={!mastodonImageResizeEnabled}
                         value={mastodonImageResizeMaxWidth || ""}
                         onChange={(e) => {
-                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          const next = sanitizeResizeDimension(e.target.value);
                           setMastodonImageResizeMaxWidth(next);
                           saveMastodonImageResizeOptions(mastodonImageResizeEnabled, next, mastodonImageResizeMaxHeight);
                         }}
@@ -6284,13 +6341,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <label className="small">Max height (px)</label>
                       <input
                         className="input"
-                        type="number"
-                        min={1}
-                        step={1}
+                        type="text"
+                        inputMode="numeric"
                         disabled={!mastodonImageResizeEnabled}
                         value={mastodonImageResizeMaxHeight || ""}
                         onChange={(e) => {
-                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          const next = sanitizeResizeDimension(e.target.value);
                           setMastodonImageResizeMaxHeight(next);
                           saveMastodonImageResizeOptions(mastodonImageResizeEnabled, mastodonImageResizeMaxWidth, next);
                         }}
@@ -6500,13 +6556,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <label className="small">Max width (px)</label>
                       <input
                         className="input"
-                        type="number"
-                        min={1}
-                        step={1}
+                        type="text"
+                        inputMode="numeric"
                         disabled={!lemmyImageResizeEnabled}
                         value={lemmyImageResizeMaxWidth || ""}
                         onChange={(e) => {
-                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          const next = sanitizeResizeDimension(e.target.value);
                           setLemmyImageResizeMaxWidth(next);
                           saveLemmyImageResizeOptions(lemmyImageResizeEnabled, next, lemmyImageResizeMaxHeight);
                         }}
@@ -6517,13 +6572,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <label className="small">Max height (px)</label>
                       <input
                         className="input"
-                        type="number"
-                        min={1}
-                        step={1}
+                        type="text"
+                        inputMode="numeric"
                         disabled={!lemmyImageResizeEnabled}
                         value={lemmyImageResizeMaxHeight || ""}
                         onChange={(e) => {
-                          const next = sanitizeResizeDimension(Number(e.target.value || 0));
+                          const next = sanitizeResizeDimension(e.target.value);
                           setLemmyImageResizeMaxHeight(next);
                           saveLemmyImageResizeOptions(lemmyImageResizeEnabled, lemmyImageResizeMaxWidth, next);
                         }}
@@ -6914,7 +6968,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 }}
               >
                 <div className="queue">
-                  {visibleMainQueue.map((it) => {
+                  {batchSegments.map((seg) => {
+                    const renderItem = (it: typeof visibleMainQueue[number]) => {
 	                  const srcs = resolveThumbSrc(it, thumbs, flickrUrls);
 	                  const thumb = srcs.thumbSrc;
                   const isSelected = selectedSet.has(it.id);
@@ -7045,6 +7100,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                             hasPendingGroupRetries ? <span className="badge accent">Uploaded</span> : <span className="badge warn">done (warnings)</span>
                           ) : it.status === "done" ? (
                             hasPendingGroupRetries ? <span className="badge accent">Uploaded</span> : <span className="badge good">done</span>
+                          ) : it.status === "retry" ? (
+                            <span className="badge warn">retrying…</span>
                           ) : it.status === "failed" ? (
                             <span className="badge bad">failed</span>
                           ) : (
@@ -7055,6 +7112,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           {(it.albumIds?.length || 0) > 0 ? <span className="badge">{it.albumIds.length} albums</span> : null}
                           {it.status === "failed" ? (
                             <span className="badge accent" title="Right-click and choose Retry Upload">Retry available</span>
+                          ) : it.status === "retry" ? (
+                            <span className="badge warn" title="Lemmy server temporarily unavailable. Retrying automatically each hour while the scheduler is active.">Retrying automatically</span>
                           ) : null}
                           {normalizeTargetServices(it.targetServices as UploadService[] | undefined).length === 0 ? (
                             <span className="badge bad">no platform selected</span>
@@ -7064,11 +7123,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                             .map((svc) => {
                               const serviceStatus = (it as any)?.serviceStates?.[svc]?.status;
                               const isWarnDone = it.status === "done_warn" && serviceStatus === "done";
-                              const marker = serviceStatus === "failed" ? "x" : (serviceStatus === "done" ? "✓" : "");
+                              const isRetrying = serviceStatus === "retry";
+                              const marker = serviceStatus === "failed" ? "x" : (serviceStatus === "done" ? "✓" : (isRetrying ? "↻" : ""));
                               const color = serviceStatus === "failed"
                                 ? "var(--bad)"
-                                : (isWarnDone ? "var(--warn)" : "var(--good)");
-                              const title = `${platformLabel(svc)}: ${serviceStatus || "pending"}${isWarnDone ? " (with warnings)" : ""}`;
+                                : (isRetrying ? "var(--warn)" : (isWarnDone ? "var(--warn)" : "var(--good)"));
+                              const retryCount = isRetrying ? ((it as any)?.serviceStates?.[svc]?.retryCount || 0) : 0;
+                              const title = `${platformLabel(svc)}: ${serviceStatus || "pending"}${isWarnDone ? " (with warnings)" : ""}${isRetrying ? ` (server temporarily unavailable, attempt ${retryCount})` : ""}`;
                               return (
                                 <span key={`${it.id}-svc-${svc}`} title={title} style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                                   <span style={platformChipStyle(svc)}>
@@ -7092,6 +7153,8 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           ) : null}
                           {hasPendingGroupRetries ? (
                             <span className="badge warn" title={pendingGroupsTooltip || ""}>Pending Group Additions</span>
+                          ) : it.status === "retry" ? (
+                            (() => { const retryAt = (it as any)?.serviceStates?.lemmy?.retryAfter; return retryAt ? <span className="badge warn" title="Next automatic retry time">Next retry: {formatLocal(retryAt)}</span> : null; })()
                           ) : (
                             hasVisibleActualErrorText(it.lastError) ? <span className="badge bad" title={friendlyIdInMessage(visibleItemMessageParts(it.lastError).join(" | "))}>Error</span> : null
                           )}
@@ -7145,8 +7208,17 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                         </span>
                       </div>
                     </div>
-                  );
-                })}
+                    );
+                    };
+                    if (seg.type === 'group') {
+                      return (
+                        <div key={`batch-g${seg.groupIndex}`} className="batch-group">
+                          {seg.items.map(renderItem)}
+                        </div>
+                      );
+                    }
+                    return renderItem(seg.item);
+                  })}
                 </div>
                 {!visibleMainQueue.length && <div className="small">Queue is empty. Click “Add Photos”.</div>}
                 <div className="small queue-scroll-footnote">
@@ -7766,6 +7838,28 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 </>
               )}
 
+              {selectedIds.length > 1 && (() => {
+                const itemsWithErrors = selectedIds
+                  .map(id => queue.find(it => it.id === id))
+                  .filter(it => it && (it.status === "failed" || it.status === "done_warn" || it.status === "retry") && it.lastError);
+                if (!itemsWithErrors.length) return null;
+                return (
+                  <div style={{ marginTop: 12, padding: "8px 10px", border: "1px solid var(--bad)", borderRadius: 6 }} className="small">
+                    <div style={{ color: "var(--bad)", fontWeight: 600, marginBottom: 4 }}>Selected items with errors or retries:</div>
+                    {itemsWithErrors.map(it => (
+                      <div key={it!.id} style={{ marginBottom: 4, color: "var(--warn)" }}>
+                        <button className="btn btn-sm" style={{ marginRight: 6 }} onClick={() => { setSelectedIds([it!.id]); setActiveId(it!.id); }} title="Select this item to see details">Select</button>
+                        {it!.title || it!.photoPath?.split(/[\\/]/).pop() || it!.id}
+                        {it!.status === "retry" || (it as any)?.serviceStates?.lemmy?.status === "retry"
+                          ? " — Lemmy retry pending"
+                          : ` — ${it!.status}`}
+                      </div>
+                    ))}
+                    <div style={{ color: "var(--text-dim)", marginTop: 4 }}>Select a single item to see full error details.</div>
+                  </div>
+                );
+              })()}
+
               {selectedIds.length <= 1 && !active && (
                 <div className="small">Select an item to edit.</div>
               )}
@@ -8198,29 +8292,33 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
                   <div style={{ height: 14 }} />
                   {active.lastError ? (() => {
-                    const rawParts = visibleItemMessageParts(active.lastError);
-                    const parts = rawParts.map((p) => friendlyIdInMessage(p) || p);
-                    
-                    // Categorize messages
-                    const successMsgs = parts.filter(p => categorizeMessage(p) === "success");
-                    const waitingMsgs = parts.filter(p => categorizeMessage(p) === "waiting");
-                    const errorMsgs = parts.filter(p => categorizeMessage(p) === "error");
-                    
+                    const rawParts = visibleItemMessageParts(active.lastError)
+                      // Suppress Lemmy transient-retry notice — dedicated retry line below covers it
+                      .filter(p => !/^Lemmy:.*temporarily unavailable/i.test(p));
+                    const truncateForDisplay = (p: string): string => {
+                      const triedIdx = p.indexOf(' Tried:');
+                      if (triedIdx !== -1) return p.substring(0, triedIdx) + ' (see log for details)';
+                      return p;
+                    };
+                    const partsWithRaw = rawParts.map(rp => ({
+                      raw: rp,
+                      display: truncateForDisplay(friendlyIdInMessage(rp) || rp)
+                    }));
+                    const successMsgs = partsWithRaw.filter(({ display }) => categorizeMessage(display) === "success");
+                    const waitingMsgs = partsWithRaw.filter(({ display }) => categorizeMessage(display) === "waiting");
+                    const errorMsgs   = partsWithRaw.filter(({ display }) => categorizeMessage(display) === "error");
                     return (
                       <div style={{ marginTop: 10 }}>
                         {successMsgs.length > 0 && (
                           <div>
                             <div className="small" style={{ color: "var(--good)", fontWeight: "bold" }}>Success:</div>
                             <ul className="small" style={{ color: "var(--good)", marginTop: 4, marginBottom: 8, paddingLeft: 18 }}>
-                              {successMsgs.map((p, i) => {
-                                const raw = rawParts.find((rp) => (friendlyIdInMessage(rp) || rp) === p) || p;
-                                return (
-                                  <li key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                                    <span>{p}</span>
-                                    <button className="btn" style={{ padding: "0 6px", minHeight: 20 }} onClick={() => { void dismissMessagesEverywhere([raw]); }} title="Dismiss message">x</button>
-                                  </li>
-                                );
-                              })}
+                              {successMsgs.map(({ display, raw }, i) => (
+                                <li key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                  <span>{display}</span>
+                                  <button className="btn" style={{ padding: "0 6px", minHeight: 20 }} onClick={() => { void dismissMessagesEverywhere([raw]); }} title="Dismiss message">x</button>
+                                </li>
+                              ))}
                             </ul>
                           </div>
                         )}
@@ -8228,15 +8326,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           <div>
                             <div className="small" style={{ color: "var(--warn)", fontWeight: "bold" }}>Waiting:</div>
                             <ul className="small" style={{ color: "var(--warn)", marginTop: 4, marginBottom: 8, paddingLeft: 18 }}>
-                              {waitingMsgs.map((p, i) => {
-                                const raw = rawParts.find((rp) => (friendlyIdInMessage(rp) || rp) === p) || p;
-                                return (
-                                  <li key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                                    <span>{p}</span>
-                                    <button className="btn" style={{ padding: "0 6px", minHeight: 20 }} onClick={() => { void dismissMessagesEverywhere([raw]); }} title="Dismiss message">x</button>
-                                  </li>
-                                );
-                              })}
+                              {waitingMsgs.map(({ display, raw }, i) => (
+                                <li key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                  <span>{display}</span>
+                                  <button className="btn" style={{ padding: "0 6px", minHeight: 20 }} onClick={() => { void dismissMessagesEverywhere([raw]); }} title="Dismiss message">x</button>
+                                </li>
+                              ))}
                             </ul>
                           </div>
                         )}
@@ -8244,11 +8339,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           <div>
                             <div className="small" style={{ color: "var(--bad)", fontWeight: "bold" }}>Errors:</div>
                             <ul className="small" style={{ color: "var(--bad)", marginTop: 4, marginBottom: 0, paddingLeft: 18 }}>
-                              {errorMsgs.map((p, i) => {
-                                const raw = rawParts.find((rp) => (friendlyIdInMessage(rp) || rp) === p) || p;
+                              {errorMsgs.map(({ display, raw }, i) => {
+                                const shown = /see log/i.test(display) ? display : display + ' (see log for details)';
                                 return (
                                   <li key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                                    <span>{p}</span>
+                                    <span>{shown}</span>
                                     <button className="btn" style={{ padding: "0 6px", minHeight: 20 }} onClick={() => { void dismissMessagesEverywhere([raw]); }} title="Dismiss message">x</button>
                                   </li>
                                 );
@@ -8259,6 +8354,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       </div>
                     );
                   })() : null}
+                  {(() => {
+                    const ls = (active as any)?.serviceStates?.lemmy;
+                    if (!ls || ls.status !== "retry") return null;
+                    const retryAt = ls.retryAfter ? new Date(ls.retryAfter) : null;
+                    const isPast = retryAt && retryAt.getTime() <= Date.now();
+                    const schedulerOn = sched?.schedulerOn;
+                    const timeStr = retryAt ? formatLocal(ls.retryAfter) : "due now";
+                    const retryCount = typeof ls.retryCount === "number" && ls.retryCount > 0 ? ls.retryCount : null;
+                    const possibleSizeLimit = ls.possibleSizeLimit === true;
+                    return (
+                      <div className="small" style={{ marginTop: 8, color: "var(--warn)" }}>
+                        Lemmy — Waiting to retry. Next attempt: {timeStr}
+                        {isPast ? " (overdue)" : ""}
+                        {retryCount !== null ? ` (Attempt ${retryCount})` : ""}
+                        {!schedulerOn && <span style={{ color: "var(--bad)" }}> — Scheduler is off</span>}
+                        {possibleSizeLimit && (
+                          <div style={{ marginTop: 4 }}>
+                            Image may be too large for the server. Automatic resizing will be applied on the next retry.
+                            For best results, enable <strong>image resizing</strong> in Settings → Lemmy.
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </>
               )}
               </div>
@@ -8279,7 +8398,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             <h2>Scheduler</h2>
             <div className="content">
               <div className="row" style={{ gap: 14, marginBottom: 16 }}>
-                <button className="btn-start" onClick={startSched} disabled={!cfg?.authed || !queue.length}>▶ Start</button>
+                <button className="btn-start" onClick={() => startSched()} disabled={!cfg?.authed || !queue.length}>▶ Start</button>
                 <button className="btn-stop" onClick={stopSched}>■ Stop</button>
                 <button className="btn" onClick={uploadNext} disabled={!cfg?.authed || !queue.length}>Upload Next Item Now</button>
               </div>
@@ -8638,7 +8757,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
         <div className="footer-right">
           {isDevRuntime && <span className="dev-runtime-badge">DEV {devSessionStamp}</span>}
-          <span className="mono">v{appVersion || "0.9.7a"}</span>
+          <span className="mono">v{appVersion || "0.9.7b"}</span>
         </div>
       </div>
 
@@ -8850,7 +8969,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
       {typedDeleteDialog && (
         <div className="schedule-dialog-backdrop" onClick={cancelOriginalFileDeletion}>
-          <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+          <div ref={deleteDialogRef} className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
             <div style={{ fontWeight: 900, marginBottom: 8, color: "#ff8f8f", fontSize: 20 }}>
               You are about to delete the original files from your drive! Are you sure?
             </div>
@@ -8864,7 +8983,6 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               onChange={(e) => setTypedDeleteInput(e.target.value)}
               onKeyDown={(e) => e.stopPropagation()}
               placeholder={typedDeleteDialog.requiredText}
-              autoFocus
             />
             <div className="btnrow" style={{ marginTop: 12 }}>
               <button className="btn" onClick={cancelOriginalFileDeletion}>Cancel</button>
@@ -8970,6 +9088,55 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             <div className="btnrow" style={{ marginTop: 12 }}>
               <button className="btn" onClick={() => setSaveSetDialog(null)}>Cancel</button>
               <button className="btn primary" disabled={!saveSetNameInput.trim()} onClick={saveSetDialogSubmit}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {startSchedDialogOpen && (
+        <div className="schedule-dialog-backdrop" onClick={() => { setStartSchedDialogOpen(false); setStartSchedError(""); }}>
+          <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 650, marginBottom: 8 }}>Start Scheduler</div>
+            <div className="small" style={{ marginBottom: 14, color: "var(--text-dim)" }}>
+              Upload interval: every {intervalHours} hour{intervalHours === 1 ? "" : "s"}
+            </div>
+            {startSchedError && (
+              <div className="small" style={{ color: "var(--bad)", marginBottom: 10 }}>{startSchedError}</div>
+            )}
+            <div className="btnrow" style={{ flexDirection: "column", gap: 10 }}>
+              <button
+                className="btn primary"
+                style={{ width: "100%" }}
+                onClick={() => { setStartSchedError(""); setStartSchedDialogOpen(false); void startSched("now"); }}
+              >
+                Start Scheduler Immediately
+              </button>
+              <button
+                className="btn"
+                style={{ width: "100%" }}
+                disabled={!startSchedFirstRunAt}
+                onClick={() => {
+                  if (!startSchedFirstRunAt) return;
+                  const chosen = new Date(startSchedFirstRunAt);
+                  if (chosen.getTime() < Date.now()) {
+                    setStartSchedError("That date/time is in the past.");
+                    return;
+                  }
+                  setStartSchedError("");
+                  setStartSchedDialogOpen(false);
+                  void startSched(chosen.toISOString());
+                }}
+              >
+                Start Scheduler at...
+              </button>
+              <input
+                className="input"
+                type="datetime-local"
+                value={startSchedFirstRunAt}
+                onChange={(e) => { setStartSchedFirstRunAt(e.target.value); setStartSchedError(""); }}
+                style={{ width: "100%" }}
+              />
+              <button className="btn" style={{ width: "100%" }} onClick={() => { setStartSchedDialogOpen(false); setStartSchedError(""); }}>Cancel</button>
             </div>
           </div>
         </div>

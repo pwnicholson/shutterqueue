@@ -691,6 +691,62 @@ function isLemmyAuthed() {
   return Boolean(store.get("lemmyInstanceUrl")) && Boolean(store.get("lemmyHasAccessToken")) && Boolean(store.get("lemmyUsername"));
 }
 
+// Returns true for HTTP 5xx, HTTP 429 rate limits, and common network-level transient failures.
+// Used to decide whether to schedule an automatic retry instead of permanently failing.
+function isTransientNetworkError(msg) {
+  const s = String(msg || "").toLowerCase();
+  if (/http 5\d\d|\bstatus[: ]+5\d\d|\b500\b|\b502\b|\b503\b|\b504\b/.test(s)) return true;
+  if (/\b429\b|too.?many.?requests?|rate.?limit/.test(s)) return true;
+  if (/socket hang.?up|econnreset|etimedout|econnrefused|enotfound/.test(s)) return true;
+  if (/connection.*reset|connection.*refused|network.*err|read econnreset/.test(s)) return true;
+  return false;
+}
+
+// Lemmy transient error check delegates to the shared detector.
+function isLemmyTransientError(msg) {
+  return isTransientNetworkError(msg);
+}
+
+// Maximum automatic retries for transient platform errors (Tumblr, Bluesky, PixelFed, Mastodon).
+const MAX_PLATFORM_AUTO_RETRIES = 5;
+
+// Sets serviceStates[svc] to "retry" (with hourly backoff) when a transient error occurs,
+// or to "failed" once MAX_PLATFORM_AUTO_RETRIES is exhausted.
+function applyTransientRetry(serviceStates, svc, msg, warningParts, errorParts, itemId) {
+  const displayName = { tumblr: "Tumblr", bluesky: "Bluesky", pixelfed: "PixelFed", mastodon: "Mastodon" }[svc] || svc;
+  const prev = serviceStates[svc] || {};
+  const retryCount = (Number(prev.retryCount) || 0) + 1;
+  if (retryCount <= MAX_PLATFORM_AUTO_RETRIES) {
+    const retryAfter = new Date(Date.now() + 3600000).toISOString();
+    serviceStates[svc] = {
+      status: "retry",
+      retryAfter,
+      retryCount,
+      firstFailedAt: prev.firstFailedAt || new Date().toISOString(),
+      lastError: msg,
+    };
+    warningParts.push(`${displayName}: Server temporarily unavailable — will retry automatically at ${retryAfter}. (attempt ${retryCount} of ${MAX_PLATFORM_AUTO_RETRIES})`);
+    logEvent("WARN", `${displayName} upload will retry (transient error)`, { id: itemId, retryCount, error: msg });
+  } else {
+    serviceStates[svc] = { status: "failed", lastError: msg };
+    errorParts.push(`${displayName}: ${msg}`);
+    logEvent("WARN", `${displayName} upload failed after max retries`, { id: itemId, error: msg });
+  }
+}
+
+// Returns true when a Lemmy upload failure looks like it was caused by the image being too large.
+// Pict-rs and its reverse proxy return 502 or drop the connection when the server is overwhelmed
+// processing a large file — distinct from a server that is simply down (ECONNREFUSED/ENOTFOUND)
+// or rejecting the request for auth reasons (401/403).
+function looksLikeLemmySizeLimitError(msg) {
+  const s = String(msg || "");
+  // 502 in the per-endpoint trial list = reverse proxy got no response from pict-rs (processing overload)
+  if (/error code: 502|: HTTP 502/.test(s)) return true;
+  // Socket hang-up on valid endpoints alongside 404s on wrong endpoints (not auth errors)
+  if (/socket hang.?up/.test(s) && /HTTP 404/.test(s) && !/401|403|unauthorized|forbidden/i.test(s)) return true;
+  return false;
+}
+
 function isAuthed() {
   return isFlickrAuthed() || isTumblrAuthed() || isBlueskyAuthed() || isPixelfedAuthed() || isMastodonAuthed() || isLemmyAuthed();
 }
@@ -1908,6 +1964,15 @@ app.whenReady().then(() => {
     if (schedTimer) clearInterval(schedTimer);
     schedTimer = setInterval(() => tickScheduler().catch(() => {}), 1000);
   }
+  // Always run Lemmy retry processing independently of the upload scheduler.
+  // Transient Lemmy failures must retry even when the user hasn't started the scheduler.
+  if (lemmyRetryTimer) clearInterval(lemmyRetryTimer);
+  lemmyRetryTimer = setInterval(() => processLemmyRetries().catch(() => {}), 10000);
+  // Run immediately on launch in case there are already-due retries.
+  processLemmyRetries().catch(() => {});
+  if (transientRetryTimer) clearInterval(transientRetryTimer);
+  transientRetryTimer = setInterval(() => processTransientRetries().catch(() => {}), 10000);
+  processTransientRetries().catch(() => {});
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -2583,27 +2648,23 @@ ipcMain.handle("queue:removeAndTrash", async (_e, { ids }) => {
   const list = Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
   const before = queue.loadQueue();
   const byId = new Map((Array.isArray(before) ? before : []).map((it) => [String(it?.id || ""), it]));
+
+  let movedCount = 0;
+  let skippedMissing = 0;
+  let failedCount = 0;
   const photoPaths = [];
   const seen = new Set();
   for (const id of list) {
     const it = byId.get(String(id || ""));
     if (!it) continue;
-    const resolved = resolvePhotoPathOnDisk(it.photoPath);
-    const p = resolved;
-    if (!p || seen.has(p)) continue;
+    const p = resolvePhotoPathOnDisk(it.photoPath);
+    if (!p) { skippedMissing++; continue; }
+    if (seen.has(p)) continue;
     seen.add(p);
     photoPaths.push(p);
   }
-
-  let movedCount = 0;
-  let skippedMissing = 0;
-  let failedCount = 0;
   for (const photoPath of photoPaths) {
     try {
-      if (!fs.existsSync(photoPath)) {
-        skippedMissing++;
-        continue;
-      }
       await shell.trashItem(photoPath);
       movedCount++;
     } catch (e) {
@@ -2639,27 +2700,23 @@ ipcMain.handle("queue:trashOriginalsByIds", async (_e, { ids }) => {
   const list = Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
   const current = queue.loadQueue();
   const byId = new Map((Array.isArray(current) ? current : []).map((it) => [String(it?.id || ""), it]));
+
+  let movedCount = 0;
+  let skippedMissing = 0;
+  let failedCount = 0;
   const photoPaths = [];
   const seen = new Set();
   for (const id of list) {
     const it = byId.get(String(id || ""));
     if (!it) continue;
-    const resolved = resolvePhotoPathOnDisk(it.photoPath);
-    const p = resolved;
-    if (!p || seen.has(p)) continue;
+    const p = resolvePhotoPathOnDisk(it.photoPath);
+    if (!p) { skippedMissing++; continue; }
+    if (seen.has(p)) continue;
     seen.add(p);
     photoPaths.push(p);
   }
-
-  let movedCount = 0;
-  let skippedMissing = 0;
-  let failedCount = 0;
   for (const photoPath of photoPaths) {
     try {
-      if (!fs.existsSync(photoPath)) {
-        skippedMissing++;
-        continue;
-      }
       await shell.trashItem(photoPath);
       movedCount++;
     } catch (e) {
@@ -3708,9 +3765,13 @@ async function uploadNowOneInternal(options = {}) {
             logEvent("INFO", "Uploaded to Tumblr", { id: next.id, postId, blogId });
           } catch (e) {
             const msg = e?.message ? String(e.message) : String(e);
-            next.serviceStates.tumblr = { status: "failed", lastError: msg };
-            errorParts.push(`Tumblr: ${msg}`);
-            logEvent("WARN", "Tumblr upload failed", { id: next.id, error: msg, blogId });
+            if (isTransientNetworkError(msg)) {
+              applyTransientRetry(next.serviceStates, "tumblr", msg, warningParts, errorParts, next.id);
+            } else {
+              next.serviceStates.tumblr = { status: "failed", lastError: msg };
+              errorParts.push(`Tumblr: ${msg}`);
+              logEvent("WARN", "Tumblr upload failed", { id: next.id, error: msg, blogId });
+            }
           }
         }
       }
@@ -3811,14 +3872,22 @@ async function uploadNowOneInternal(options = {}) {
               logEvent("INFO", "Uploaded to Bluesky after token refresh", { id: next.id, uri: retryPost.uri || "" });
             } catch (refreshErr) {
               const finalMsg = refreshErr?.message ? String(refreshErr.message) : String(refreshErr);
-              next.serviceStates.bluesky = { status: "failed", lastError: finalMsg };
-              errorParts.push(`Bluesky: ${finalMsg}`);
-              logEvent("WARN", "Bluesky upload failed after token refresh", { id: next.id, error: finalMsg });
+              if (isTransientNetworkError(finalMsg)) {
+                applyTransientRetry(next.serviceStates, "bluesky", finalMsg, warningParts, errorParts, next.id);
+              } else {
+                next.serviceStates.bluesky = { status: "failed", lastError: finalMsg };
+                errorParts.push(`Bluesky: ${finalMsg}`);
+                logEvent("WARN", "Bluesky upload failed after token refresh", { id: next.id, error: finalMsg });
+              }
             }
           } else {
-            next.serviceStates.bluesky = { status: "failed", lastError: msg2 };
-            errorParts.push(`Bluesky: ${msg2}`);
-            logEvent("WARN", "Bluesky upload failed", { id: next.id, error: msg2 });
+            if (isTransientNetworkError(msg2)) {
+              applyTransientRetry(next.serviceStates, "bluesky", msg2, warningParts, errorParts, next.id);
+            } else {
+              next.serviceStates.bluesky = { status: "failed", lastError: msg2 };
+              errorParts.push(`Bluesky: ${msg2}`);
+              logEvent("WARN", "Bluesky upload failed", { id: next.id, error: msg2 });
+            }
           }
         }
       } else {
@@ -3905,14 +3974,22 @@ async function uploadNowOneInternal(options = {}) {
               logEvent("INFO", "Uploaded to Bluesky after token refresh", { id: next.id, uri: retryPost.uri || "" });
             } catch (refreshErr) {
               const finalMsg = refreshErr?.message ? String(refreshErr.message) : String(refreshErr);
-              next.serviceStates.bluesky = { status: "failed", lastError: finalMsg };
-              errorParts.push(`Bluesky: ${finalMsg}`);
-              logEvent("WARN", "Bluesky upload failed after token refresh", { id: next.id, error: finalMsg });
+              if (isTransientNetworkError(finalMsg)) {
+                applyTransientRetry(next.serviceStates, "bluesky", finalMsg, warningParts, errorParts, next.id);
+              } else {
+                next.serviceStates.bluesky = { status: "failed", lastError: finalMsg };
+                errorParts.push(`Bluesky: ${finalMsg}`);
+                logEvent("WARN", "Bluesky upload failed after token refresh", { id: next.id, error: finalMsg });
+              }
             }
           } else {
-            next.serviceStates.bluesky = { status: "failed", lastError: msg };
-            errorParts.push(`Bluesky: ${msg}`);
-            logEvent("WARN", "Bluesky upload failed", { id: next.id, error: msg });
+            if (isTransientNetworkError(msg)) {
+              applyTransientRetry(next.serviceStates, "bluesky", msg, warningParts, errorParts, next.id);
+            } else {
+              next.serviceStates.bluesky = { status: "failed", lastError: msg };
+              errorParts.push(`Bluesky: ${msg}`);
+              logEvent("WARN", "Bluesky upload failed", { id: next.id, error: msg });
+            }
           }
         }
       }
@@ -3970,9 +4047,13 @@ async function uploadNowOneInternal(options = {}) {
           logEvent("INFO", "Uploaded to PixelFed", { id: next.id, postId: post.id || "" });
         } catch (e) {
           const msg = e?.message ? String(e.message) : String(e);
-          next.serviceStates.pixelfed = { status: "failed", lastError: msg };
-          errorParts.push(`PixelFed: ${msg}`);
-          logEvent("WARN", "PixelFed upload failed", { id: next.id, error: msg });
+          if (isTransientNetworkError(msg)) {
+            applyTransientRetry(next.serviceStates, "pixelfed", msg, warningParts, errorParts, next.id);
+          } else {
+            next.serviceStates.pixelfed = { status: "failed", lastError: msg };
+            errorParts.push(`PixelFed: ${msg}`);
+            logEvent("WARN", "PixelFed upload failed", { id: next.id, error: msg });
+          }
         }
       }
     } else if (next.targetServices.includes("pixelfed")) {
@@ -4029,9 +4110,13 @@ async function uploadNowOneInternal(options = {}) {
           logEvent("INFO", "Uploaded to Mastodon", { id: next.id, postId: post.id || "" });
         } catch (e) {
           const msg = e?.message ? String(e.message) : String(e);
-          next.serviceStates.mastodon = { status: "failed", lastError: msg };
-          errorParts.push(`Mastodon: ${msg}`);
-          logEvent("WARN", "Mastodon upload failed", { id: next.id, error: msg });
+          if (isTransientNetworkError(msg)) {
+            applyTransientRetry(next.serviceStates, "mastodon", msg, warningParts, errorParts, next.id);
+          } else {
+            next.serviceStates.mastodon = { status: "failed", lastError: msg };
+            errorParts.push(`Mastodon: ${msg}`);
+            logEvent("WARN", "Mastodon upload failed", { id: next.id, error: msg });
+          }
         }
       }
     } else if (next.targetServices.includes("mastodon")) {
@@ -4120,10 +4205,20 @@ async function uploadNowOneInternal(options = {}) {
               maxWidth: Number(store.get("lemmyImageResizeMaxWidth") || 0),
               maxHeight: Number(store.get("lemmyImageResizeMaxHeight") || 0),
             };
+            // If prior attempts suggest the image may be too large for the server, automatically
+            // apply a conservative resize on this retry attempt so it has a real chance of succeeding.
+            if (next.serviceStates?.lemmy?.possibleSizeLimit === true && !lemmyImageResizeOptions.enabled) {
+              lemmyImageResizeOptions.enabled = true;
+              if (!lemmyImageResizeOptions.maxWidth) lemmyImageResizeOptions.maxWidth = 3000;
+              if (!lemmyImageResizeOptions.maxHeight) lemmyImageResizeOptions.maxHeight = 3000;
+              logEvent("INFO", "Lemmy: auto-applying resize due to possible image size limit", { id: next.id });
+            }
             const lemmyInstanceLimitsCache = store.get("lemmyInstanceLimitsCache") || {};
             const lemmyInstanceUploadConfigCache = store.get("lemmyInstanceUploadConfigCache") || {};
             let firstPost = null;
             let failedPosts = 0;
+            let transientFails = 0;
+            let sizeLimitHints = 0;
             let stopRemainingCommunities = false;
             for (const communityId of communityIds) {
               if (stopRemainingCommunities) break;
@@ -4159,6 +4254,8 @@ async function uploadNowOneInternal(options = {}) {
               } catch (postErr) {
                 failedPosts += 1;
                 const postMsg = postErr?.message ? String(postErr.message) : String(postErr);
+                if (isLemmyTransientError(postMsg)) transientFails += 1;
+                if (looksLikeLemmySizeLimitError(postMsg)) sizeLimitHints += 1;
                 const communityLabel = await describeCommunity(communityId);
                 const readableMsg = humanizeLemmyError(postMsg);
                 warningParts.push(`Lemmy (${communityLabel}): ${readableMsg}`);
@@ -4171,22 +4268,59 @@ async function uploadNowOneInternal(options = {}) {
             }
 
             if (failedPosts === communityIds.length) {
-              throw new Error("Failed to post to all selected Lemmy communities.");
-            }
+              if (transientFails === communityIds.length) {
+                // All failures were transient server/network errors — schedule automatic retry
+                const prevState = next.serviceStates?.lemmy || {};
+                const retryCount = (Number(prevState.retryCount) || 0) + 1;
+                const firstFailedAt = prevState.firstFailedAt || new Date().toISOString();
+                // Give up after 8 retries (~8 hours of trying). A consistent network-level
+                // rejection is unlikely to resolve on its own — token may have expired or
+                // the server config may have changed. User should re-authorize.
+                const MAX_LEMMY_AUTO_RETRIES = 8;
+                if (retryCount > MAX_LEMMY_AUTO_RETRIES) {
+                  throw new Error(
+                    `Lemmy image upload failed after ${MAX_LEMMY_AUTO_RETRIES} automatic retries. ` +
+                    `If this keeps happening, try re-authorizing Lemmy in Settings. ` +
+                    `First failed: ${firstFailedAt}.`
+                  );
+                }
+                const retryAfter = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+                const possibleSizeLimit = sizeLimitHints > 0;
+                next.serviceStates.lemmy = {
+                  status: "retry",
+                  retryAfter,
+                  retryCount,
+                  firstFailedAt,
+                  lastError: possibleSizeLimit
+                    ? "Image may be too large for the server — will retry with automatic resizing."
+                    : "Server temporarily unavailable.",
+                  possibleSizeLimit,
+                };
+                if (possibleSizeLimit) {
+                  warningParts.push(`Lemmy: Upload failed — the image may be too large for the server (received 502/connection errors). Will retry with automatic resizing at ${retryAfter}. (attempt ${retryCount} of ${MAX_LEMMY_AUTO_RETRIES}) Tip: enable Lemmy image resizing in Settings to avoid this.`);
+                } else {
+                  warningParts.push(`Lemmy: Server temporarily unavailable — will retry automatically at ${retryAfter}. (attempt ${retryCount} of ${MAX_LEMMY_AUTO_RETRIES})`);
+                }
+                logEvent("WARN", "Lemmy upload will retry (transient server error)", { id: next.id, retryCount, maxRetries: MAX_LEMMY_AUTO_RETRIES, possibleSizeLimit });
+                // Note: successfulServices is NOT incremented — item status resolution handles this
+              } else {
+                throw new Error("Failed to post to all selected Lemmy communities.");
+              }
+            } else {
+              const remoteId = String(firstPost?.url || firstPost?.id || "").trim();
+              if (!remoteId) {
+                throw new Error("Lemmy upload returned no post identifier.");
+              }
 
-            const remoteId = String(firstPost?.url || firstPost?.id || "").trim();
-            if (!remoteId) {
-              throw new Error("Lemmy upload returned no post identifier.");
-            }
-
-            next.serviceStates.lemmy = {
-              status: "done",
-              remoteId,
-              uploadedAt: new Date().toISOString(),
-            };
-            successfulServices += 1;
-            if (failedPosts > 0) {
-              warningParts.push(`Lemmy: posted to ${communityIds.length - failedPosts}/${communityIds.length} communities.`);
+              next.serviceStates.lemmy = {
+                status: "done",
+                remoteId,
+                uploadedAt: new Date().toISOString(),
+              };
+              successfulServices += 1;
+              if (failedPosts > 0) {
+                warningParts.push(`Lemmy: posted to ${communityIds.length - failedPosts}/${communityIds.length} communities.`);
+              }
             }
           } catch (e) {
             const msg = e?.message ? String(e.message) : String(e);
@@ -4219,6 +4353,21 @@ async function uploadNowOneInternal(options = {}) {
     }
 
     const combinedMessages = [...warningParts, ...errorParts].filter(Boolean);
+
+    // Count services queued for automatic retry (transient server/network errors)
+    const retryingServices = (next.targetServices || []).filter(
+      svc => next.serviceStates && next.serviceStates[svc] && next.serviceStates[svc].status === "retry"
+    ).length;
+
+    if (successfulServices === 0 && retryingServices > 0) {
+      // No services succeeded yet, but transient failures will retry automatically (e.g. Lemmy server outage).
+      // Show as yellow "retry" status — not a permanent failure.
+      next.status = "retry";
+      next.lastError = warningParts.filter(Boolean).join(" | ") || "Server temporarily unavailable; will retry automatically.";
+      queue.saveQueue(q);
+      return { ok: true, warnings: warningParts.filter(Boolean) };
+    }
+
     if (successfulServices === 0) {
       const msg = combinedMessages.join(" | ") || "Upload failed for all target services.";
       next.status = "failed";
@@ -4261,6 +4410,8 @@ async function uploadNowOneInternal(options = {}) {
 ipcMain.handle("upload:nowOne", async (_e, options) => uploadNowOneInternal(options || {}));
 
 let schedTimer = null;
+let lemmyRetryTimer = null; // runs processLemmyRetries independently of the upload scheduler
+let transientRetryTimer = null; // runs processTransientRetries for Tumblr/Bluesky/PixelFed/Mastodon
 let uploadLock = false; // prevents overlapping uploads (fixes duplicate uploads)
 
 let batchRunProgress = {
@@ -4352,6 +4503,104 @@ function completeBatchServiceProgress(itemId, serviceId) {
   }
 }
 
+// Retries Lemmy uploads that failed with transient server/network errors (502, 503, socket hang-up, etc).
+// Called on every scheduler tick so retries happen approximately hourly, independent of upload batch schedule.
+// Handles scheduled retries for transient platform failures: Tumblr, Bluesky, PixelFed, Mastodon.
+// Runs on a 10-second timer (same as processLemmyRetries) and re-triggers the full upload
+// for any item that has a past-due "retry" service state on any of those platforms.
+async function processTransientRetries() {
+  if (uploadLock) return;
+  const now = Date.now();
+  const q = queue.loadQueue();
+  const RETRYABLE_STATUSES = new Set(["done_warn", "retry", "failed", "done", "pending", "uploading"]);
+  const RETRY_PLATFORMS = ["tumblr", "bluesky", "pixelfed", "mastodon"];
+  const dueItems = q.filter(it => {
+    if (!RETRYABLE_STATUSES.has(it.status)) return false;
+    return RETRY_PLATFORMS.some(svc => {
+      const ss = it.serviceStates && it.serviceStates[svc];
+      if (!ss || ss.status !== "retry") return false;
+      const retryAt = ss.retryAfter ? new Date(ss.retryAfter).getTime() : 0;
+      return retryAt <= now;
+    });
+  });
+  if (!dueItems.length) return;
+  logEvent("INFO", "processTransientRetries: found due items", { count: dueItems.length });
+
+  for (const item of dueItems.slice(0, 2)) {
+    const liveQ = queue.loadQueue();
+    const liveItem = liveQ.find(it => it.id === item.id);
+    if (!liveItem) continue;
+    if (!RETRYABLE_STATUSES.has(liveItem.status)) continue;
+    const hasDue = RETRY_PLATFORMS.some(svc => {
+      const ss = liveItem.serviceStates && liveItem.serviceStates[svc];
+      if (!ss || ss.status !== "retry") return false;
+      const retryAt = ss.retryAfter ? new Date(ss.retryAfter).getTime() : 0;
+      return retryAt <= Date.now();
+    });
+    if (!hasDue) continue;
+    liveItem.status = "pending";
+    queue.saveQueue(liveQ);
+    logEvent("INFO", "Retrying upload after transient error", { id: liveItem.id });
+    try {
+      await uploadNowOneInternal({ itemId: liveItem.id, reason: "transient_retry" });
+    } catch (_) {
+      // uploadNowOneInternal handles its own errors and updates queue state
+    }
+  }
+}
+
+async function processLemmyRetries() {
+  if (uploadLock) return;
+  const now = Date.now();
+  const q = queue.loadQueue();
+  // Include "uploading" to recover items that were stuck mid-upload due to an app crash.
+  // uploadLock=false guarantees no active upload is running, so these are stale leftovers.
+  // "group_only" items are excluded — they are Flickr-only and have no Lemmy state.
+  const RETRYABLE_STATUSES = new Set(["done_warn", "retry", "failed", "done", "pending", "uploading"]);
+  const dueItems = q.filter(it => {
+    if (!RETRYABLE_STATUSES.has(it.status)) return false;
+    const ls = it.serviceStates && it.serviceStates.lemmy;
+    if (!ls || ls.status !== "retry") return false;
+    const retryAt = ls.retryAfter ? new Date(ls.retryAfter).getTime() : 0;
+    return retryAt <= now;
+  });
+  if (!dueItems.length) return;
+  logEvent("INFO", "processLemmyRetries: found due items", { count: dueItems.length });
+
+  for (const item of dueItems.slice(0, 2)) {
+    // Reload queue to get fresh state before modifying
+    const liveQ = queue.loadQueue();
+    const liveItem = liveQ.find(it => it.id === item.id);
+    if (!liveItem) continue;
+    if (!RETRYABLE_STATUSES.has(liveItem.status)) continue;
+    const ls = liveItem.serviceStates && liveItem.serviceStates.lemmy;
+    if (!ls || ls.status !== "retry") continue;
+    const retryAt = ls.retryAfter ? new Date(ls.retryAfter).getTime() : 0;
+    if (retryAt > Date.now()) continue;
+
+    // Reset Lemmy service state so uploadNowOneInternal re-enters the Lemmy upload block.
+    // Keep status as "retry" (not "failed") to maintain the ↻ chip state during the upload window.
+    // The Lemmy upload guard checks !== "done", so "retry" still allows re-entry.
+    // Set retryAfter to now so the display always shows a concrete timestamp ("overdue") while uploading.
+    liveItem.serviceStates.lemmy = {
+      status: "retry",
+      retryAfter: new Date().toISOString(),
+      retryCount: ls.retryCount || 0,
+      firstFailedAt: ls.firstFailedAt,
+      lastError: ls.lastError,
+    };
+    liveItem.status = "pending"; // uploadNowOneInternal requires "pending" or "failed"
+    queue.saveQueue(liveQ);
+    logEvent("INFO", "Retrying Lemmy upload after transient error", { id: liveItem.id, retryCount: ls.retryCount || 0 });
+
+    try {
+      await uploadNowOneInternal({ itemId: liveItem.id, reason: "lemmy_retry" });
+    } catch (_) {
+      // uploadNowOneInternal handles its own errors and updates queue state
+    }
+  }
+}
+
 
 async function tickScheduler() {
   if (!store.get("schedulerOn")) return;
@@ -4373,6 +4622,10 @@ async function tickScheduler() {
     const msg = e?.message ? String(e.message) : String(e);
     logEvent("WARN", "Group retry processing failed", { error: msg });
   }
+
+  // Always retry Lemmy uploads that failed due to transient server/network errors.
+  // NOTE: Lemmy retries are handled by a dedicated lemmyRetryTimer (set at app launch),
+  // independent of the scheduler state. Do not call processLemmyRetries() here.
 
   if (!uploadLock) {
     const q = queue.loadQueue();
@@ -4441,7 +4694,7 @@ async function tickScheduler() {
   }
 }
 
-ipcMain.handle("sched:start", async (_e, { intervalHours, uploadImmediately, settings }) => {
+ipcMain.handle("sched:start", async (_e, { intervalHours, uploadImmediately, firstRunAt, settings }) => {
   const h = Math.max(1, Math.min(168, Math.round(Number(intervalHours || 24))));
   store.set("intervalHours", h);
   if (settings) {
@@ -4455,13 +4708,27 @@ ipcMain.handle("sched:start", async (_e, { intervalHours, uploadImmediately, set
     store.set("uploadBatchSize", bs);
   }
   store.set("schedulerOn", true);
-  scheduleNext(uploadImmediately ? 0 : h);
+  if (firstRunAt) {
+    // User chose a specific first-run time — honour it directly (apply window/day bump)
+    const requested = new Date(firstRunAt);
+    if (Number.isFinite(requested.getTime())) {
+      const bumped = bumpToNextAllowed(requested);
+      const skip = Boolean(store.get("skipOvernight"));
+      const next = skip ? nextAllowedTime(bumped) : bumped;
+      store.set("nextRunAt", next.toISOString());
+    } else {
+      scheduleNext(h); // fallback if invalid ISO
+    }
+  } else {
+    scheduleNext(uploadImmediately ? 0 : h);
+  }
   if (schedTimer) clearInterval(schedTimer);
   schedTimer = setInterval(() => tickScheduler().catch(() => {}), 1000);
   updateTrayIcon();
   logEvent("INFO", "Scheduler started", {
     intervalHours: h,
     uploadImmediately: Boolean(uploadImmediately),
+    firstRunAt: firstRunAt || null,
     uploadBatchSize: Number(store.get("uploadBatchSize") || 1),
     resumeOnLaunch: Boolean(store.get("resumeOnLaunch")),
   });

@@ -11,7 +11,7 @@ const duplicateHashCacheByItemId = new Map();
 const VALID_TARGET_SERVICES = new Set(["flickr", "tumblr", "bluesky", "pixelfed", "mastodon", "lemmy"]);
 const VALID_PRIVACY = new Set(["public", "friends", "family", "friends_family", "private"]);
 const VALID_GEO_PRIVACY = new Set(["public", "contacts", "friends", "family", "friends_family", "private"]);
-const VALID_STATUS = new Set(["pending", "uploading", "done", "done_warn", "failed", "group_only"]);
+const VALID_STATUS = new Set(["pending", "uploading", "done", "done_warn", "failed", "group_only", "retry"]);
 
 function ensureRoot() {
   if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT, { recursive: true });
@@ -75,10 +75,24 @@ function loadQueue() {
         const normalizedDateTaken = toIsoDateOrEmpty(it.dateTaken);
         if (normalizedDateTaken) it.dateTaken = normalizedDateTaken;
       }
+      // Fix: items incorrectly saved as "done" that still have a pending service retry
+      // (happens when the done_warn→done migration ran and then saveQueue persisted it
+      // before the service retry could fire).
+      if (it.status === "done" && it.serviceStates &&
+          Object.values(it.serviceStates).some(ss => ss && ss.status === "retry")) {
+        it.status = "done_warn";
+      }
+      // Note: do NOT migrate pending→done_warn for items with a service retry state.
+      // processLemmyRetries temporarily sets status="pending" while calling uploadNowOneInternal,
+      // and loadQueue is invoked inside that call. Converting pending back to done_warn here
+      // prevents uploadNowOneInternal from finding the item, silently breaking the retry.
+      // processLemmyRetries already includes "pending" items in its filter,
+      // so restart recovery is handled without this migration.
       if (it.status === "done_warn") {
         const states = it.groupAddStates || {};
-        const hasProblem = Object.values(states).some(st => st && (st.status === "retry" || st.status === "failed" || st.status === "gave_up"));
-        if (!hasProblem) {
+        const hasGroupProblem = Object.values(states).some(st => st && (st.status === "retry" || st.status === "failed" || st.status === "gave_up"));
+        const hasServiceRetry = it.serviceStates && Object.values(it.serviceStates).some(ss => ss && ss.status === "retry");
+        if (!hasGroupProblem && !hasServiceRetry) {
           it.status = "done";
         }
       }

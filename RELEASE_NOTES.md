@@ -1,10 +1,47 @@
-# ShutterQueue v0.9.7a Release Notes
+# ShutterQueue v0.9.7b Release Notes
 
 **Release Date:** April 5, 2026
 
-## Post-Release Fixes (April 5, 2026)
+## Post-Release Fixes (April 6, 2026)
 
-### Tumblr "Bad Request" Fix
+### Scheduler Start — In-App Datetime Picker
+
+"Start Scheduler" now opens an in-app modal instead of the system OS dialog. The modal offers two options:
+
+- **Upload first item now** — starts the scheduler and triggers an immediate first upload
+- **Schedule first upload at: [date/time]** — lets you specify an exact date and time for the first upload (defaults to tomorrow at 06:00 local time); the time is validated against your configured time-window and days-of-week settings before being set
+
+The old native dialog only offered "now", "on delay (full interval)", or "cancel" — the new picker gives precise control.
+
+---
+
+## What's New in 0.9.7b (April 5, 2026)
+
+### Empty Titles Now Stay Blank Across All Platforms
+
+When uploading a photo with no title set, ShutterQueue now ensures the title remains genuinely blank:
+
+- **Flickr** was silently replacing a blank title with the photo's filename — this was Flickr's own server-side fallback behaviour when `title=""` is sent. ShutterQueue now explicitly clears the title via a follow-up API call after upload. If the title-clearing step fails, the upload itself still succeeds (best-effort).
+- **Lemmy** was showing the photo's filename as the post title — since Lemmy requires a post name, it now uses `"Photo"` as a neutral placeholder when the title field is blank.
+- **Tumblr, Bluesky, Mastodon, and PixelFed** were already handling blank titles correctly (skipping the title field entirely in composed post text).
+
+### Lemmy Server Outages — Automatic Hourly Retry
+
+When Lemmy is temporarily unavailable (HTTP 502, 503, 500, socket hang-up, network resets), ShutterQueue now handles this gracefully instead of marking the upload as permanently failed:
+
+- Items show as yellow **"retrying…"** instead of red "failed"
+- The Lemmy platform chip shows a yellow **↻** symbol with the retry attempt count in the tooltip
+- ShutterQueue automatically retries the upload approximately **every hour** while the scheduler is active — no user action needed
+- If other platforms (Bluesky, Mastodon, etc.) succeeded in the same upload, the item shows yellow "done (warnings)" and only the Lemmy chip shows ↻
+- The queue shows the **next retry time** so you know when to expect another attempt
+- When the server recovers and the retry succeeds, the item transitions back to its normal green state
+- Retries continue indefinitely while the scheduler is on — no automatic give-up
+
+### Lemmy Probe Order — lemmy.world (v0.19.x) Support Improved
+
+lemmy.world runs Lemmy 0.19.17 and uses `POST /pictrs/image` with `images[]` field. This combination was previously last in the probe list (attempt 13 of 13). It's now **second**, so lemmy.world instances are discovered on the 2nd attempt after the modern `/api/v4/image` endpoint 404s. The result is cached, so all future uploads go directly to the right endpoint.
+
+### Tumblr Uploads Fixed (User-Agent and Invalid Field)
 
 Tumblr uploads were failing with a generic 400 Bad Request error. Two causes were identified and fixed:
 
@@ -21,13 +58,15 @@ Improvements to handle pict-rs 0.5+ and recent Lemmy API changes:
 
 Note: Some instances (lemmy.world, lemmy.sdf.org, lemmy.ml) returned HTTP 502 or socket hang-up errors during testing. Those are server-side infrastructure failures outside ShutterQueue's control and are unrelated to these fixes.
 
----
-
-## What's New in 0.9.7a (April 5, 2026)
-
 ### Lemmy Image Upload Fix
 
 Lemmy uploads were failing on all endpoints for lemmy.world and most standard Lemmy instances. The root cause was a URL construction bug: the `/pictrs/image` upload endpoint returns just a bare filename (like `a1b2c3d4.jpeg`) with no path info. ShutterQueue was building the image URL as `https://lemmy.world/a1b2c3d4.jpeg`, when the correct serving URL is `https://lemmy.world/pictrs/image/a1b2c3d4.jpeg`. The probe was then checking the wrong URL, failing, and moving on to try all other endpoint combinations — all of which also failed for unrelated reasons. The fix ensures bare filenames from pictrs responses are given the correct `/pictrs/image/` path prefix before the URL is used.
+
+---
+
+## Previous Release: v0.9.7a (April 5, 2026)
+
+macOS build compilation fix — addressed a build issue that prevented the app from building on macOS.
 
 ---
 
@@ -211,7 +250,7 @@ If the scheduler is active and there are still queue items not yet uploaded, clo
 ### Notes
 
 - This release combines safer file deletion controls, context-menu/spell-check reliability, richer Flickr metadata UI, light-theme support, and initial Lemmy integration.
-- Features listed in prior release notes remain available in 0.9.7a.
+- Features listed in prior release notes remain available in 0.9.7b.
 
 ## Download & Install
 

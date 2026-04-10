@@ -10,6 +10,7 @@ const {
   looksLikeLikelyUploadedImageUrl,
   collectUploadedImageUrlCandidates,
   pickUploadedImageUrl,
+  derivePostName,
 } = lemmy.__test__;
 
 test("Lemmy buildPostText merges title/description/tags with hashtags", () => {
@@ -95,4 +96,25 @@ test("Lemmy pictrs bare filename is prefixed with /pictrs/image/ path", () => {
   // The upload loop applies this fix when endpoint contains "pictrs/image":
   const patched = !picked.includes("/") ? `/pictrs/image/${picked}` : picked;
   assert.equal(patched, `/pictrs/image/${bare}`);
+});
+
+test("Lemmy derivePostName uses title when present", () => {
+  assert.equal(derivePostName({ title: "My Photo", photoPath: "/tmp/IMG_1234.jpg" }), "My Photo");
+});
+
+test("Lemmy derivePostName uses 'Photo' when title is empty — not the filename", () => {
+  assert.equal(derivePostName({ title: "", photoPath: "/tmp/IMG_1234.jpg" }), "Photo");
+  assert.equal(derivePostName({ title: "   ", photoPath: "/tmp/IMG_1234.jpg" }), "Photo");
+  assert.equal(derivePostName({ photoPath: "/tmp/IMG_1234.jpg" }), "Photo");
+  assert.equal(derivePostName({}), "Photo");
+});
+
+test("Lemmy buildPostText skips empty title in merge modes", () => {
+  const text = buildPostText({
+    item: { title: "", description: "Nice shot", tags: "" },
+    postTextMode: "merge_title_description",
+  });
+  assert.equal(text, "Nice shot");
+  // Title should not appear as a blank leading line
+  assert.ok(!text.startsWith("\n"));
 });

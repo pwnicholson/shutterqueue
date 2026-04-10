@@ -327,6 +327,19 @@ body{
   flex-direction:column;
   gap:10px;
 }
+
+/* Batch grouping outline — wraps items that will upload together */
+.batch-group{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  border:1.5px solid rgba(255,255,255,0.12);
+  border-radius:18px;
+  padding:8px;
+}
+:root[data-theme="light"] .batch-group{
+  border-color:rgba(0,0,0,0.10);
+}
 .qitem{
   display:grid;
   grid-template-columns: 54px minmax(0, 1fr) auto;
