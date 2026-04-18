@@ -92,19 +92,17 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 
 
 
-## New to 0.9.6
+## New in 0.9.8
 
-- **New platform support**
-  - Added Tumblr, Bluesky, PixelFed, and Mastodon support alongside Flickr
-  - Queue items can now target one or multiple platforms at once
-  - PixelFed support is tested and working in v0.9.6
-- **Platform-aware posting behavior**
-  - Added per-platform post composition controls, privacy/sensitivity handling, and accessibility text options where supported
-  - Added service-aware upload warnings so unsupported capabilities are called out without blocking supported targets
-  - Added clearer editor hints for Flickr-only fields when non-Flickr targets are selected
-- **Setup and update-check improvements**
-  - Setup now has service-specific tabs and authorization flows for each supported platform
-  - Update-available notices now hotlink directly to the matching GitHub release page
+- **Safer delete behavior**
+  - Queue items are no longer removed if moving the original file to Recycle Bin fails.
+  - Delete flow now reports moved, missing, and failed files more clearly.
+- **Faster queue editing**
+  - Added **Clone Queue Item** and **Reset Status** to the queue context menu.
+  - Cloning keeps metadata and creates a fresh pending copy with no selected platforms.
+- **Cleaner duplicate protection**
+  - Added duplicate-platform confirmation for the same source image.
+  - Batch conflicts now use one merged confirmation dialog instead of repeated popups.
 
 
 
