@@ -1,16 +1,17 @@
-# ShutterQueue — A paced photo uploader (v0.9.7b)
+# ShutterQueue — A paced photo uploader (v0.9.8)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
 
-ShutterQueue is a powerful photo batch uploader for photographers and content creators who want to share their work across multiple social platforms simultaneously. Upload to Flickr, Tumblr, Bluesky, Mastodon, PixelFed, or any combination thereof with a single queue.
+ShutterQueue is a powerful photo batch uploader for photographers and content creators who want to share their work across multiple social platforms simultaneously. Upload to Flickr, Tumblr, Bluesky, Mastodon, PixelFed, Lemmy, or any combination thereof with a single queue.
 
 **Supported platforms:**
 - Flickr (full feature support: groups, albums, location tagging)
 - Tumblr (with blog selection and privacy controls)
 - Bluesky (with threaded long-post support)
 - Mastodon (with instance selection and privacy-aware behavior)
-- PixelFed (tested and working in v0.9.7b, with OAuth 2.0 browser authorization)
+- PixelFed (tested and working in v0.9.8, with OAuth 2.0 browser authorization)
+- Lemmy (with subscribed-community picker, original + cross-post workflow, and auto-resize guidance)
 
 Note that this is purely vibe-coded using a combination of different AI tools. I am very open to suggestions, feedback, and help optimizing the tool or adding features.
 
@@ -19,10 +20,17 @@ ShutterQueue is free to use. For Flickr uploads, you'll need to generate your ow
 ## Summary of Key Features
 
 - **Multi-platform posting with target selection**
-  - Upload to any combination of Flickr, Tumblr, Bluesky, Mastodon, and PixelFed
+  - Upload to any combination of Flickr, Tumblr, Bluesky, Mastodon, PixelFed, and Lemmy
   - Choose different platforms for each queued photo
   - Capability-aware warnings: unsupported features on selected platforms are called out without blocking the upload
   - Partial success handling: if one platform fails, others still upload
+
+- **Lemmy original + cross-post workflow**
+  - Select multiple Lemmy communities per queue item
+  - First selected community is treated as the original post by default
+  - Remaining selected communities are posted as cross-posts referencing the original post URL
+  - In single-item Lemmy editor, selected communities show Original/Crosspost badges and support right-click "Switch to original post"
+  - Lemmy defaults to manual image resize at 2000x2000 (recommended for stricter instances)
 
 - **Rich metadata and content composition**
   - Add title, description, and tags (individually or in batches)

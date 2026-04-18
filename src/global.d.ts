@@ -71,12 +71,19 @@ declare global {
       queueGet: () => Promise<QueueItem[]>;
       queueAdd: (paths: string[]) => Promise<QueueItem[]>;
       queueRemove: (ids: string[]) => Promise<QueueItem[]>;
+      queueRemoveHard: (ids: string[]) => Promise<QueueItem[]>;
+      queueCloneItem: (sourceId: string, options?: { clearTargetServices?: boolean }) => Promise<{
+        queue: QueueItem[];
+        clonedId: string;
+      }>;
       queueDetachToGroupOnly: (ids: string[]) => Promise<QueueItem[]>;
       queueTrashOriginalsByIds: (ids: string[]) => Promise<{
         ok: boolean;
         movedCount: number;
         skippedMissing: number;
         failedCount: number;
+        deletedIds: string[];
+        failedIds: string[];
         trashLabel: string;
       }>;
       queueRemoveAndTrash: (ids: string[]) => Promise<{
@@ -85,6 +92,8 @@ declare global {
         movedCount: number;
         skippedMissing: number;
         failedCount: number;
+        deletedIds: string[];
+        failedIds: string[];
         trashLabel: string;
       }>;
       queueGetMissingPathGroups: () => Promise<{

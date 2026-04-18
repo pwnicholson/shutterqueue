@@ -7,7 +7,7 @@ const mime = require("mime-types");
 const path = require("path");
 const { prepareImageForUpload } = require("./image-prep.cjs");
 
-const TUMBLR_MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20 MB — Tumblr legacy photo post limit
+const TUMBLR_MAX_IMAGE_BYTES = 10 * 1024 * 1024; // Legacy /post photo data limit is 10 MB.
 const TUMBLR_OAUTH_REQUEST = "https://www.tumblr.com/oauth/request_token";
 const TUMBLR_OAUTH_AUTHORIZE = "https://www.tumblr.com/oauth/authorize";
 const TUMBLR_OAUTH_ACCESS = "https://www.tumblr.com/oauth/access_token";
@@ -68,8 +68,45 @@ function parseApiResponse(raw, status) {
   const meta = parsed && parsed.meta ? parsed.meta : {};
   const code = Number(meta.status || status || 0);
   if (code < 200 || code >= 300) {
-    const detail = String(meta.msg || parsed?.errors?.[0]?.detail || parsed?.error || "Tumblr API error");
-    throw new Error(detail);
+    const responseErrors = parsed?.response?.errors;
+    const responseErrorList = Array.isArray(responseErrors)
+      ? responseErrors
+      : (responseErrors && typeof responseErrors === "object"
+          ? Object.values(responseErrors).flatMap((value) => Array.isArray(value) ? value : [value])
+          : []);
+    const firstResponseError = responseErrorList.find((entry) => entry != null);
+    const rootErrors = parsed?.errors;
+    const rootErrorList = Array.isArray(rootErrors)
+      ? rootErrors
+      : (rootErrors && typeof rootErrors === "object"
+          ? Object.values(rootErrors).flatMap((value) => Array.isArray(value) ? value : [value])
+          : []);
+    const firstRootError = rootErrorList.find((entry) => entry != null);
+
+    const detail = String(
+      (typeof firstResponseError === "string" ? firstResponseError : "") ||
+      firstResponseError?.detail ||
+      firstResponseError?.title ||
+      firstResponseError?.code ||
+      parsed?.response?.detail ||
+      parsed?.response?.message ||
+      parsed?.response?.error ||
+      parsed?.response?.error_description ||
+      (typeof firstRootError === "string" ? firstRootError : "") ||
+      firstRootError?.detail ||
+      firstRootError?.title ||
+      firstRootError?.code ||
+      parsed?.message ||
+      parsed?.error ||
+      meta.msg ||
+      "Tumblr API error"
+    ).trim();
+
+    const normalized = detail || "Tumblr API error";
+    if (/^bad request$/i.test(normalized) && code > 0) {
+      throw new Error(`${normalized} (HTTP ${code})`);
+    }
+    throw new Error(normalized);
   }
 
   return {
@@ -281,6 +318,87 @@ function resolveTumblrPostState({ privacy, postTimingMode }) {
   return String(postTimingMode || "").trim() === "add_to_queue" ? "queue" : "published";
 }
 
+function isLikelyTumblrMediaProcessingError(error) {
+  const msg = String(error || "").toLowerCase();
+  if (/media file too large/.test(msg)) return true;
+  if (/magick error|insufficient memory/.test(msg)) return true;
+  if (/invalid format|cannot process|unknown upload error/.test(msg)) return true;
+  return false;
+}
+
+async function uploadTumblrPhotoData({
+  endpointUrl,
+  oauth,
+  token,
+  tokenSecret,
+  caption,
+  tags,
+  postState,
+  markMature,
+  uploadPath,
+  uploadFilename,
+  onProgress,
+}) {
+  const form = new FormData();
+  form.append("type", "photo");
+  form.append("caption", caption);
+  form.append("tags", tags);
+  form.append("state", postState);
+  if (markMature) {
+    form.append("is_nsfw", "true");
+    form.append("content_rating", "adult");
+  }
+
+  const contentType = mime.lookup(uploadPath) || "application/octet-stream";
+  const fileStream = fs.createReadStream(uploadPath);
+  form.append("data", fileStream, {
+    contentType,
+    filename: uploadFilename,
+  });
+
+  const totalLength = Number(fs.statSync(uploadPath).size || 0);
+  if (onProgress && totalLength != null) {
+    let loaded = 0;
+    fileStream.on("data", (chunk) => {
+      loaded += chunk.length;
+      try { onProgress(loaded, totalLength); } catch (_) {}
+    });
+    fileStream.on("end", () => {
+      try { onProgress(totalLength, totalLength); } catch (_) {}
+    });
+  }
+
+  const signatureData = {
+    type: "photo",
+    caption,
+    tags,
+    state: postState,
+    ...(markMature ? { is_nsfw: "true", content_rating: "adult" } : {}),
+  };
+
+  const auth = oauth.toHeader(
+    oauth.authorize({ url: endpointUrl, method: "POST", data: signatureData }, { key: token, secret: tokenSecret })
+  );
+
+  const headers = { "User-Agent": USER_AGENT, ...auth, ...form.getHeaders() };
+
+  const res = await new Promise((resolve, reject) => {
+    const u = new URL(endpointUrl);
+    const req = https.request({ method: "POST", hostname: u.hostname, path: u.pathname + u.search, headers }, (r) => {
+      let data = "";
+      r.on("data", (c) => (data += c));
+      r.on("end", () => resolve({ status: r.statusCode || 0, body: data }));
+    });
+    req.on("error", reject);
+    form.pipe(req);
+  });
+
+  const response = parseApiResponse(res.body, res.status).response;
+  const postId = String(response?.id || response?.id_string || "");
+  if (!postId) throw new Error("Tumblr post created but no post id was returned.");
+  return postId;
+}
+
 async function createPhotoPost({
   consumerKey,
   consumerSecret,
@@ -301,7 +419,6 @@ async function createPhotoPost({
   if (!cleanBlog) throw new Error("Missing Tumblr blog selection.");
 
   const endpointUrl = `${TUMBLR_API}/blog/${encodeURIComponent(cleanBlog)}/post`;
-  const form = new FormData();
 
   const description = String(item?.description || "");
   const title = String(item?.title || "");
@@ -310,68 +427,53 @@ async function createPhotoPost({
   const privacy = String(item?.privacy || "private");
   const postState = resolveTumblrPostState({ privacy, postTimingMode });
 
-  form.append("type", "photo");
-  form.append("caption", caption);
-  form.append("tags", tags);
-  form.append("state", postState);
-  if (markMature) {
-    form.append("is_nsfw", "true");
-    form.append("content_rating", "adult");
-  }
+  const srcPath = String(item?.photoPath || "").trim();
+  if (!srcPath) throw new Error("Missing Tumblr upload photo path.");
+  const originalFilename = path.basename(srcPath);
 
-  const prepared = await prepareImageForUpload(item.photoPath, { maxBytes: TUMBLR_MAX_IMAGE_BYTES });
   try {
-    const contentType = prepared.contentType || mime.lookup(prepared.filePath) || "application/octet-stream";
-    const fileStream = fs.createReadStream(prepared.filePath);
-    form.append("data", fileStream, {
-      contentType,
-      filename: path.basename(item.photoPath),
-    });
-
-    // Byte progress reporting
-    const totalLength = Number(prepared.sizeBytes || fs.statSync(prepared.filePath).size || 0);
-    if (onProgress && totalLength != null) {
-      let loaded = 0;
-      fileStream.on('data', (chunk) => {
-        loaded += chunk.length;
-        try { onProgress(loaded, totalLength); } catch (_) {}
-      });
-      fileStream.on('end', () => {
-        try { onProgress(totalLength, totalLength); } catch (_) {}
-      });
-    }
-
-    const signatureData = {
-      type: "photo",
+    // Primary path: upload original file exactly as selected.
+    return await uploadTumblrPhotoData({
+      endpointUrl,
+      oauth,
+      token,
+      tokenSecret,
       caption,
       tags,
-      state: postState,
-      ...(markMature ? { is_nsfw: "true", content_rating: "adult" } : {}),
-    };
-
-    const auth = oauth.toHeader(
-      oauth.authorize({ url: endpointUrl, method: "POST", data: signatureData }, { key: token, secret: tokenSecret })
-    );
-
-    const headers = { "User-Agent": USER_AGENT, ...auth, ...form.getHeaders() };
-
-    const res = await new Promise((resolve, reject) => {
-      const u = new URL(endpointUrl);
-      const req = https.request({ method: "POST", hostname: u.hostname, path: u.pathname + u.search, headers }, (r) => {
-        let data = "";
-        r.on("data", (c) => (data += c));
-        r.on("end", () => resolve({ status: r.statusCode || 0, body: data }));
-      });
-      req.on("error", reject);
-      form.pipe(req);
+      postState,
+      markMature,
+      uploadPath: srcPath,
+      uploadFilename: originalFilename,
+      onProgress,
     });
+  } catch (error) {
+    if (!isLikelyTumblrMediaProcessingError(error)) {
+      throw error;
+    }
 
-    const response = parseApiResponse(res.body, res.status).response;
-    const postId = String(response?.id || response?.id_string || "");
-    if (!postId) throw new Error("Tumblr post created but no post id was returned.");
-    return postId;
-  } finally {
-    await prepared.cleanup();
+    // Fallback path: only when Tumblr rejects media processing/size.
+    const prepared = await prepareImageForUpload(srcPath, {
+      maxBytes: TUMBLR_MAX_IMAGE_BYTES,
+      maxWidth: 4096,
+      maxHeight: 4096,
+    });
+    try {
+      return await uploadTumblrPhotoData({
+        endpointUrl,
+        oauth,
+        token,
+        tokenSecret,
+        caption,
+        tags,
+        postState,
+        markMature,
+        uploadPath: prepared.filePath,
+        uploadFilename: originalFilename,
+        onProgress,
+      });
+    } finally {
+      await prepared.cleanup();
+    }
   }
 }
 
@@ -386,5 +488,7 @@ module.exports = {
     buildCaption,
     normalizeTagsCsv,
     resolveTumblrPostState,
+    parseApiResponse,
+    isLikelyTumblrMediaProcessingError,
   },
 };

@@ -824,6 +824,54 @@ function normalizeUploadedImageUrlForPost(imageUrl, instanceUrl) {
   }
 }
 
+function buildCrossPostText({ item, postTextMode, prependText, appendText, originalPostUrl }) {
+  const sourceUrl = String(originalPostUrl || "").trim();
+  const baseText = buildPostText({ item, postTextMode, prependText, appendText });
+  const sourceLine = sourceUrl ? `Cross-posted from: ${sourceUrl}` : "";
+  return [baseText, sourceLine].filter(Boolean).join("\n\n");
+}
+
+async function createPostWithUrl({ instanceUrl, accessToken, communityId, item, postUrl, bodyText, nsfw, altText }) {
+  const token = String(accessToken || "").trim();
+  const cid = Number(communityId || 0);
+  const normalizedPostUrl = normalizeUploadedImageUrlForPost(postUrl, instanceUrl);
+  if (!token) throw new Error("Missing Lemmy access token");
+  if (!Number.isFinite(cid) || cid <= 0) throw new Error("Missing Lemmy community id");
+  if (!normalizedPostUrl) throw new Error("Missing Lemmy post URL");
+
+  const payload = {
+    community_id: cid,
+    name: derivePostName(item),
+    body: bodyText || undefined,
+    url: normalizedPostUrl,
+    nsfw: Boolean(nsfw),
+    alt_text: String(altText || "").trim() || undefined,
+    auth: token,
+  };
+
+  const tryCreate = async (version) => {
+    const out = await requestJson({
+      instanceUrl,
+      apiPath: `/api/${version}/post`,
+      method: "POST",
+      accessToken: token,
+      body: payload,
+    });
+    const post = out?.post_view?.post || out?.post || {};
+    return {
+      id: String(post.id || ""),
+      postUrl: String(post.ap_id || "").trim(),
+      url: String(post.ap_id || post.url || normalizedPostUrl || "").trim(),
+    };
+  };
+
+  try {
+    return await tryCreate("v4");
+  } catch {
+    return await tryCreate("v3");
+  }
+}
+
 async function createImagePost({ instanceUrl, accessToken, item, communityId, postTextMode, prependText, appendText, nsfw, imageResizeOptions, instanceLimitsCache, onDiscoveredLimits, uploadConfigCache, onDiscoveredUploadConfig }) {
   const token = String(accessToken || "").trim();
   const cid = Number(communityId || 0);
@@ -842,38 +890,34 @@ async function createImagePost({ instanceUrl, accessToken, item, communityId, po
   });
   const postImageUrl = normalizeUploadedImageUrlForPost(imageUrl, instanceUrl);
   const bodyText = buildPostText({ item, postTextMode, prependText, appendText });
-
-  const payload = {
-    community_id: cid,
-    name: derivePostName(item),
-    body: bodyText || undefined,
-    url: postImageUrl,
-    nsfw: Boolean(nsfw),
-    alt_text: String(item?.description || "").trim() || undefined,
-    auth: token,
+  const created = await createPostWithUrl({
+    instanceUrl,
+    accessToken: token,
+    communityId: cid,
+    item,
+    postUrl: postImageUrl,
+    bodyText,
+    nsfw,
+    altText: String(item?.description || "").trim(),
+  });
+  return {
+    ...created,
+    imageUrl,
   };
+}
 
-  const tryCreate = async (version) => {
-    const out = await requestJson({
-      instanceUrl,
-      apiPath: `/api/${version}/post`,
-      method: "POST",
-      accessToken: token,
-      body: payload,
-    });
-    const post = out?.post_view?.post || out?.post || {};
-    return {
-      id: String(post.id || ""),
-      url: String(post.ap_id || post.url || postImageUrl || ""),
-      imageUrl,
-    };
-  };
-
-  try {
-    return await tryCreate("v4");
-  } catch {
-    return await tryCreate("v3");
-  }
+async function createCrossPost({ instanceUrl, accessToken, item, communityId, originalPostUrl, postTextMode, prependText, appendText, nsfw }) {
+  const bodyText = buildCrossPostText({ item, postTextMode, prependText, appendText, originalPostUrl });
+  return createPostWithUrl({
+    instanceUrl,
+    accessToken,
+    communityId,
+    item,
+    postUrl: originalPostUrl,
+    bodyText,
+    nsfw,
+    altText: "",
+  });
 }
 
 module.exports = {
@@ -883,9 +927,11 @@ module.exports = {
   listSubscribedCommunities,
   getCommunityInfo,
   buildPostText,
+  createCrossPost,
   createImagePost,
   __test__: {
     buildPostText,
+    buildCrossPostText,
     normalizeInstanceUrl,
     extractLemmyImageLimitsFromSitePayload,
     looksLikeLikelyUploadedImageUrl,

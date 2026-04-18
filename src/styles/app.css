@@ -333,12 +333,12 @@ body{
   display:flex;
   flex-direction:column;
   gap:10px;
-  border:1.5px solid rgba(255,255,255,0.12);
+  border:4.5px solid rgba(139,211,255,0.62);
   border-radius:18px;
   padding:8px;
 }
 :root[data-theme="light"] .batch-group{
-  border-color:rgba(0,0,0,0.10);
+  border-color:rgba(47,127,216,0.72);
 }
 .qitem{
   display:grid;

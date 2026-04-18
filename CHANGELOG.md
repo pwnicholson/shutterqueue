@@ -2,7 +2,64 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
+## [0.9.8] - 2026-04-17
+
+### Summary (Beginner-Friendly)
+- This release focuses on safer deletes, clearer warnings, and easier queue editing.
+- If moving a file to Recycle Bin fails, ShutterQueue now keeps that item in your queue so nothing disappears unexpectedly.
+- You can now clone a queue item to quickly make a second version of the same photo with different settings.
+- Duplicate-platform warnings are clearer and less spammy, especially in batch edits.
+
+### Highlights
+- **Safer file deletion**
+  - Delete only removes queue items whose original files were actually moved to Recycle Bin.
+  - Failed delete moves now keep those items in queue and report what happened.
+  - Deleting a file that appears in multiple queue entries now warns you and can clean up all related entries together.
+- **Better queue editing tools**
+  - Added **Clone Queue Item** in the item context menu.
+  - Added **Reset Status** for attempted/uploaded items without losing metadata.
+  - Improved text-field stability while typing by avoiding mid-edit queue refresh replacements.
+- **Clearer duplicate checks**
+  - When the same image is targeted to the same platform more than once, ShutterQueue asks for confirmation.
+  - Batch confirmations are now merged into one dialog with a capped preview list.
+- **Improved diagnostics and retry behavior**
+  - Trash failures now log richer filesystem diagnostics for troubleshooting.
+  - Upload outcome logs now include a final per-item status summary.
+  - Bluesky `NotEnoughResources` is treated as transient and auto-retried.
+- **Lemmy workflow improvements**
+  - Default Lemmy resize is enabled at 2000x2000.
+  - Multi-community posting supports original-post + cross-post flow with retry-safe progress.
+
 ## [0.9.7b] - 2026-04-05
+
+### Post-Release Fixes (2026-04-17)
+- **Delete originals now includes items kept in Flickr group-only mode (restored behavior)** — in the multi-select "Remove + Delete Files" flow, choosing "Keep In Group Additions Queue Only" now again deletes all selected original files while still preserving pending Flickr group-add retry state by detaching those items to `group_only`
+- **Tumblr upload errors now include richer API detail when available** — Tumblr error parsing now supports additional payload shapes (`response.errors` object maps, `response.error_description`, `message`) and upgrades generic "Bad Request" to include HTTP context (`Bad Request (HTTP 400)`) when Tumblr provides no further detail
+- **New context-menu "Reset Status" action for attempted/uploaded items** — right-clicking eligible queue items now shows "Reset Status", which clears upload attempt state (`status`, per-platform states, Flickr group-add states, upload/error markers) and returns items to editable `pending` while preserving all metadata selections (title/description/tags, targets, Flickr groups/albums, location, Lemmy communities, etc.)
+- **Reset Status now appears with Copy/Paste tools and uses a higher-contrast section divider** — moved "Reset Status" into the top context-menu tools group and increased separation contrast with a thicker accent-colored divider for easier visual scanning
+- **Queue batch group outlines are now much bolder for visibility** — the grouped upload box border was increased to 3x thickness (1.5px -> 4.5px) with stronger accent contrast so grouped items are clearly distinguishable from normal item borders
+- **Tumblr now uses original-first upload with targeted media-failure fallback** — uploads now try the original source file first; if Tumblr returns known media-processing failures (e.g. `Media file too large`, `Magick error: Insufficient memory`), ShutterQueue performs a one-time constrained prep retry (10 MB + conservative dimension cap) to avoid server-side convert failures while still preferring original upload by default
+- **Added explicit per-item upload outcome summary logging** — each upload attempt now logs a final `Upload item outcome` entry with item id, final queue status (`done`, `done_warn`, `retry`, `failed`), warning/error counts, and per-platform service-state statuses so "failed again" cases can be traced immediately even when only platform success lines are visible
+- **Delete-to-Recycle Bin now retries abort errors more aggressively and reports zero-move outcomes clearly** — trash moves now use stronger retry timing plus a final grace retry when abort errors persist and the file still exists, and the delete completion alert now explicitly says when zero files were moved (with failed/missing counts) instead of implying success
+- **Delete flow is now partial-safe: failed trash moves are kept in queue** — when deleting selected items, ShutterQueue now removes/detaches only items whose originals were successfully moved to the OS bin (or already missing on disk); items whose trash move failed are kept in queue and explicitly reported so they are never silently removed without their original being trashed
+- **Trash failure logs now include filesystem diagnostics for root-cause analysis** — failed trash entries now log structured error metadata (`errorCode`, `errorErrno`, `errorSyscall`) plus path diagnostics (exists/read/write/access/open checks, parent/root existence, stat/realpath details) so repeated `Operation was aborted` cases can be traced to lock/permission/drive conditions
+- **New queue context-menu action: Clone Queue Item** — right-clicking an item now supports cloning it directly below the source row, copying metadata while resetting upload state and defaulting the clone to no selected target platforms so users can create per-platform variants of the same image
+- **Duplicate platform-on-same-image selection now prompts for confirmation** — when enabling a platform on an item where another queue listing for the same source file already has that platform selected, ShutterQueue now asks for explicit confirmation before allowing duplicate posting to the same platform
+- **Delete-file flow now warns about other pending listings of the same image and removes all related listings on confirm** — if the same source image is still queued elsewhere for upload, delete now warns that future uploads will be impossible; confirming proceeds with delete and removes all queue entries tied to that file path (while still preserving partial-safe behavior if trash move fails)
+- **Duplicate-platform confirmation now includes clearer image context** — the warning prompt now includes the queue item's title and filename (for example, `CN Tower Toronto (PWN0456.jpg)`) so users can clearly identify which listing the duplicate-platform confirmation refers to
+- **Queue typing/cursor stability improved while editing text fields** — background queue polling now skips queue-list refreshes while a queue text input/textarea is actively focused, reducing intermittent cursor jumps and "can't type" moments caused by mid-edit state refresh churn
+- **Batch duplicate-platform confirmations are now merged into one dialog with capped preview** — when enabling a platform across many selected items that conflict with existing same-image targets, ShutterQueue now shows a single confirmation dialog listing up to 10 items and appending `...and other files` for larger selections
+
+### Post-Release Fixes (2026-04-16)
+- **Recycle Bin delete reliability improved on transient OS aborts** — moving originals to the OS bin now retries transient "Operation was aborted" failures automatically before reporting a failure, and delete accounting now treats race-condition missing files as "missing on disk" instead of hard failures
+- **Bluesky `NotEnoughResources` is now treated as a transient retryable failure** — this error now follows the automatic hourly retry path (up to normal retry limits) instead of immediately becoming a permanent failure
+
+### Post-Release Fixes (2026-04-14)
+- **Lemmy now defaults to recommended 2000x2000 image resizing** — new Lemmy installs now start with manual resize enabled at 2000 px by 2000 px, the retry fallback for suspected size-limit failures now also uses 2000x2000, and the Setup tab now recommends keeping that limit unless the instance clearly supports larger uploads
+- **Removed the old in-app Lemmy instability warning** — the Setup and queue-editor Lemmy panels no longer show the generic "integration is unreliable" warning banner; that space is now used for actionable guidance about image-size limits and the recommended 2000x2000 resize setting
+- **Lemmy can now cross-post to multiple communities from one original post** — the first selected Lemmy community is treated as the original post destination, additional selected communities are posted as cross-posts that link back to that original post, and right-clicking a selected community in the single-item Lemmy editor now lets you switch which community is the original post target
+- **Lemmy cross-post retries no longer duplicate the original post** — when the original post succeeds but some cross-post communities fail transiently, ShutterQueue now saves the original post URL plus the completed/permanently failed community lists and only retries the remaining communities later instead of reposting the original
+- **Manual validation confirmed for Lemmy cross-post flow** — original-post + cross-post behavior validated successfully in live use; first-selected default + right-click switch behavior worked as expected
 
 ### Post-Release Fixes (2026-04-06)
 - **Scheduler start now uses an in-app datetime picker instead of the native OS dialog** — "Start Scheduler" now opens an in-app modal with two options: "Upload first item now" (immediate) or "Schedule first upload at: [date/time picker]" (defaults to tomorrow at 06:00 local time); the chosen time is passed through `bumpToNextAllowed` and the configured time-window/days rules before being set as `nextRunAt`; removes the limited native OS dialog that only offered "now", "on delay", or "cancel"

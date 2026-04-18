@@ -575,9 +575,9 @@ const store = new Store({
     lemmyHasAccessToken: false,
     lemmyUsername: "",
     lemmyPostTextMode: "merge_title_description_tags",
-    lemmyImageResizeEnabled: false,
-    lemmyImageResizeMaxWidth: 0,
-    lemmyImageResizeMaxHeight: 0,
+    lemmyImageResizeEnabled: true,
+    lemmyImageResizeMaxWidth: 2000,
+    lemmyImageResizeMaxHeight: 2000,
     lemmyCommunitiesCache: [],
     blueskyPrependText: "",
     blueskyAppendText: "",
@@ -697,6 +697,7 @@ function isTransientNetworkError(msg) {
   const s = String(msg || "").toLowerCase();
   if (/http 5\d\d|\bstatus[: ]+5\d\d|\b500\b|\b502\b|\b503\b|\b504\b/.test(s)) return true;
   if (/\b429\b|too.?many.?requests?|rate.?limit/.test(s)) return true;
+  if (/notenoughresources|not enough resources/.test(s)) return true;
   if (/socket hang.?up|econnreset|etimedout|econnrefused|enotfound/.test(s)) return true;
   if (/connection.*reset|connection.*refused|network.*err|read econnreset/.test(s)) return true;
   return false;
@@ -745,6 +746,20 @@ function looksLikeLemmySizeLimitError(msg) {
   // Socket hang-up on valid endpoints alongside 404s on wrong endpoints (not auth errors)
   if (/socket hang.?up/.test(s) && /HTTP 404/.test(s) && !/401|403|unauthorized|forbidden/i.test(s)) return true;
   return false;
+}
+
+function getItemLemmyCommunityIds(item) {
+  const fromArray = Array.isArray(item?.lemmyCommunityIds)
+    ? item.lemmyCommunityIds.map((v) => String(v || "").trim()).filter(Boolean)
+    : [];
+  const legacyCommunityId = String(item?.lemmyCommunityId || "").trim();
+  return Array.from(new Set([...fromArray, ...(legacyCommunityId ? [legacyCommunityId] : [])]));
+}
+
+function getItemLemmyOriginalCommunityId(item, communityIds = getItemLemmyCommunityIds(item)) {
+  const stored = String(item?.lemmyOriginalCommunityId || "").trim();
+  if (stored && communityIds.includes(stored)) return stored;
+  return communityIds[0] || "";
 }
 
 function isAuthed() {
@@ -2627,6 +2642,24 @@ ipcMain.handle("queue:remove", async (_e, { ids }) => {
   logEvent("INFO", "Removed items from queue", { removed: list.length, queueSize: Array.isArray(out) ? out.length : 0 });
   return out;
 });
+ipcMain.handle("queue:removeHard", async (_e, { ids }) => {
+  const list = Array.isArray(ids) ? ids : [];
+  const before = queue.loadQueue();
+  const out = await queue.removeIdsHard(list);
+  pruneImageCacheForRemovedItems(before, out);
+  logEvent("INFO", "Removed items from queue (hard)", { removed: list.length, queueSize: Array.isArray(out) ? out.length : 0 });
+  return out;
+});
+ipcMain.handle("queue:cloneItem", async (_e, { sourceId, options } = {}) => {
+  const src = String(sourceId || "").trim();
+  const result = await queue.cloneItemBelow(src, options || {});
+  logEvent("INFO", "Cloned queue item", {
+    sourceId: src,
+    clonedId: String(result?.clonedId || ""),
+    queueSize: Array.isArray(result?.queue) ? result.queue.length : 0,
+  });
+  return result;
+});
 
 function resolvePhotoPathOnDisk(photoPath) {
   const original = String(photoPath || "").trim();
@@ -2638,6 +2671,99 @@ function resolvePhotoPathOnDisk(photoPath) {
   }
   return "";
 }
+
+function checkAccess(filePath, mode) {
+  try {
+    fs.accessSync(filePath, mode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildTrashFailureDiagnostics(photoPath) {
+  const p = String(photoPath || "").trim();
+  const parentDir = path.dirname(p);
+  const root = path.parse(p).root;
+  const info = {
+    pathLength: p.length,
+    parentDir,
+    root,
+    exists: false,
+    parentExists: false,
+    rootExists: false,
+    fileReadable: false,
+    fileWritable: false,
+    parentReadable: false,
+    parentWritable: false,
+    canOpenRead: false,
+    canOpenReadWrite: false,
+    isFile: false,
+    sizeBytes: null,
+    mtimeIso: "",
+    statError: "",
+    realPath: "",
+    realPathError: "",
+  };
+
+  try {
+    info.exists = fs.existsSync(p);
+  } catch {
+    info.exists = false;
+  }
+
+  try {
+    info.parentExists = fs.existsSync(parentDir);
+  } catch {
+    info.parentExists = false;
+  }
+
+  try {
+    info.rootExists = root ? fs.existsSync(root) : false;
+  } catch {
+    info.rootExists = false;
+  }
+
+  if (info.exists) {
+    info.fileReadable = checkAccess(p, fs.constants.R_OK);
+    info.fileWritable = checkAccess(p, fs.constants.W_OK);
+    try {
+      const stat = fs.statSync(p);
+      info.isFile = stat.isFile();
+      info.sizeBytes = Number(stat.size);
+      info.mtimeIso = new Date(stat.mtimeMs || stat.mtime || Date.now()).toISOString();
+    } catch (e) {
+      info.statError = String(e?.message || e || "stat failed");
+    }
+    try {
+      const fd = fs.openSync(p, "r");
+      fs.closeSync(fd);
+      info.canOpenRead = true;
+    } catch {
+      info.canOpenRead = false;
+    }
+    try {
+      const fd = fs.openSync(p, "r+");
+      fs.closeSync(fd);
+      info.canOpenReadWrite = true;
+    } catch {
+      info.canOpenReadWrite = false;
+    }
+    try {
+      info.realPath = fs.realpathSync(p);
+    } catch (e) {
+      info.realPathError = String(e?.message || e || "realpath failed");
+    }
+  }
+
+  if (info.parentExists) {
+    info.parentReadable = checkAccess(parentDir, fs.constants.R_OK);
+    info.parentWritable = checkAccess(parentDir, fs.constants.W_OK);
+  }
+
+  return info;
+}
+
 ipcMain.handle("queue:detachToGroupOnly", async (_e, { ids }) => {
   const list = Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
   const out = queue.detachToGroupOnly(list);
@@ -2654,36 +2780,76 @@ ipcMain.handle("queue:removeAndTrash", async (_e, { ids }) => {
   let failedCount = 0;
   const photoPaths = [];
   const seen = new Set();
+  const initialMissingIds = [];
+  const resolvedPathById = new Map();
   for (const id of list) {
     const it = byId.get(String(id || ""));
     if (!it) continue;
     const p = resolvePhotoPathOnDisk(it.photoPath);
-    if (!p) { skippedMissing++; continue; }
+    if (!p) {
+      skippedMissing++;
+      initialMissingIds.push(String(id || ""));
+      continue;
+    }
+    resolvedPathById.set(String(id || ""), p);
     if (seen.has(p)) continue;
     seen.add(p);
     photoPaths.push(p);
   }
-  for (const photoPath of photoPaths) {
-    try {
-      await shell.trashItem(photoPath);
-      movedCount++;
-    } catch (e) {
-      failedCount++;
-      logEvent("WARN", "Failed to move original file to trash", {
-        photoPath,
-        error: String(e),
-      });
+  const trashMove = await trash.movePathsToTrash(photoPaths, {
+    trashItem: (photoPath) => shell.trashItem(photoPath),
+    maxAttempts: 8,
+    retryDelayMs: 350,
+  });
+  movedCount += Number(trashMove?.movedCount || 0);
+  skippedMissing += Number(trashMove?.skippedMissing || 0);
+  failedCount += Number(trashMove?.failedCount || 0);
+  const failedPathSet = new Set(
+    (Array.isArray(trashMove?.failed) ? trashMove.failed : [])
+      .map((f) => String(f?.photoPath || "").trim())
+      .filter(Boolean)
+  );
+  const deletedIds = [];
+  const failedIds = [];
+  const initialMissingIdSet = new Set(initialMissingIds);
+  for (const id of list) {
+    const sid = String(id || "");
+    if (initialMissingIdSet.has(sid)) {
+      deletedIds.push(sid);
+      continue;
     }
+    const p = String(resolvedPathById.get(sid) || "").trim();
+    if (!p) continue;
+    if (failedPathSet.has(p)) failedIds.push(sid);
+    else deletedIds.push(sid);
+  }
+  for (const failure of Array.isArray(trashMove?.failed) ? trashMove.failed : []) {
+    const failedPath = String(failure?.photoPath || "");
+    logEvent("WARN", "Failed to move original file to trash", {
+      photoPath: failedPath,
+      error: String(failure?.error || "Unknown trash move failure"),
+      errorName: String(failure?.errorName || ""),
+      errorCode: String(failure?.errorCode || ""),
+      errorErrno: Number.isFinite(Number(failure?.errorErrno)) ? Number(failure.errorErrno) : null,
+      errorSyscall: String(failure?.errorSyscall || ""),
+      attempts: Number(failure?.attempts || 1),
+      diagnostics: buildTrashFailureDiagnostics(failedPath),
+    });
+  }
+  const retriedPaths = Array.isArray(trashMove?.retried) ? trashMove.retried.length : 0;
+  if (retriedPaths > 0) {
+    logEvent("INFO", "Retried moving original files to trash after transient abort", { retriedPaths });
   }
 
-  const out = await queue.removeIds(list);
+  const out = await queue.removeIds(deletedIds);
   pruneImageCacheForRemovedItems(before, out);
   const trashLabel = trash.getTrashLabel(process.platform);
   logEvent("INFO", "Removed queue items and moved originals to trash", {
-    removed: list.length,
+    removed: deletedIds.length,
     movedCount,
     skippedMissing,
     failedCount,
+    keptInQueue: failedIds.length,
     queueSize: Array.isArray(out) ? out.length : 0,
   });
 
@@ -2693,6 +2859,8 @@ ipcMain.handle("queue:removeAndTrash", async (_e, { ids }) => {
     movedCount,
     skippedMissing,
     failedCount,
+    deletedIds,
+    failedIds,
     trashLabel,
   };
 });
@@ -2706,26 +2874,65 @@ ipcMain.handle("queue:trashOriginalsByIds", async (_e, { ids }) => {
   let failedCount = 0;
   const photoPaths = [];
   const seen = new Set();
+  const initialMissingIds = [];
+  const resolvedPathById = new Map();
   for (const id of list) {
     const it = byId.get(String(id || ""));
     if (!it) continue;
     const p = resolvePhotoPathOnDisk(it.photoPath);
-    if (!p) { skippedMissing++; continue; }
+    if (!p) {
+      skippedMissing++;
+      initialMissingIds.push(String(id || ""));
+      continue;
+    }
+    resolvedPathById.set(String(id || ""), p);
     if (seen.has(p)) continue;
     seen.add(p);
     photoPaths.push(p);
   }
-  for (const photoPath of photoPaths) {
-    try {
-      await shell.trashItem(photoPath);
-      movedCount++;
-    } catch (e) {
-      failedCount++;
-      logEvent("WARN", "Failed to move original file to trash", {
-        photoPath,
-        error: String(e),
-      });
+  const trashMove = await trash.movePathsToTrash(photoPaths, {
+    trashItem: (photoPath) => shell.trashItem(photoPath),
+    maxAttempts: 8,
+    retryDelayMs: 350,
+  });
+  movedCount += Number(trashMove?.movedCount || 0);
+  skippedMissing += Number(trashMove?.skippedMissing || 0);
+  failedCount += Number(trashMove?.failedCount || 0);
+  const failedPathSet = new Set(
+    (Array.isArray(trashMove?.failed) ? trashMove.failed : [])
+      .map((f) => String(f?.photoPath || "").trim())
+      .filter(Boolean)
+  );
+  const deletedIds = [];
+  const failedIds = [];
+  const initialMissingIdSet = new Set(initialMissingIds);
+  for (const id of list) {
+    const sid = String(id || "");
+    if (initialMissingIdSet.has(sid)) {
+      deletedIds.push(sid);
+      continue;
     }
+    const p = String(resolvedPathById.get(sid) || "").trim();
+    if (!p) continue;
+    if (failedPathSet.has(p)) failedIds.push(sid);
+    else deletedIds.push(sid);
+  }
+  for (const failure of Array.isArray(trashMove?.failed) ? trashMove.failed : []) {
+    const failedPath = String(failure?.photoPath || "");
+    logEvent("WARN", "Failed to move original file to trash", {
+      photoPath: failedPath,
+      error: String(failure?.error || "Unknown trash move failure"),
+      errorName: String(failure?.errorName || ""),
+      errorCode: String(failure?.errorCode || ""),
+      errorErrno: Number.isFinite(Number(failure?.errorErrno)) ? Number(failure.errorErrno) : null,
+      errorSyscall: String(failure?.errorSyscall || ""),
+      attempts: Number(failure?.attempts || 1),
+      diagnostics: buildTrashFailureDiagnostics(failedPath),
+    });
+  }
+  const retriedPaths = Array.isArray(trashMove?.retried) ? trashMove.retried.length : 0;
+  if (retriedPaths > 0) {
+    logEvent("INFO", "Retried moving original files to trash after transient abort", { retriedPaths });
   }
 
   const trashLabel = trash.getTrashLabel(process.platform);
@@ -2734,6 +2941,8 @@ ipcMain.handle("queue:trashOriginalsByIds", async (_e, { ids }) => {
     movedCount,
     skippedMissing,
     failedCount,
+    succeededIds: deletedIds.length,
+    failedIds: failedIds.length,
   });
 
   return {
@@ -2741,6 +2950,8 @@ ipcMain.handle("queue:trashOriginalsByIds", async (_e, { ids }) => {
     movedCount,
     skippedMissing,
     failedCount,
+    deletedIds,
+    failedIds,
     trashLabel,
   };
 });
@@ -4132,13 +4343,7 @@ async function uploadNowOneInternal(options = {}) {
         errorParts.push(`Lemmy: ${msg}`);
       } else {
         const lauth = getLemmyAuth();
-        const communityIds = Array.isArray(next.lemmyCommunityIds)
-          ? Array.from(new Set(next.lemmyCommunityIds.map((v) => String(v || "").trim()).filter(Boolean)))
-          : [];
-        if (!communityIds.length) {
-          const legacyCommunityId = String(next.lemmyCommunityId || "").trim();
-          if (legacyCommunityId) communityIds.push(legacyCommunityId);
-        }
+        const communityIds = getItemLemmyCommunityIds(next);
         if (!communityIds.length) {
           const msg = "Select a Lemmy community in the editor before uploading.";
           next.serviceStates.lemmy = { status: "failed", lastError: msg };
@@ -4209,28 +4414,74 @@ async function uploadNowOneInternal(options = {}) {
             // apply a conservative resize on this retry attempt so it has a real chance of succeeding.
             if (next.serviceStates?.lemmy?.possibleSizeLimit === true && !lemmyImageResizeOptions.enabled) {
               lemmyImageResizeOptions.enabled = true;
-              if (!lemmyImageResizeOptions.maxWidth) lemmyImageResizeOptions.maxWidth = 3000;
-              if (!lemmyImageResizeOptions.maxHeight) lemmyImageResizeOptions.maxHeight = 3000;
+              if (!lemmyImageResizeOptions.maxWidth) lemmyImageResizeOptions.maxWidth = 2000;
+              if (!lemmyImageResizeOptions.maxHeight) lemmyImageResizeOptions.maxHeight = 2000;
               logEvent("INFO", "Lemmy: auto-applying resize due to possible image size limit", { id: next.id });
             }
             const lemmyInstanceLimitsCache = store.get("lemmyInstanceLimitsCache") || {};
             const lemmyInstanceUploadConfigCache = store.get("lemmyInstanceUploadConfigCache") || {};
-            let firstPost = null;
-            let failedPosts = 0;
-            let transientFails = 0;
+            const communityIdSet = new Set(communityIds);
+            const prevState = next.serviceStates?.lemmy || {};
+            const originalCommunityId = getItemLemmyOriginalCommunityId(next, communityIds);
+            const orderedCommunityIds = [originalCommunityId, ...communityIds.filter((communityId) => communityId !== originalCommunityId)];
+            const completedCommunityIds = new Set(
+              (Array.isArray(prevState.completedCommunityIds) ? prevState.completedCommunityIds : [])
+                .map((communityId) => String(communityId || "").trim())
+                .filter((communityId) => communityIdSet.has(communityId))
+            );
+            const permanentlyFailedCommunityIds = new Set(
+              (Array.isArray(prevState.permanentlyFailedCommunityIds) ? prevState.permanentlyFailedCommunityIds : [])
+                .map((communityId) => String(communityId || "").trim())
+                .filter((communityId) => communityIdSet.has(communityId))
+            );
+            const firstFailedAt = prevState.firstFailedAt || new Date().toISOString();
+            const MAX_LEMMY_AUTO_RETRIES = 8;
+            let originalPostId = String(prevState.originalPostId || "").trim();
+            let originalPostUrl = String(prevState.originalPostUrl || "").trim();
+            if (!/^https?:\/\//i.test(originalPostUrl)) {
+              const remoteCandidate = String(prevState.remoteId || "").trim();
+              originalPostUrl = /^https?:\/\//i.test(remoteCandidate) ? remoteCandidate : "";
+            }
+            const itemForPost = {
+              ...next,
+              tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+            };
             let sizeLimitHints = 0;
+            let transientFailedCommunities = [];
             let stopRemainingCommunities = false;
-            for (const communityId of communityIds) {
-              if (stopRemainingCommunities) break;
+            const markCommunityFailure = async (communityId, postMsg, mode) => {
+              const isTransient = isLemmyTransientError(postMsg);
+              const isPossibleSizeLimit = looksLikeLemmySizeLimitError(postMsg);
+              if (isTransient) transientFailedCommunities.push(String(communityId || ""));
+              else permanentlyFailedCommunityIds.add(String(communityId || ""));
+              if (isPossibleSizeLimit) sizeLimitHints += 1;
+              const communityLabel = await describeCommunity(communityId);
+              const readableMsg = humanizeLemmyError(postMsg);
+              warningParts.push(`Lemmy (${communityLabel}): ${readableMsg}`);
+              logEvent("WARN", mode === "crosspost" ? "Lemmy cross-post failed for community" : "Lemmy upload failed for community", {
+                id: next.id,
+                communityId,
+                communityLabel,
+                error: postMsg,
+              });
+              if (/invalid_url/i.test(postMsg)) {
+                stopRemainingCommunities = true;
+                warningParts.push(
+                  mode === "crosspost"
+                    ? "Lemmy: stopped remaining cross-post attempts after invalid_url (fatal URL validation error)."
+                    : "Lemmy: stopped remaining community attempts after invalid_url (fatal URL validation error)."
+                );
+              }
+              return isTransient;
+            };
+
+            if (!completedCommunityIds.has(originalCommunityId) && !permanentlyFailedCommunityIds.has(originalCommunityId)) {
               try {
                 const post = await lemmy.createImagePost({
                   instanceUrl: lauth.instanceUrl,
                   accessToken: lauth.accessToken,
-                  item: {
-                    ...next,
-                    tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
-                  },
-                  communityId,
+                  item: itemForPost,
+                  communityId: originalCommunityId,
                   postTextMode: lemmyPostTextMode,
                   prependText: lemmyPrependText,
                   appendText: lemmyAppendText,
@@ -4249,34 +4500,62 @@ async function uploadNowOneInternal(options = {}) {
                     store.set("lemmyInstanceUploadConfigCache", current);
                   },
                 });
-                if (!firstPost) firstPost = post;
-                logEvent("INFO", "Uploaded to Lemmy", { id: next.id, postId: post.id || "", communityId });
+                originalPostId = String(post.id || "").trim();
+                originalPostUrl = String(post.postUrl || "").trim();
+                if (!originalPostId) {
+                  throw new Error("Lemmy original post returned no post identifier.");
+                }
+                if (!originalPostUrl) {
+                  throw new Error("Lemmy original post returned no usable post URL for cross-posting.");
+                }
+                completedCommunityIds.add(originalCommunityId);
+                logEvent("INFO", "Uploaded original post to Lemmy", { id: next.id, postId: originalPostId, communityId: originalCommunityId });
               } catch (postErr) {
-                failedPosts += 1;
                 const postMsg = postErr?.message ? String(postErr.message) : String(postErr);
-                if (isLemmyTransientError(postMsg)) transientFails += 1;
-                if (looksLikeLemmySizeLimitError(postMsg)) sizeLimitHints += 1;
-                const communityLabel = await describeCommunity(communityId);
-                const readableMsg = humanizeLemmyError(postMsg);
-                warningParts.push(`Lemmy (${communityLabel}): ${readableMsg}`);
-                logEvent("WARN", "Lemmy upload failed for community", { id: next.id, communityId, communityLabel, error: postMsg });
-                if (/invalid_url/i.test(postMsg)) {
-                  stopRemainingCommunities = true;
-                  warningParts.push("Lemmy: stopped remaining community attempts after invalid_url (fatal URL validation error).");
+                await markCommunityFailure(originalCommunityId, postMsg, "original");
+              }
+            }
+
+            if (completedCommunityIds.has(originalCommunityId) && originalPostUrl) {
+              for (const communityId of orderedCommunityIds.slice(1)) {
+                if (stopRemainingCommunities) break;
+                if (completedCommunityIds.has(communityId) || permanentlyFailedCommunityIds.has(communityId)) continue;
+                try {
+                  const post = await lemmy.createCrossPost({
+                    instanceUrl: lauth.instanceUrl,
+                    accessToken: lauth.accessToken,
+                    item: itemForPost,
+                    communityId,
+                    originalPostUrl,
+                    postTextMode: lemmyPostTextMode,
+                    prependText: lemmyPrependText,
+                    appendText: lemmyAppendText,
+                    nsfw: Number(next.safetyLevel || 1) >= 2,
+                  });
+                  completedCommunityIds.add(communityId);
+                  logEvent("INFO", "Cross-posted to Lemmy community", { id: next.id, postId: post.id || "", communityId, originalPostUrl });
+                } catch (postErr) {
+                  const postMsg = postErr?.message ? String(postErr.message) : String(postErr);
+                  await markCommunityFailure(communityId, postMsg, "crosspost");
+                  if (/invalid_url/i.test(postMsg)) {
+                    for (const remainingCommunityId of orderedCommunityIds.slice(1)) {
+                      if (completedCommunityIds.has(remainingCommunityId)) continue;
+                      if (remainingCommunityId === communityId) continue;
+                      permanentlyFailedCommunityIds.add(remainingCommunityId);
+                    }
+                  }
                 }
               }
             }
 
-            if (failedPosts === communityIds.length) {
-              if (transientFails === communityIds.length) {
-                // All failures were transient server/network errors — schedule automatic retry
-                const prevState = next.serviceStates?.lemmy || {};
+            const remainingRetryCommunityIds = orderedCommunityIds.filter(
+              (communityId) => !completedCommunityIds.has(communityId) && !permanentlyFailedCommunityIds.has(communityId)
+            );
+            const remoteId = String(originalPostUrl || originalPostId || prevState.remoteId || "").trim();
+
+            if (!completedCommunityIds.has(originalCommunityId)) {
+              if (remainingRetryCommunityIds.includes(originalCommunityId)) {
                 const retryCount = (Number(prevState.retryCount) || 0) + 1;
-                const firstFailedAt = prevState.firstFailedAt || new Date().toISOString();
-                // Give up after 8 retries (~8 hours of trying). A consistent network-level
-                // rejection is unlikely to resolve on its own — token may have expired or
-                // the server config may have changed. User should re-authorize.
-                const MAX_LEMMY_AUTO_RETRIES = 8;
                 if (retryCount > MAX_LEMMY_AUTO_RETRIES) {
                   throw new Error(
                     `Lemmy image upload failed after ${MAX_LEMMY_AUTO_RETRIES} automatic retries. ` +
@@ -4295,19 +4574,59 @@ async function uploadNowOneInternal(options = {}) {
                     ? "Image may be too large for the server — will retry with automatic resizing."
                     : "Server temporarily unavailable.",
                   possibleSizeLimit,
+                  remoteId,
+                  originalCommunityId,
+                  originalPostId,
+                  originalPostUrl,
+                  completedCommunityIds: Array.from(completedCommunityIds),
+                  permanentlyFailedCommunityIds: Array.from(permanentlyFailedCommunityIds),
                 };
                 if (possibleSizeLimit) {
-                  warningParts.push(`Lemmy: Upload failed — the image may be too large for the server (received 502/connection errors). Will retry with automatic resizing at ${retryAfter}. (attempt ${retryCount} of ${MAX_LEMMY_AUTO_RETRIES}) Tip: enable Lemmy image resizing in Settings to avoid this.`);
+                  warningParts.push(`Lemmy: Upload failed — the image may be too large for the server (received 502/connection errors). Will retry with automatic resizing at ${retryAfter}. (attempt ${retryCount} of ${MAX_LEMMY_AUTO_RETRIES}) Tip: keeping Lemmy image resizing at 2000x2000 usually avoids this.`);
                 } else {
                   warningParts.push(`Lemmy: Server temporarily unavailable — will retry automatically at ${retryAfter}. (attempt ${retryCount} of ${MAX_LEMMY_AUTO_RETRIES})`);
                 }
-                logEvent("WARN", "Lemmy upload will retry (transient server error)", { id: next.id, retryCount, maxRetries: MAX_LEMMY_AUTO_RETRIES, possibleSizeLimit });
-                // Note: successfulServices is NOT incremented — item status resolution handles this
+                logEvent("WARN", "Lemmy upload will retry (original post failed transiently)", { id: next.id, retryCount, maxRetries: MAX_LEMMY_AUTO_RETRIES, possibleSizeLimit });
               } else {
-                throw new Error("Failed to post to all selected Lemmy communities.");
+                throw new Error("Failed to create the original Lemmy post.");
+              }
+            } else if (remainingRetryCommunityIds.length) {
+              const retryCount = (Number(prevState.retryCount) || 0) + 1;
+              if (retryCount > MAX_LEMMY_AUTO_RETRIES) {
+                next.serviceStates.lemmy = {
+                  status: "done",
+                  remoteId,
+                  uploadedAt: new Date().toISOString(),
+                  originalCommunityId,
+                  originalPostId,
+                  originalPostUrl,
+                  completedCommunityIds: Array.from(completedCommunityIds),
+                  permanentlyFailedCommunityIds: Array.from(new Set([...permanentlyFailedCommunityIds, ...remainingRetryCommunityIds])),
+                };
+                successfulServices += 1;
+                warningParts.push(`Lemmy: cross-posting gave up on ${remainingRetryCommunityIds.length} remaining ${remainingRetryCommunityIds.length === 1 ? "community" : "communities"} after ${MAX_LEMMY_AUTO_RETRIES} automatic retries.`);
+                warningParts.push(`Lemmy: posted to ${completedCommunityIds.size}/${communityIds.length} communities.`);
+              } else {
+                const retryAfter = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+                next.serviceStates.lemmy = {
+                  status: "retry",
+                  retryAfter,
+                  retryCount,
+                  firstFailedAt,
+                  lastError: "Some Lemmy cross-posts are still retrying.",
+                  remoteId,
+                  originalCommunityId,
+                  originalPostId,
+                  originalPostUrl,
+                  completedCommunityIds: Array.from(completedCommunityIds),
+                  permanentlyFailedCommunityIds: Array.from(permanentlyFailedCommunityIds),
+                };
+                successfulServices += 1;
+                warningParts.push(`Lemmy: posted to ${completedCommunityIds.size}/${communityIds.length} communities.`);
+                warningParts.push(`Lemmy: original post is up. Will retry ${remainingRetryCommunityIds.length} remaining ${remainingRetryCommunityIds.length === 1 ? "community" : "communities"} automatically at ${retryAfter}. (attempt ${retryCount} of ${MAX_LEMMY_AUTO_RETRIES})`);
+                logEvent("WARN", "Lemmy cross-posts will retry", { id: next.id, retryCount, maxRetries: MAX_LEMMY_AUTO_RETRIES, remainingCommunities: remainingRetryCommunityIds.length });
               }
             } else {
-              const remoteId = String(firstPost?.url || firstPost?.id || "").trim();
               if (!remoteId) {
                 throw new Error("Lemmy upload returned no post identifier.");
               }
@@ -4316,10 +4635,15 @@ async function uploadNowOneInternal(options = {}) {
                 status: "done",
                 remoteId,
                 uploadedAt: new Date().toISOString(),
+                originalCommunityId,
+                originalPostId,
+                originalPostUrl,
+                completedCommunityIds: Array.from(completedCommunityIds),
+                permanentlyFailedCommunityIds: Array.from(permanentlyFailedCommunityIds),
               };
               successfulServices += 1;
-              if (failedPosts > 0) {
-                warningParts.push(`Lemmy: posted to ${communityIds.length - failedPosts}/${communityIds.length} communities.`);
+              if (permanentlyFailedCommunityIds.size > 0) {
+                warningParts.push(`Lemmy: posted to ${completedCommunityIds.size}/${communityIds.length} communities.`);
               }
             }
           } catch (e) {
@@ -4339,6 +4663,17 @@ async function uploadNowOneInternal(options = {}) {
       next.status = "failed";
       next.lastError = msg;
       queue.saveQueue(q);
+      logEvent("INFO", "Upload item outcome", {
+        id: next.id,
+        outcome: "failed",
+        finalStatus: next.status,
+        successfulServices: 0,
+        retryingServices: 0,
+        warningCount: 0,
+        errorCount: 1,
+        services: {},
+        message: msg,
+      });
       return { ok: false, error: msg };
     }
 
@@ -4358,6 +4693,23 @@ async function uploadNowOneInternal(options = {}) {
     const retryingServices = (next.targetServices || []).filter(
       svc => next.serviceStates && next.serviceStates[svc] && next.serviceStates[svc].status === "retry"
     ).length;
+    const perServiceStatus = {};
+    for (const svc of (next.targetServices || [])) {
+      perServiceStatus[String(svc)] = String(next.serviceStates?.[svc]?.status || "not_attempted");
+    }
+    const logUploadOutcome = (outcome, extra = {}) => {
+      logEvent("INFO", "Upload item outcome", {
+        id: next.id,
+        outcome,
+        finalStatus: next.status,
+        successfulServices,
+        retryingServices,
+        warningCount: warningParts.length,
+        errorCount: errorParts.length,
+        services: perServiceStatus,
+        ...extra,
+      });
+    };
 
     if (successfulServices === 0 && retryingServices > 0) {
       // No services succeeded yet, but transient failures will retry automatically (e.g. Lemmy server outage).
@@ -4365,6 +4717,7 @@ async function uploadNowOneInternal(options = {}) {
       next.status = "retry";
       next.lastError = warningParts.filter(Boolean).join(" | ") || "Server temporarily unavailable; will retry automatically.";
       queue.saveQueue(q);
+      logUploadOutcome("retry_pending", { message: next.lastError });
       return { ok: true, warnings: warningParts.filter(Boolean) };
     }
 
@@ -4374,6 +4727,7 @@ async function uploadNowOneInternal(options = {}) {
       next.lastError = msg;
       store.set("lastError", msg);
       queue.saveQueue(q);
+      logUploadOutcome("failed", { message: msg });
       return { ok: false, error: msg };
     }
 
@@ -4381,6 +4735,7 @@ async function uploadNowOneInternal(options = {}) {
       next.status = "done_warn";
       next.lastError = combinedMessages.join(" | ");
       queue.saveQueue(q);
+      logUploadOutcome("done_with_warnings", { message: next.lastError });
       return { ok: true, photoId: next.photoId || "", warnings: combinedMessages };
     }
 
@@ -4388,6 +4743,7 @@ async function uploadNowOneInternal(options = {}) {
     next.lastError = "";
     queue.saveQueue(q);
     store.set("lastError", "");
+    logUploadOutcome("done");
     return { ok: true, photoId: next.photoId || "" };
   } catch (err) {
     const msg = err?.message ? String(err.message) : String(err);
@@ -4400,6 +4756,17 @@ async function uploadNowOneInternal(options = {}) {
       next.status = "failed";
       next.lastError = msg;
       queue.saveQueue(q);
+      logEvent("INFO", "Upload item outcome", {
+        id: next.id,
+        outcome: "failed",
+        finalStatus: next.status,
+        successfulServices: 0,
+        retryingServices: 0,
+        warningCount: 0,
+        errorCount: 1,
+        services: {},
+        message: msg,
+      });
     }
     return { ok: false, error: msg };
   } finally {
@@ -4583,6 +4950,7 @@ async function processLemmyRetries() {
     // The Lemmy upload guard checks !== "done", so "retry" still allows re-entry.
     // Set retryAfter to now so the display always shows a concrete timestamp ("overdue") while uploading.
     liveItem.serviceStates.lemmy = {
+      ...ls,
       status: "retry",
       retryAfter: new Date().toISOString(),
       retryCount: ls.retryCount || 0,

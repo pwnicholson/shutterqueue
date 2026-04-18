@@ -5,6 +5,7 @@ const lemmy = require("./lemmy.cjs");
 
 const {
   buildPostText,
+  buildCrossPostText,
   normalizeInstanceUrl,
   extractLemmyImageLimitsFromSitePayload,
   looksLikeLikelyUploadedImageUrl,
@@ -117,4 +118,13 @@ test("Lemmy buildPostText skips empty title in merge modes", () => {
   assert.equal(text, "Nice shot");
   // Title should not appear as a blank leading line
   assert.ok(!text.startsWith("\n"));
+});
+
+test("Lemmy buildCrossPostText appends original post URL", () => {
+  const text = buildCrossPostText({
+    item: { title: "Title", description: "Description", tags: "tag one" },
+    postTextMode: "merge_title_description_tags",
+    originalPostUrl: "https://lemmy.world/post/123",
+  });
+  assert.equal(text, "Title\nDescription\n#tagone\n\nCross-posted from: https://lemmy.world/post/123");
 });

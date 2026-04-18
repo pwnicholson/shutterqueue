@@ -333,6 +333,7 @@ async function addPaths(paths) {
       albumIds: [],
       createAlbums: [],
       lemmyCommunityIds: [],
+      lemmyOriginalCommunityId: "",
       privacy: "private",
       safetyLevel: 1,
       status: "pending",
@@ -387,6 +388,11 @@ function normalizeImportedQueue(input) {
       const legacyCommunityId = String(raw.lemmyCommunityId || "").trim();
       if (legacyCommunityId) lemmyCommunityIds.push(legacyCommunityId);
     }
+    const lemmyOriginalCommunityId = (() => {
+      const stored = String(raw.lemmyOriginalCommunityId || "").trim();
+      if (stored && lemmyCommunityIds.includes(stored)) return stored;
+      return lemmyCommunityIds[0] || "";
+    })();
     const normalized = {
       id,
       photoPath,
@@ -398,6 +404,7 @@ function normalizeImportedQueue(input) {
       albumIds: Array.isArray(raw.albumIds) ? raw.albumIds.map((v) => String(v)).filter(Boolean) : [],
       createAlbums: Array.isArray(raw.createAlbums) ? raw.createAlbums.map((v) => String(v)).filter(Boolean) : [],
       lemmyCommunityIds,
+      lemmyOriginalCommunityId,
       lemmyCommunityId: lemmyCommunityIds[0] || "",
       privacy: VALID_PRIVACY.has(String(raw.privacy || "")) ? String(raw.privacy) : "private",
       safetyLevel: safetyLevel === 2 || safetyLevel === 3 ? safetyLevel : 1,
@@ -433,6 +440,12 @@ function removeIds(ids) {
   return saveQueue(q);
 }
 
+function removeIdsHard(ids) {
+  const set = new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || "")).filter(Boolean));
+  const q = loadQueue().filter((it) => !set.has(String(it?.id || "")));
+  return saveQueue(q);
+}
+
 function detachToGroupOnly(ids) {
   const set = new Set(ids);
   const q = loadQueue().map(it => {
@@ -460,6 +473,41 @@ function reorder(idsInOrder) {
     if (!out.find(x => x.id === it.id)) out.push(it);
   }
   return saveQueue(out);
+}
+
+function createClonedQueueItem(sourceItem, options = {}) {
+  const source = sourceItem && typeof sourceItem === "object" ? sourceItem : null;
+  if (!source) return null;
+  const clearTargetServices = options.clearTargetServices !== false;
+
+  return {
+    ...source,
+    id: makeId(),
+    targetServices: clearTargetServices ? [] : normalizeTargetServices(source.targetServices),
+    status: "pending",
+    lastError: "",
+    photoId: "",
+    uploadedAt: "",
+    scheduledUploadAt: "",
+    groupAddStates: undefined,
+    serviceStates: {},
+  };
+}
+
+function cloneItemBelow(sourceId, options = {}) {
+  const sourceKey = String(sourceId || "").trim();
+  if (!sourceKey) return { queue: loadQueue(), clonedId: "" };
+
+  const q = loadQueue();
+  const idx = q.findIndex((it) => String(it?.id || "") === sourceKey);
+  if (idx < 0) return { queue: q, clonedId: "" };
+
+  const cloned = createClonedQueueItem(q[idx], options);
+  if (!cloned) return { queue: q, clonedId: "" };
+
+  const out = [...q];
+  out.splice(idx + 1, 0, cloned);
+  return { queue: saveQueue(out), clonedId: String(cloned.id || "") };
 }
 
 function getItemContentHash(item) {
@@ -581,7 +629,7 @@ function relinkMissingPhotoPaths(queueItems, candidatePaths, options = {}) {
   };
 }
 
-module.exports = { loadQueue, saveQueue, addPaths, removeIds, detachToGroupOnly, updateItems, reorder, QUEUE_PATH, parseDateTakenToMs };
+module.exports = { loadQueue, saveQueue, addPaths, removeIds, removeIdsHard, detachToGroupOnly, updateItems, reorder, cloneItemBelow, QUEUE_PATH, parseDateTakenToMs };
 
 
 function clearUploaded() {
@@ -608,4 +656,7 @@ module.exports.clearUploaded = clearUploaded;
 module.exports.findDuplicateGroups = findDuplicateGroups;
 module.exports.normalizeImportedQueue = normalizeImportedQueue;
 module.exports.relinkMissingPhotoPaths = relinkMissingPhotoPaths;
+module.exports.__test__ = {
+  createClonedQueueItem,
+};
 

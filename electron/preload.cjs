@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld("sq", {
   queueGet: () => ipcRenderer.invoke("queue:get"),
   queueAdd: (paths) => ipcRenderer.invoke("queue:add", { paths }),
   queueRemove: (ids) => ipcRenderer.invoke("queue:remove", { ids }),
+  queueRemoveHard: (ids) => ipcRenderer.invoke("queue:removeHard", { ids }),
+  queueCloneItem: (sourceId, options) => ipcRenderer.invoke("queue:cloneItem", { sourceId, options: options || {} }),
   queueDetachToGroupOnly: (ids) => ipcRenderer.invoke("queue:detachToGroupOnly", { ids }),
   queueTrashOriginalsByIds: (ids) => ipcRenderer.invoke("queue:trashOriginalsByIds", { ids }),
   queueRemoveAndTrash: (ids) => ipcRenderer.invoke("queue:removeAndTrash", { ids }),

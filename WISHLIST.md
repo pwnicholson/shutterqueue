@@ -3,8 +3,8 @@
 ## Soon
 
 * \[ ] Ability to "clone" an entry for the same file so the user can use different titles, descriptions, etc for different platforms (should surpress duplicate file warnings for that queue listing)
-* \[ ] Ability to reset the upload status of a file without losing its data
 * \[ ] Ability to set batches of various sizes to upload together ("Manual batch"?)
+* \[ ] Have the app flag if the user is uploading the same image to both PixelFed and Mastodon and offer to switch one to re-post the other instead (default to PixelFed)
 * \[ ] Implement support for Substack
 * \[ ] Implement support for Pixfed.com
 

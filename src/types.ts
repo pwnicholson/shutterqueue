@@ -35,6 +35,7 @@ export type QueueItem = {
   albumIds: string[];
   createAlbums: string[];
   lemmyCommunityIds?: string[];
+  lemmyOriginalCommunityId?: string;
   // Legacy single-select field retained for backward compatibility with older queues.
   lemmyCommunityId?: string;
   privacy: Privacy;
