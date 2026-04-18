@@ -106,6 +106,9 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 - **Cleaner location warning UX**
   - Location-only capability notices (when selected targets do not support location) no longer trigger red queue-list errors.
   - These now appear as yellow detail notices without error-style queue indicators when uploads otherwise succeeded.
+- **Faster delete feedback**
+  - Typed delete confirmation now immediately shows a busy `Deleting...` state so clicks are acknowledged right away.
+  - Recycle Bin failure retries are shorter in interactive deletes, so repeated failures return feedback sooner.
 
 
 

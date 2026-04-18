@@ -2807,8 +2807,9 @@ ipcMain.handle("queue:removeAndTrash", async (_e, { ids }) => {
   }
   const trashMove = await trash.movePathsToTrash(photoPaths, {
     trashItem: (photoPath) => shell.trashItem(photoPath),
-    maxAttempts: 8,
-    retryDelayMs: 350,
+    maxAttempts: 3,
+    retryDelayMs: 120,
+    enableFinalGraceRetry: false,
   });
   movedCount += Number(trashMove?.movedCount || 0);
   skippedMissing += Number(trashMove?.skippedMissing || 0);
@@ -2901,8 +2902,9 @@ ipcMain.handle("queue:trashOriginalsByIds", async (_e, { ids }) => {
   }
   const trashMove = await trash.movePathsToTrash(photoPaths, {
     trashItem: (photoPath) => shell.trashItem(photoPath),
-    maxAttempts: 8,
-    retryDelayMs: 350,
+    maxAttempts: 3,
+    retryDelayMs: 120,
+    enableFinalGraceRetry: false,
   });
   movedCount += Number(trashMove?.movedCount || 0);
   skippedMissing += Number(trashMove?.skippedMissing || 0);

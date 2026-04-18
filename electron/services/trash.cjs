@@ -61,6 +61,7 @@ async function movePathsToTrash(photoPaths, options = {}) {
 
   const maxAttempts = toPositiveInt(options.maxAttempts, 7);
   const retryDelayMs = toPositiveInt(options.retryDelayMs, 300);
+  const enableFinalGraceRetry = options.enableFinalGraceRetry !== false;
 
   let movedCount = 0;
   let skippedMissing = 0;
@@ -95,7 +96,7 @@ async function movePathsToTrash(photoPaths, options = {}) {
           continue;
         }
 
-        const canDoFinalGraceRetry = isRetryableTrashError(error) && attempts >= maxAttempts;
+        const canDoFinalGraceRetry = enableFinalGraceRetry && isRetryableTrashError(error) && attempts >= maxAttempts;
         if (canDoFinalGraceRetry) {
           let stillExists = false;
           try {

@@ -13,6 +13,10 @@ All notable changes to ShutterQueue will be documented in this file.
   - Location-only capability messages are now treated as a warning/notice in the item detail area (yellow), not as an error.
   - Queue cards no longer show a red `Error` badge for fully successful multi-platform uploads that only had this location-support notice.
   - Upload outcome status remains `done` for this location-only warning case instead of `done_warn`.
+- **Delete confirmation now responds immediately and failed trash attempts return faster**
+  - After typed delete confirmation, the dialog now enters a clear busy state (`Deleting...`) immediately so clicks are acknowledged right away.
+  - Delete buttons/inputs are disabled while processing to prevent duplicate submissions and accidental re-clicks.
+  - Recycle Bin move retries are now shorter in interactive delete flows, reducing long waits when Windows repeatedly returns abort errors.
 
 ## [0.9.8] - 2026-04-17
 

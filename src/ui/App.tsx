@@ -1061,6 +1061,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
     requiredText: string;
   } | null>(null);
   const [typedDeleteInput, setTypedDeleteInput] = useState("");
+  const [typedDeleteBusy, setTypedDeleteBusy] = useState(false);
   const typedDeleteInputRef = useRef<HTMLInputElement | null>(null);
   const deleteDialogRef = useRef<HTMLDivElement | null>(null);
   const [groupRemoveDialog, setGroupRemoveDialog] = useState<{ waitingCount: number } | null>(null);
@@ -3996,9 +3997,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   };
 
   const cancelOriginalFileDeletion = () => {
+    if (typedDeleteBusy) return;
     setUnuploadedDeleteDialog(null);
     setTypedDeleteDialog(null);
     setTypedDeleteInput("");
+    setTypedDeleteBusy(false);
   };
 
   const continueDeleteAfterUnuploadedWarning = () => {
@@ -4020,6 +4023,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const confirmTypedOriginalFileDeletion = async () => {
     if (!typedDeleteDialog) return;
     if (!matchesTypedDeleteConfirmation) return;
+    if (typedDeleteBusy) return;
+
+    setTypedDeleteBusy(true);
+    // Allow React to paint the busy state before heavy IPC/delete work begins.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    try {
 
     const removeIds = Array.isArray(typedDeleteDialog.removeIds) ? typedDeleteDialog.removeIds : [];
     const detachIds = Array.isArray(typedDeleteDialog.detachIds) ? typedDeleteDialog.detachIds : [];
@@ -4057,6 +4067,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setActiveId(firstVisible?.id || null);
     setTypedDeleteDialog(null);
     setTypedDeleteInput("");
+    setTypedDeleteBusy(false);
 
     if (movedCount > 0) {
       const plural = movedCount === 1 ? "file has" : "files have";
@@ -4084,6 +4095,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     }
     if (failedIds.length > 0) {
       showToast(`${failedIds.length} item(s) were kept in queue because their originals could not be moved to ${trashLabel}.`);
+    }
+
+    } catch (e) {
+      const msg = String((e as any)?.message || e || "Delete failed.");
+      window.alert(`Delete failed: ${msg}`);
+      showToast(`Delete failed: ${msg}`);
+      setTypedDeleteBusy(false);
     }
 
   };
@@ -9371,7 +9389,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       )}
 
       {typedDeleteDialog && (
-        <div className="schedule-dialog-backdrop" onClick={cancelOriginalFileDeletion}>
+        <div className="schedule-dialog-backdrop" onClick={() => { if (!typedDeleteBusy) cancelOriginalFileDeletion(); }}>
           <div ref={deleteDialogRef} className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
             <div style={{ fontWeight: 900, marginBottom: 8, color: "#ff8f8f", fontSize: 20 }}>
               You are about to delete the original files from your drive! Are you sure?
@@ -9386,15 +9404,21 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               onChange={(e) => setTypedDeleteInput(e.target.value)}
               onKeyDown={(e) => e.stopPropagation()}
               placeholder={typedDeleteDialog.requiredText}
+              disabled={typedDeleteBusy}
             />
+            {typedDeleteBusy ? (
+              <div className="small" style={{ marginTop: 8, color: "var(--warn)" }}>
+                Deleting files... please wait.
+              </div>
+            ) : null}
             <div className="btnrow" style={{ marginTop: 12 }}>
-              <button className="btn" onClick={cancelOriginalFileDeletion}>Cancel</button>
+              <button className="btn" onClick={cancelOriginalFileDeletion} disabled={typedDeleteBusy}>Cancel</button>
               <button
                 className="btn danger"
                 onClick={() => { void confirmTypedOriginalFileDeletion(); }}
-                disabled={!matchesTypedDeleteConfirmation}
+                disabled={!matchesTypedDeleteConfirmation || typedDeleteBusy}
               >
-                Delete
+                {typedDeleteBusy ? "Deleting..." : "Delete"}
               </button>
             </div>
           </div>

@@ -12,6 +12,14 @@ When a photo has location data but is uploaded only to platforms that do not sup
 - Message remains visible in item details as a yellow warning-style notice
 - Upload status is now kept as successful (`done`) for this location-only warning scenario
 
+### Delete Confirmation Is Now Faster and More Responsive
+
+When confirming file delete, the UI now acknowledges your click immediately and avoids long “no feedback” pauses.
+
+- Typed-delete dialog now switches to a busy `Deleting...` state right away
+- Delete controls are disabled while processing to prevent accidental double submits
+- Interactive Recycle Bin retry timing was shortened so repeated trash failures return feedback faster instead of stalling for a long time
+
 ## What's New in 0.9.8 (Beginner-Friendly Summary)
 
 This release makes daily queue management safer and easier, especially when deleting originals or creating alternate versions of the same photo.
