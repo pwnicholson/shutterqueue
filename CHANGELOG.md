@@ -2,6 +2,18 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
+## [0.9.8a] - 2026-04-18
+
+### Summary (Beginner-Friendly)
+- This patch reduces noise from non-critical location capability notices.
+- If an item has location data but is posted only to platforms that do not support location, ShutterQueue now keeps upload status visually successful and avoids red queue-level error markers.
+
+### Fixed
+- **Location capability notice no longer appears as a red queue-list error when uploads succeeded**
+  - Location-only capability messages are now treated as a warning/notice in the item detail area (yellow), not as an error.
+  - Queue cards no longer show a red `Error` badge for fully successful multi-platform uploads that only had this location-support notice.
+  - Upload outcome status remains `done` for this location-only warning case instead of `done_warn`.
+
 ## [0.9.8] - 2026-04-17
 
 ### Summary (Beginner-Friendly)

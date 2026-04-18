@@ -960,6 +960,9 @@ const friendlyIdInMessage = (msg?: string) => {
 // Categorize a message as "success", "waiting", or "error"
 const categorizeMessage = (msg: string): "success" | "waiting" | "error" => {
   const lower = msg.toLowerCase();
+  if (/location data was set on this item, but none of the selected platforms support location tagging/i.test(lower)) {
+    return "waiting";
+  }
   // Success: moderation queue, already in pool, adding to group (accepted)
   if (/photo added to.*moderation queue|already in pool|^adding to group/i.test(msg)) {
     return "success";
@@ -2005,6 +2008,19 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const hasVisibleActualErrorText = (s?: string | null): boolean => {
     return visibleItemMessageParts(s).some((msg) => categorizeMessage(msg) === "error");
+  };
+
+  const allTargetServicesSucceeded = (item: QueueItem): boolean => {
+    const targets = normalizeTargetServices(item.targetServices as UploadService[] | undefined);
+    if (!targets.length) return false;
+    return targets.every((svc) => String((item as any)?.serviceStates?.[svc]?.status || "") === "done");
+  };
+
+  const shouldShowQueueCardErrorBadge = (item: QueueItem): boolean => {
+    if ((item.status === "done" || item.status === "done_warn") && allTargetServicesSucceeded(item)) {
+      return false;
+    }
+    return hasVisibleActualErrorText(item.lastError);
   };
 
   const filteredLogLines = useMemo(() => {
@@ -7449,7 +7465,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                           ) : it.status === "retry" ? (
                             (() => { const retryAt = (it as any)?.serviceStates?.lemmy?.retryAfter; return retryAt ? <span className="badge warn" title="Next automatic retry time">Next retry: {formatLocal(retryAt)}</span> : null; })()
                           ) : (
-                            hasVisibleActualErrorText(it.lastError) ? <span className="badge bad" title={friendlyIdInMessage(visibleItemMessageParts(it.lastError).join(" | "))}>Error</span> : null
+                            shouldShowQueueCardErrorBadge(it) ? <span className="badge bad" title={friendlyIdInMessage(visibleItemMessageParts(it.lastError).join(" | "))}>Error</span> : null
                           )}
                         </div>
                         <div className="qmeta">
@@ -9144,7 +9160,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
         <div className="footer-right">
           {isDevRuntime && <span className="dev-runtime-badge">DEV {devSessionStamp}</span>}
-          <span className="mono">v{appVersion || "0.9.8"}</span>
+          <span className="mono">v{appVersion || "0.9.8a"}</span>
         </div>
       </div>
 

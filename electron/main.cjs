@@ -748,6 +748,15 @@ function looksLikeLemmySizeLimitError(msg) {
   return false;
 }
 
+const LOCATION_UNSUPPORTED_ONLY_WARNING_RE = /location data was set on this item, but none of the selected platforms support location tagging\./i;
+
+function isLocationUnsupportedOnlyWarning(warningParts, errorParts) {
+  const warnings = Array.isArray(warningParts) ? warningParts.map((w) => String(w || "").trim()).filter(Boolean) : [];
+  const errors = Array.isArray(errorParts) ? errorParts.map((e) => String(e || "").trim()).filter(Boolean) : [];
+  if (!warnings.length || errors.length > 0) return false;
+  return warnings.every((msg) => LOCATION_UNSUPPORTED_ONLY_WARNING_RE.test(msg));
+}
+
 function getItemLemmyCommunityIds(item) {
   const fromArray = Array.isArray(item?.lemmyCommunityIds)
     ? item.lemmyCommunityIds.map((v) => String(v || "").trim()).filter(Boolean)
@@ -4732,6 +4741,15 @@ async function uploadNowOneInternal(options = {}) {
     }
 
     if (combinedMessages.length) {
+      if (isLocationUnsupportedOnlyWarning(warningParts, errorParts)) {
+        // Capability-only location notice: upload succeeded on all targets, so keep queue status as done.
+        next.status = "done";
+        next.lastError = warningParts.join(" | ");
+        queue.saveQueue(q);
+        store.set("lastError", "");
+        logUploadOutcome("done_with_notice", { message: next.lastError });
+        return { ok: true, photoId: next.photoId || "", warnings: combinedMessages };
+      }
       next.status = "done_warn";
       next.lastError = combinedMessages.join(" | ");
       queue.saveQueue(q);

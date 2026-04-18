@@ -1,6 +1,16 @@
-# ShutterQueue v0.9.8 Release Notes
+# ShutterQueue v0.9.8a Release Notes
 
-**Release Date:** April 17, 2026
+**Release Date:** April 18, 2026
+
+## Post-Release Fixes (April 18, 2026)
+
+### Location-Only Capability Notices No Longer Show Red Queue Errors
+
+When a photo has location data but is uploaded only to platforms that do not support location tagging, ShutterQueue now treats that as a non-critical notice.
+
+- No red `Error` badge on queue cards for this case when all selected platforms uploaded successfully
+- Message remains visible in item details as a yellow warning-style notice
+- Upload status is now kept as successful (`done`) for this location-only warning scenario
 
 ## What's New in 0.9.8 (Beginner-Friendly Summary)
 
