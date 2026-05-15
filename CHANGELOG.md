@@ -14,6 +14,10 @@ This release rolls up all post-release fixes completed after 0.9.8 (including th
 - **Corrected Apple Silicon mac install flags for the sharp runtime packages**
   - The mac build scripts now use npm's supported `--os=darwin` and `--cpu=...` overrides instead of the unsupported `npm_config_platform` / `npm_config_arch` environment variables.
   - This prevents `EBADPLATFORM` when staging the x64 sharp runtime packages on an arm64 Mac before the universal build.
+- **Hardened universal mac sharp staging for npm v11 on Apple Silicon**
+  - Added a dedicated `stage:sharp:mac:universal` script that stages both arm64 and x64 sharp runtime packages before packaging.
+  - The x64 staging step now uses a forced cross-arch install path, because npm v11 can still reject direct x64 package adds on arm64 hosts during universal build prep.
+  - Universal build verification continues to fail publish readiness if either sharp architecture slice is missing in the packaged app.
 - **Added "After image uploads" setting in General App Settings**
   - New dropdown with three options: *Do Nothing (leave items in queue)*, *Remove items from queue (do not delete)*, and *Delete items and remove from queue*.
   - When the scheduler completes an upload batch, successfully uploaded items are automatically removed or sent to the Recycle Bin based on this setting.

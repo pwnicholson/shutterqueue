@@ -12,7 +12,8 @@
     "verify:mac:universal": "node scripts/verify-mac-universal.cjs",
     "dist": "npm run generate-licenses && npm run build && electron-builder",
     "dist:mac": "npm run generate-licenses && npm run build && npm install --no-save --os=darwin --cpu=arm64 @img/sharp-darwin-arm64 @img/sharp-libvips-darwin-arm64 && electron-builder --mac",
-    "dist:mac:universal": "npm run generate-licenses && npm run build && npm install --no-save --os=darwin --cpu=arm64 @img/sharp-darwin-arm64 @img/sharp-libvips-darwin-arm64 && npm install --no-save --os=darwin --cpu=x64 @img/sharp-darwin-x64 @img/sharp-libvips-darwin-x64 && electron-builder --mac --universal && npm run verify:mac:universal",
+    "stage:sharp:mac:universal": "node scripts/stage-sharp-mac-universal.cjs",
+    "dist:mac:universal": "npm run generate-licenses && npm run build && npm run stage:sharp:mac:universal && electron-builder --mac --universal && npm run verify:mac:universal",
     "pack": "npm run generate-licenses && npm run build && electron-builder --dir",
     "generate-licenses": "node scripts/generate-licenses.cjs"
   },
