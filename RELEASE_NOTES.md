@@ -8,10 +8,10 @@ This version bundles all improvements completed since v0.9.8 (including the work
 
 v0.9.9 focuses on reliability, clarity, and safer automation:
 
+- New: After image uploads setting with three choices (keep in queue, remove from queue, or delete+remove with typed safety confirmation).
+- New: Use Large Fonts accessibility option with larger text, spacing, and layout adjustments.
 - Original-file delete is now much more reliable on Windows, especially for the last photo uploaded in a batch.
 - Delete failures now produce clearer, more useful messages and diagnostics.
-- You can now choose what happens after uploads complete (keep items, remove from queue, or delete+remove with explicit typed confirmation).
-- New accessibility option: Use Large Fonts, with larger spacing and layout adjustments.
 - Flickr group-retry behavior is more controllable and more visible.
 - Queue editing and text-entry focus behavior is more stable.
 - Logging is easier to filter for troubleshooting uploads/deletes.
@@ -19,27 +19,7 @@ v0.9.9 focuses on reliability, clarity, and safer automation:
 
 ## What Changed (Functional Outcomes)
 
-### 1. Original File Delete Reliability (Major)
-
-- Fixed stubborn Windows delete/recycle failures, especially the "last uploaded file" pattern.
-- Recycle fallback logic is now more resilient to transient failures.
-- Delete retries no longer trigger repeated disruptive Windows error popups.
-- If a file is actively uploading, delete now blocks with a clear instruction instead of partially proceeding.
-
-### 2. Better Delete Feedback and Diagnostics
-
-- Delete results now clearly separate:
-  - moved to Recycle Bin
-  - failed
-  - missing on disk
-  - kept in queue
-- Diagnostics were expanded so logs can better distinguish:
-  - real file locks
-  - transient recycle issues
-  - path/environment-related recycle failures
-- Toast/error messaging is now clearer and less noisy for non-technical users.
-
-### 3. New After-Upload Automation Setting
+### 1. New: After-Upload Queue Action Automation
 
 In General App Settings, you can now choose:
 
@@ -53,7 +33,7 @@ Safety behavior:
 - Items with upload errors are not auto-removed/deleted.
 - Flickr group-add retry scenarios are handled so group retry queues are preserved.
 
-### 4. New Accessibility Option: Use Large Fonts
+### 2. New: Use Large Fonts Accessibility Option
 
 In General App Settings, directly under Use Light Theme:
 
@@ -63,6 +43,26 @@ In General App Settings, directly under Use Light Theme:
 - Larger text also increases while preserving visual hierarchy.
 - Spacing, controls, and layout were expanded to fit the larger scale.
 - Wrapping/scroll behavior was improved for smaller displays.
+
+### 3. Original File Delete Reliability (Major)
+
+- Fixed stubborn Windows delete/recycle failures, especially the "last uploaded file" pattern.
+- Recycle fallback logic is now more resilient to transient failures.
+- Delete retries no longer trigger repeated disruptive Windows error popups.
+- If a file is actively uploading, delete now blocks with a clear instruction instead of partially proceeding.
+
+### 4. Better Delete Feedback and Diagnostics
+
+- Delete results now clearly separate:
+  - moved to Recycle Bin
+  - failed
+  - missing on disk
+  - kept in queue
+- Diagnostics were expanded so logs can better distinguish:
+  - real file locks
+  - transient recycle issues
+  - path/environment-related recycle failures
+- Toast/error messaging is now clearer and less noisy for non-technical users.
 
 ### 5. Queue and Editing UX Improvements
 

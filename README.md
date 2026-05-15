@@ -94,6 +94,16 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 
 ## New in 0.9.9
 
+- **New: After image uploads setting** (user requested feature!)
+  - Added a new General App Settings option for what happens after uploads finish:
+    - Do Nothing (leave items in queue)
+    - Remove items from queue (do not delete)
+    - Delete items and remove from queue
+  - The delete option requires typed confirmation (Delete My Files) before it can be enabled.
+- **New: Use Large Fonts accessibility option** (user requested feature!)
+  - Added a new General App Settings toggle to significantly increase text size throughout the app.
+  - Small text is scaled up aggressively for readability, while larger text is increased in a way that preserves hierarchy.
+  - Layout spacing and scrolling/wrapping behavior were adjusted to better support lower-resolution displays.
 - **Safer delete behavior**
   - Queue items are no longer removed if moving the original file to Recycle Bin fails.
   - Delete flow now reports moved, missing, and failed files more clearly.
