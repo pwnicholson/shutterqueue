@@ -7,6 +7,10 @@ All notable changes to ShutterQueue will be documented in this file.
 This release rolls up all post-release fixes completed after 0.9.8 (including the work previously tracked under 0.9.8a), with full technical detail retained below.
 
 ### Post-Release Fixes (2026-05-15)
+- **Added automatic universal mac build verification for required runtime assets**
+  - Added a dedicated build verification script that checks the produced `.app` bundle is truly universal (`arm64` + `x86_64`).
+  - Verification now also checks that all required sharp runtime packages are present in the packaged app (`@img/sharp-darwin-arm64`, `@img/sharp-darwin-x64`, and both libvips packages), and confirms native `.node` binaries exist for both slices.
+  - Added a new `dist:mac:universal` npm script that builds the universal app and fails automatically if verification detects a missing runtime dependency.
 - **Added "After image uploads" setting in General App Settings**
   - New dropdown with three options: *Do Nothing (leave items in queue)*, *Remove items from queue (do not delete)*, and *Delete items and remove from queue*.
   - When the scheduler completes an upload batch, successfully uploaded items are automatically removed or sent to the Recycle Bin based on this setting.
