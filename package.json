@@ -1,9 +1,11 @@
 {
   "name": "shutterqueue",
-  "version": "0.9.8a",
+  "version": "0.9.9",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
+    "sanity": "tsc --noEmit",
+    "predev": "npm run sanity",
     "dev": "concurrently -k \"cross-env NODE_ENV=development vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "build": "vite build",
     "test": "node --test \"electron/**/*.test.cjs\"",

@@ -689,6 +689,19 @@ async function uploadImage({ instanceUrl, accessToken, photoPath, onProgress, im
     try {
       const attempt = (apiPath, fieldName) => new Promise((resolve, reject) => {
         const fileStream = fs.createReadStream(prepared.filePath);
+        let settled = false;
+        const doneResolve = (value) => {
+          if (settled) return;
+          settled = true;
+          try { fileStream.destroy(); } catch (_) {}
+          resolve(value);
+        };
+        const doneReject = (error) => {
+          if (settled) return;
+          settled = true;
+          try { fileStream.destroy(); } catch (_) {}
+          reject(error);
+        };
         const form = new FormData();
         form.append(fieldName, fileStream, {
           contentType: prepared.contentType || mime.lookup(prepared.filePath) || "application/octet-stream",
@@ -738,22 +751,23 @@ async function uploadImage({ instanceUrl, accessToken, photoPath, onProgress, im
               }
               if (status < 200 || status >= 300) {
                 const msg = parsed?.error || parsed?.message || data || `HTTP ${status}`;
-                reject(new Error(`Lemmy image upload failed: ${msg}`));
+                doneReject(new Error(`Lemmy image upload failed: ${msg}`));
                 return;
               }
 
               const urlOut = pickUploadedImageUrl(parsed);
               const candidates = collectUploadedImageUrlCandidates(parsed);
               if (!urlOut) {
-                reject(new Error(`Lemmy image upload returned no usable image URL. Raw response: ${data || "<empty>"}`));
+                doneReject(new Error(`Lemmy image upload returned no usable image URL. Raw response: ${data || "<empty>"}`));
                 return;
               }
-              resolve({ urlOut, candidates });
+              doneResolve({ urlOut, candidates });
             });
           }
         );
         req.setTimeout(30000, () => { req.destroy(new Error("Lemmy image upload timed out")); });
-        req.on("error", reject);
+        req.on("error", doneReject);
+        fileStream.on("error", doneReject);
         form.pipe(req);
       });
 

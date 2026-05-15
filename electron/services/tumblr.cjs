@@ -293,7 +293,7 @@ function buildCaption({ title, description, postTextMode, prependText, appendTex
   } else if (mode === "description_only") {
     coreCaption = cleanDescription;
   } else if (mode === "title_then_description") {
-    coreCaption = [cleanTitle, cleanDescription].filter(Boolean).join("\n");
+    coreCaption = [cleanTitle, cleanDescription].filter(Boolean).join("\n\n");
   } else {
     if (!cleanTitle) {
       coreCaption = cleanDescription;
@@ -305,11 +305,12 @@ function buildCaption({ title, description, postTextMode, prependText, appendTex
 
   const pre = String(prependText || "").trim();
   const app = String(appendText || "").trim();
-  const parts = [];
-  if (pre) parts.push(pre);
-  if (coreCaption) parts.push(coreCaption);
-  if (app) parts.push(app);
-  return parts.join("\n");
+  const sections = [];
+  if (pre) sections.push(pre);
+  if (coreCaption) sections.push(coreCaption);
+  if (app) sections.push(app);
+  // Tumblr preserves paragraph breaks more reliably when section boundaries use a blank line.
+  return sections.join("\n\n");
 }
 
 function resolveTumblrPostState({ privacy, postTimingMode }) {
@@ -383,13 +384,31 @@ async function uploadTumblrPhotoData({
   const headers = { "User-Agent": USER_AGENT, ...auth, ...form.getHeaders() };
 
   const res = await new Promise((resolve, reject) => {
+    let settled = false;
+    const doneResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      try { fileStream.destroy(); } catch (_) {}
+      resolve(value);
+    };
+    const doneReject = (error) => {
+      if (settled) return;
+      settled = true;
+      try { fileStream.destroy(); } catch (_) {}
+      reject(error);
+    };
+
     const u = new URL(endpointUrl);
     const req = https.request({ method: "POST", hostname: u.hostname, path: u.pathname + u.search, headers }, (r) => {
       let data = "";
       r.on("data", (c) => (data += c));
-      r.on("end", () => resolve({ status: r.statusCode || 0, body: data }));
+      r.on("end", () => doneResolve({ status: r.statusCode || 0, body: data }));
     });
-    req.on("error", reject);
+    req.setTimeout(30000, () => {
+      req.destroy(new Error("Tumblr upload timed out"));
+    });
+    req.on("error", doneReject);
+    fileStream.on("error", doneReject);
     form.pipe(req);
   });
 
@@ -489,6 +508,7 @@ module.exports = {
     normalizeTagsCsv,
     resolveTumblrPostState,
     parseApiResponse,
+    uploadTumblrPhotoData,
     isLikelyTumblrMediaProcessingError,
   },
 };

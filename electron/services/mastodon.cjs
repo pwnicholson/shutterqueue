@@ -24,6 +24,21 @@ function normalizeInstanceUrl(raw) {
   return u.toString().replace(/\/+$/, "");
 }
 
+function normalizeStatusUrl(raw) {
+  const input = String(raw || "").trim();
+  if (!input) return "";
+  try {
+    const u = new URL(input);
+    u.protocol = "https:";
+    u.hash = "";
+    u.search = "";
+    const withoutTrailingSlash = u.toString().replace(/\/+$/, "");
+    return withoutTrailingSlash;
+  } catch {
+    return input.replace(/\/+$/, "");
+  }
+}
+
 function requestJson({ instanceUrl, pathName, method, accessToken, headers, body }) {
   const base = new URL(normalizeInstanceUrl(instanceUrl));
   const payload = body == null ? null : Buffer.from(JSON.stringify(body), "utf-8");
@@ -388,6 +403,64 @@ async function verifyCredentials({ instanceUrl, accessToken }) {
   };
 }
 
+async function resolveStatusIdByUrl({ instanceUrl, accessToken, statusUrl }) {
+  const targetUrl = normalizeStatusUrl(statusUrl);
+  if (!targetUrl) {
+    throw new Error("Status URL is required to resolve a Mastodon reblog target.");
+  }
+
+  const q = new URLSearchParams({
+    q: targetUrl,
+    resolve: "true",
+    limit: "5",
+  }).toString();
+
+  const out = await requestJson({
+    instanceUrl,
+    pathName: `/api/v2/search?${q}`,
+    method: "GET",
+    accessToken,
+  });
+
+  const statuses = Array.isArray(out?.statuses) ? out.statuses : [];
+  const exact = statuses.find((status) => normalizeStatusUrl(status?.url || status?.uri || "") === targetUrl);
+  const picked = exact || statuses.find((status) => String(status?.id || "").trim());
+  const resolvedId = String(picked?.id || "").trim();
+  if (!resolvedId) {
+    throw new Error("Mastodon could not resolve that remote post URL for boosting.");
+  }
+  return resolvedId;
+}
+
+async function reblogStatus({ instanceUrl, accessToken, statusId }) {
+  const id = String(statusId || "").trim();
+  if (!id) {
+    throw new Error("Status ID is required to reblog on Mastodon.");
+  }
+
+  const out = await requestJson({
+    instanceUrl,
+    pathName: `/api/v1/statuses/${encodeURIComponent(id)}/reblog`,
+    method: "POST",
+    accessToken,
+  });
+
+  return {
+    id: String(out?.id || ""),
+    url: String(out?.url || ""),
+    statusId: id,
+  };
+}
+
+async function reshareStatusByUrl({ instanceUrl, accessToken, statusUrl }) {
+  const statusId = await resolveStatusIdByUrl({ instanceUrl, accessToken, statusUrl });
+  const out = await reblogStatus({ instanceUrl, accessToken, statusId });
+  return {
+    ...out,
+    resolvedStatusId: statusId,
+  };
+}
+
 async function uploadMedia({ instanceUrl, accessToken, photoPath, description, onProgress, imageResizeOptions, instanceLimitsCache, onDiscoveredLimits }) {
   let refreshedAfterError = false;
 
@@ -402,10 +475,11 @@ async function uploadMedia({ instanceUrl, accessToken, photoPath, description, o
     const effectiveLimits = applyResizeOverrides(limits, imageResizeOptions);
     const prepared = await prepareImageForUpload(photoPath, effectiveLimits);
 
+    let fileStream = null;
     try {
       const form = new FormData();
       const contentType = prepared.contentType || mime.lookup(prepared.filePath) || "application/octet-stream";
-      const fileStream = fs.createReadStream(prepared.filePath);
+      fileStream = fs.createReadStream(prepared.filePath);
       form.append("file", fileStream, {
         contentType,
         filename: path.basename(prepared.filePath),
@@ -441,6 +515,9 @@ async function uploadMedia({ instanceUrl, accessToken, photoPath, description, o
       }
       throw e;
     } finally {
+      if (fileStream) {
+        try { fileStream.destroy(); } catch (_) {}
+      }
       await prepared.cleanup();
     }
   }
@@ -484,9 +561,13 @@ module.exports = {
   normalizeInstanceUrl,
   verifyCredentials,
   createImagePost,
+  resolveStatusIdByUrl,
+  reblogStatus,
+  reshareStatusByUrl,
   mapPrivacyToVisibility,
   __test__: {
     buildPostText,
     mapPrivacyToVisibility,
+    normalizeStatusUrl,
   },
 };

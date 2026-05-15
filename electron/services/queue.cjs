@@ -629,6 +629,44 @@ function relinkMissingPhotoPaths(queueItems, candidatePaths, options = {}) {
   };
 }
 
+function getGroupRetryQueueStats(queueItems, groupId, options = {}) {
+  const list = Array.isArray(queueItems) ? queueItems : [];
+  const gid = String(groupId || "").trim();
+  const excludeItemId = String(options.excludeItemId || "").trim();
+  const out = {
+    hasRetry: false,
+    retryCount: 0,
+    earliestRetryAt: "",
+    latestRetryAt: "",
+  };
+  if (!gid) return out;
+
+  let earliestMs = Number.POSITIVE_INFINITY;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const it of list) {
+    if (!it || typeof it !== "object") continue;
+    if (excludeItemId && String(it.id || "") === excludeItemId) continue;
+    const st = it.groupAddStates?.[gid];
+    if (!st || st.status !== "retry") continue;
+    out.hasRetry = true;
+    out.retryCount += 1;
+    const retryAt = String(st.nextRetryAt || "").trim();
+    if (!retryAt) continue;
+    const retryMs = new Date(retryAt).getTime();
+    if (!Number.isFinite(retryMs)) continue;
+    if (retryMs < earliestMs) {
+      earliestMs = retryMs;
+      out.earliestRetryAt = retryAt;
+    }
+    if (retryMs > latestMs) {
+      latestMs = retryMs;
+      out.latestRetryAt = retryAt;
+    }
+  }
+
+  return out;
+}
+
 module.exports = { loadQueue, saveQueue, addPaths, removeIds, removeIdsHard, detachToGroupOnly, updateItems, reorder, cloneItemBelow, QUEUE_PATH, parseDateTakenToMs };
 
 
@@ -656,7 +694,9 @@ module.exports.clearUploaded = clearUploaded;
 module.exports.findDuplicateGroups = findDuplicateGroups;
 module.exports.normalizeImportedQueue = normalizeImportedQueue;
 module.exports.relinkMissingPhotoPaths = relinkMissingPhotoPaths;
+module.exports.getGroupRetryQueueStats = getGroupRetryQueueStats;
 module.exports.__test__ = {
   createClonedQueueItem,
+  getGroupRetryQueueStats,
 };
 

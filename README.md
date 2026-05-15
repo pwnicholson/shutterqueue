@@ -1,4 +1,4 @@
-# ShutterQueue — A paced photo uploader (v0.9.8a)
+# ShutterQueue — A paced photo uploader (v0.9.9)
 
 Releases can be downloaded on our Release page
 https://github.com/pwnicholson/shutterqueue/releases
@@ -10,7 +10,7 @@ ShutterQueue is a powerful photo batch uploader for photographers and content cr
 - Tumblr (with blog selection and privacy controls)
 - Bluesky (with threaded long-post support)
 - Mastodon (with instance selection and privacy-aware behavior)
-- PixelFed (tested and working in v0.9.8a, with OAuth 2.0 browser authorization)
+- PixelFed (tested and working in v0.9.9, with OAuth 2.0 browser authorization)
 - Lemmy (with subscribed-community picker, original + cross-post workflow, and auto-resize guidance)
 
 Note that this is purely vibe-coded using a combination of different AI tools. I am very open to suggestions, feedback, and help optimizing the tool or adding features.
@@ -92,7 +92,7 @@ The app includes a **View Third-Party Licenses** button in the Setup tab.
 
 
 
-## New in 0.9.8a
+## New in 0.9.9
 
 - **Safer delete behavior**
   - Queue items are no longer removed if moving the original file to Recycle Bin fails.

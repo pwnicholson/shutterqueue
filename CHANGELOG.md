@@ -2,7 +2,232 @@
 
 All notable changes to ShutterQueue will be documented in this file.
 
-## [0.9.8a] - 2026-04-18
+## [0.9.9] - 2026-05-15
+
+This release rolls up all post-release fixes completed after 0.9.8 (including the work previously tracked under 0.9.8a), with full technical detail retained below.
+
+### Post-Release Fixes (2026-05-15)
+- **Added "After image uploads" setting in General App Settings**
+  - New dropdown with three options: *Do Nothing (leave items in queue)*, *Remove items from queue (do not delete)*, and *Delete items and remove from queue*.
+  - When the scheduler completes an upload batch, successfully uploaded items are automatically removed or sent to the Recycle Bin based on this setting.
+  - Selecting the "Delete items" option requires typing **Delete My Files** in a confirmation dialog before the setting is activated.
+- **Added "Use Large Fonts" accessibility toggle in General App Settings**
+  - New persisted toggle directly under *Use Light Theme* enables a large-font mode across the app.
+  - Large-font mode significantly increases typography sizes, with smallest labels/status text scaled to roughly double while larger headings/buttons are increased less to preserve visual hierarchy.
+  - Spacing and control sizing were expanded for readability, queue text now wraps in large-font mode, and key panes/dialogs allow horizontal scrolling where needed on smaller resolutions.
+
+### Post-Release Fixes (2026-05-14)
+- **Fixed delete diagnostics regression that could abort file deletion before any logging occurred**
+  - The new delete-request diagnostics accidentally called a non-existent helper (`getRecentPhotoAccessSummary`) instead of the existing `getRecentPhotoAccess`, causing `queue:deleteOriginalsByIds` to throw before the trash attempt began.
+  - Delete diagnostics logging is now wrapped so any future diagnostics failure logs a warning instead of breaking original-file deletion.
+- **Delete diagnostics now capture renderer focus/preview state and per-file preflight snapshots**
+  - Right before original-file deletion starts, the renderer now sends a structured snapshot covering the active item, selected items, open preview state, preview source kind (`sqimg` vs remote), thumbnail/preview cache counts, and the currently focused DOM element.
+  - Main-process logging now records that renderer snapshot together with queue-side target metadata and a per-file preflight diagnostic pass before any trash attempt begins.
+  - This is intended to root-cause the remaining pattern where the last uploaded file, or a small subset of the most recent files in a batch, disproportionately fails Recycle Bin deletion despite succeeding exclusive-open and rename probes.
+- **PowerShell recycle fallback now directly renames files into `$Recycle.Bin` instead of using Shell COM**
+  - Previous approach used `Shell.Application.Namespace().MoveHere()` (Shell COM) which silently fails for some files even when Node.js rename probes succeed (`canRenameRoundTrip: true`).
+  - New approach gets the current user's SID, locates `<drive>:\$Recycle.Bin\<SID>\`, generates a `$R<random>.<ext>` filename and companion `$I<random>` metadata file (Vista+ binary format), then calls `System.IO.File.Move()` to rename the file in — completely bypassing all Windows Shell COM and SHFileOperation.
+  - Also removed the `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile` step that was the source of the repeated "file is open in another program" Windows dialogs shown during failed delete retries.
+  - Files moved this way appear normally in the Windows Recycle Bin (name, original path, date deleted, file size) and can be restored as usual.
+
+### Post-Release Fixes (2026-05-13)
+- **Windows recycle fallback now retries transient `did not move file` outcomes**
+  - Delete retry classification now treats `PowerShell recycle fallback did not move file` as retryable, so fallback attempts continue instead of failing after the first fallback pass.
+  - This addresses cases where lock probes show the file is available (`canOpenExclusive: true`, no lock owners) but recycle completion lags and the first fallback check reports a false failure.
+- **Delete UI/logging now clearly identifies likely Recycle Bin-path failures**
+  - When failures include `recycle fallback did not move file`, delete toasts now include a specific Recycle Bin-path hint instead of implying a generic app-held lock.
+  - Trash failure logs now include `likelyRecyclePathIssue` classification when fallback did-not-move errors occur alongside successful exclusive-open and rename probes.
+- **PowerShell recycle fallback settle window increased**
+  - Shell recycle polling window increased from ~3 seconds to ~12 seconds before declaring fallback failure.
+  - This reduces false-negative delete failures when `Shell.Application` recycle completion is delayed.
+- **PowerShell recycle fallback host timeout/apartment settings corrected**
+  - Increased fallback process timeout to 20 seconds so the 12-second recycle settle polling window can actually complete.
+  - Fallback PowerShell process now runs with `-STA` for more reliable COM `Shell.Application` recycle behavior.
+- **Added regression coverage for did-not-move fallback retries**
+  - Added trash-service test coverage to ensure fallback retries can recover when the first PowerShell fallback attempt reports `did not move file`.
+
+### Post-Release Fixes (2026-05-11)
+- **Expanded delete-failure diagnostics to separate true file locks from recycle-path failures**
+  - Bumped delete diagnostics schema to `diagnosticsVersion: 4`.
+  - Added Windows volume/environment fields (`isUncPath`, `driveType`, `driveFormat`, `driveIsReady`, `driveProbeError`) for failed delete attempts.
+  - Added lock-probe parse visibility and output snippets (`lockingProcessProbeParsed`, `lockingProcessProbeStdoutSnippet`, `lockingProcessProbeStderrSnippet`) so Restart Manager probe behavior is visible in logs when `lockingProcesses` is empty.
+  - This instrumentation is intended to diagnose cases where `shell.trashItem` and PowerShell recycle fallback both fail with `did not move file` even when exclusive-open and rename probes indicate the file is not currently locked.
+
+### Post-Release Fixes (2026-05-10)
+- **Fixed last-uploaded file being locked by Windows after each batch completes**
+  - `nativeImage.createFromPath()` (Electron's image loader, used for thumbnail and preview generation) opens photos via the Windows image subsystem and holds the file handle until the object is garbage collected.
+  - For intermediate files in a batch, subsequent processing triggers GC and releases the handle. For the last file there is no subsequent work, so the handle — and the Windows file lock — persists indefinitely.
+  - Both `getOrCreateThumbPath` and `getOrCreatePreviewPath` have been rewritten to use `sharp` instead, which explicitly closes file handles as soon as each conversion finishes.
+- **Original-file delete now runs atomically and refuses actively uploading files**
+  - Added a new main-process delete IPC that performs original-file trashing plus queue detach/remove updates in one step, instead of splitting that work across separate renderer and queue calls.
+  - If any targeted file is currently in an active upload, delete now stops immediately and tells the user to cancel the upload first.
+  - This prevents partial delete-state drift where files were moved but stale queue rows could remain and trigger immediate missing-file relink prompts.
+- **Added Flickr upload stream-release regression coverage for the last-file lock investigation**
+  - Added a focused test ensuring Flickr upload destroys its source read stream on successful completion.
+  - This locks in the upload-side cleanup path most closely associated with the recurring "last uploaded file stays undeletable until restart" symptom.
+
+### Post-Release Fixes (2026-05-05)
+- **Delete diagnostics can now capture Windows lock-holder processes**
+  - Added a Windows Restart Manager probe to trash-failure diagnostics so logs can include the process IDs/app names currently holding a file lock at delete-failure time.
+  - Diagnostics schema was bumped to include `lockingProcesses` and `lockingProcessProbeError` fields.
+- **PowerShell recycle fallback path parsing hardened**
+  - Fallback recycle script now derives folder/name via `System.IO.FileInfo` to avoid false `Unable to parse source path for recycle fallback` failures on valid paths.
+- **Windows recycle fallback errors are now summarized instead of dumping full command text**
+  - PowerShell fallback failure handling now extracts concise reason text (for example `PowerShell recycle fallback did not move file.`) instead of returning raw `Command failed: powershell.exe ...` command blobs.
+  - This keeps delete failure diagnostics readable in UI while preserving detailed structured diagnostics in logs.
+- **Top toast notifications are now constrained and capped to prevent long banner overflow**
+  - Toast messages are normalized and length-capped before render.
+  - Toast container now has an explicit max width and wraps text so long failure messages no longer stretch across the app header/title region.
+- **Typed-delete failure summary now uses compact first-error text**
+  - Delete result toast now summarizes the first failure using compact error text instead of raw multiline command output.
+- **Delete flow no longer applies extra long recent-upload retry windows by default**
+  - Reverted the heavier recent-upload retry profile after it caused prolonged blocking/non-responsive delete waits without solving root cause.
+  - Focus is now on identifying and eliminating lock owners rather than extending delete wait loops.
+
+### Post-Release Fixes (2026-05-08)
+- **Activity Log now has an `Uploads + Deletes` filter for focused troubleshooting**
+  - Added a dedicated log filter mode that shows upload lifecycle, post-upload release probes, and delete/trash outcomes without the broader scheduler and group-retry chatter included by `Activity`.
+  - This makes it easier to diagnose stuck-upload and delete issues without filling the visible log with unrelated Flickr retry checks.
+- **Log filter matching semantics corrected and broadened**
+  - `Uploads + Deletes` now matches a wider set of upload lifecycle lines (including success, retry/fail summaries, reshare/cross-post outcomes, and post-upload probes) plus delete lifecycle lines.
+  - `Warnings + Errors` and `Uploads + Deletes` now explicitly exclude API-only entries for consistent category behavior.
+  - `Activity` mode remains non-API activity while `All` remains unconditional.
+
+### Post-Release Fixes (2026-05-04)
+- **Windows PowerShell recycle fallback parser regression fixed**
+  - Fixed a script assembly bug in the fallback recycle path where an inline PowerShell `#` comment could comment out the remainder of a single-line script and trigger `Missing closing '}'` parse errors.
+  - Fallback script assembly now uses newline-separated commands and avoids comment-related truncation so delete fallback execution can complete.
+- **Delete outcome toast reporting is now consolidated and durable for partial failures**
+  - Typed-delete flow now emits one consolidated post-delete toast (instead of multiple rapid toasts competing for a single-slot toast UI).
+  - Partial-failure notifications now include failed filename previews, first failure detail, and kept-in-queue counts so failed deletes are visible and actionable.
+  - Toast timer handling now cancels/replaces prior dismiss timers to prevent older timers from prematurely clearing new toasts.
+
+### Post-Release Fixes (2026-05-03)
+- **Flickr create-album reconciliation now forces case-insensitive existing-album match before create**
+  - Upload flow now refreshes the Flickr album cache and resolves queued `createAlbums` titles against existing albums using case-insensitive keys before attempting `photosets.create`.
+  - This auto-heals older queue items affected by prior title-casing drift and prevents unnecessary duplicate album creation when a differently-cased title already exists.
+  - Flickr album refresh now also runs a bulk queue reconciliation pass so older queued items are repaired ahead of upload (matched titles are moved from `createAlbums` into `albumIds`).
+- **Flickr pending new-album selection now preserves original title casing**
+  - Fixed a renderer pending-album id/title round-trip bug that could lowercase pending new-album titles during certain album toggle flows.
+  - Pending album ids now use encoded original titles, and title decoding preserves exact casing for updates to `createAlbums` queue fields.
+- **Flickr upload-time album cache checks now include stored `userNsid` context**
+  - `getFlickrAuth()` now includes `userNsid` so album list/cache checks used by ensure-album logic are consistently scoped to the expected Flickr account context during upload.
+- **Flickr queue-behavior toggle is now visible in both requested UI locations and stays synced**
+  - Fixed placement in Setup so the option is always shown on the Flickr sub-tab under API settings and above the Flickr Groups / Albums section (it was previously inside a not-authorized-only block).
+  - Added a second synced copy of the same toggle on the Schedule tab under `Flickr Groups with Pending Retries` and above the pending-groups list.
+- **New Flickr setup option can defer new group-add attempts behind existing per-group retry queues**
+  - Added a new Flickr setup checkbox under the API section: `Add new uploads to the bottom of the existing Group-add queues...` (default OFF).
+  - When enabled, if a newly uploaded photo targets a Flickr group that already has pending retry items, ShutterQueue skips the immediate `groups.pools.add` attempt for that group and appends the new photo to that group's retry queue instead.
+  - Groups without existing retry backlog still attempt immediate add as before.
+- **Unified in-app confirmation dialogs replaced remaining native renderer confirms**
+  - Replaced remaining `window.confirm(...)` usage in the renderer with a shared React modal confirm flow for queue actions, uploads, duplicate-platform checks, link-open prompts, cache clear, and saved-set deletion.
+  - Added a promise-based confirmation dialog state/handler so confirmation UX stays consistent with existing in-app dialogs and avoids native browser modal side effects.
+  - Updated duplicate-platform confirmation call sites (single-item and batch selectors) to use async modal confirmations.
+- **Flickr new-album flow now avoids duplicate album creation across long-running/restarted queues**
+  - Album ensure flow now forces one fresh Flickr album list refresh when a requested "create album" title is missing from cache before attempting album creation.
+  - If Flickr returns a duplicate-title error during create, ShutterQueue now re-lists albums and resolves to the existing album by title instead of treating it as a failed create.
+  - This hardens cases where queue items targeting the same new album are uploaded days/weeks apart with app restarts between uploads.
+
+### Post-Release Fixes (2026-05-02)
+- **Upload stream cleanup hardened to reduce lingering Windows file locks after batch completion**
+  - Added explicit read-stream teardown in Tumblr, Lemmy, Mastodon, and PixelFed upload paths so source/prepared files are always released on success, timeout, and request errors.
+  - Tumblr upload now also has a 30-second request timeout and stream-error handling aligned with other platform upload services.
+  - Added regression test coverage for Tumblr upload stream cleanup to verify stream destruction after successful post creation.
+  - Added a verbose-logging-only post-upload file-release probe in the main process so logs can now capture immediate exclusive-open results and active handle counts after each item finishes.
+- **Operational logs were simplified and shifted to verbose where requested**
+  - Queue reorder and image-cache prune/clear logs are now verbose-only.
+  - Delete/trash logs now keep always-on single-line summaries and detailed failure diagnostics, while retry/fallback success-detail chatter is verbose-only.
+  - Tumblr/PixelFed OAuth loopback listener/callback event chatter is reduced in always-on logs; non-failure callback/listener detail is now verbose-only.
+  - Periodic scheduler/checkpoint messages (for example scheduler ticks and "no due retries" checks) are now verbose-only.
+- **Default log now uses a single combined success line per photo upload**
+  - Individual per-platform success messages ("Uploaded to Flickr", "Uploaded to Bluesky", etc.) are now verbose-only.
+  - After each upload completes, the always-on log emits one concise line, for example: `photo.jpg uploaded to Flickr, Tumblr, and Bluesky`.
+  - Partial-success, warning, retry, and failure outcomes continue to produce distinct always-on summary lines.
+- **Additional verbose-only demotions for high-frequency background events**
+  - Flickr group-size refresh start/complete heartbeats are now verbose-only (cache maintenance detail).
+  - Flickr group sweep attempt/completion logs are now verbose-only; only sweep failures remain always-on.
+  - Flickr group and album list load logs are now verbose-only.
+  - Individual Lemmy community cross-post success lines are now verbose-only (captured by combined success summary).
+  - Lemmy auto-resize diagnostic is now verbose-only.
+  - Renderer webContents re-focus debug events are now verbose-only.
+- **Added `logMode` helper** (`logMode.operational` / `logMode.diagnostic`) to main.cjs to formalize two-tier logging and make future logging intent explicit.
+- **Added `SERVICE_DISPLAY_NAMES` and `formatServiceList` helpers** to main.cjs for consistent platform name formatting in combined success messages.
+- **Text-entry focus bug follow-up hardening in renderer and main process**
+  - Single-item Title/Description/Tags edits now update local UI immediately and persist with a short debounce/blur flush instead of forcing a full queue round-trip on every keystroke.
+  - Queue replacement from `queueUpdate` can now be skipped while text entry is active for text-field edit commits, reducing caret/focus churn during typing.
+  - Replaced blocking renderer `alert()` usage (delete/location failures) with non-blocking toasts to avoid focus disruption from modal JS dialogs.
+  - Removed aggressive `webContents` blur-triggered re-focus loop in the main process to reduce focus tug-of-war while preserving normal window focus recovery on show/restore/focus events.
+- **Windows delete/recycle fallback now better handles asynchronous recycle behavior and transient fallback contention**
+  - PowerShell recycle fallback now tries `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(..., SendToRecycleBin)` first, then falls back to `Shell.Application` recycle if needed.
+  - `Shell.Application.MoveHere` fallback now waits/polls briefly before declaring failure, avoiding false negatives where recycle completes asynchronously.
+  - Trash service now supports retrying fallback strategy on transient retryable errors (`fallbackMaxAttempts`, `fallbackRetryDelayMs`) and the main delete flows now use multiple fallback attempts.
+  - Added regression test coverage for successful retry-after-fallback-failure behavior.
+
+### Post-Release Fixes (2026-05-01)
+- **Renderer text-entry focus is now re-synced when the app window is active**
+  - Added BrowserWindow/WebContents focus synchronization hooks on window focus/show/restore transitions.
+  - Added recovery for cases where `webContents` blurs while the window is still focused, which could leave text inputs non-responsive until alt-tab.
+  - Focus recovery is best-effort and only runs when the app window is already focused, avoiding aggressive focus stealing from other apps.
+
+### Post-Release Fixes (2026-04-25)
+- **Immediate scheduler startup retry now respects due-time gates (no hidden force-reset)**
+  - Fixed startup/resume Flickr group retry sweep so it no longer processes all retry entries as force-due.
+  - Startup sweep now checks only retries that are already due, preventing launch-time attempts from re-scheduling future-due retries forward unexpectedly.
+  - The manual "Retry Group Additions Now" action remains the explicit force-due path when the user wants immediate retries regardless of due time.
+- **Added clearer "no due groups" diagnostics for Flickr retry troubleshooting**
+  - When scheduler ticks find no due retries, logs now include retry state count and earliest pending retry timestamp.
+  - This makes it explicit whether retries are truly idle versus waiting on a future due window.
+
+### Post-Release Fixes (2026-04-22)
+- **Windows delete retries now treat common file-lock errors as transient**
+  - Recycle-bin move retry logic now also retries common Windows lock/delete signatures (for example `EPERM`, `EBUSY`, sharing-violation, and "file is open in another program") instead of failing immediately on first hit.
+  - This improves delete reliability when another process briefly holds the file handle (often seen on the last recently-uploaded image).
+- **Windows PowerShell recycle fallback now receives the file path correctly**
+  - Fixed a parameter-passing bug where the fallback script could receive a null path (`$args[0]`) and fail even when the file definitely existed.
+  - The fallback now injects an escaped literal path directly into the script before execution, eliminating null-argument failures.
+- **Delete failure logging now captures deeper live lock diagnostics**
+  - Failed trash moves now include a versioned diagnostics snapshot captured at failure time, including runtime metadata (`nodePid`, `appVersion`, uptime), active handle-type counts, Windows exclusive-open probe results, and rename round-trip probe results.
+  - This makes persistent "file is open in another app" cases easier to classify as true lock contention versus fallback/argument-path issues.
+- **Windows recycle fallback no longer depends on `Split-Path` parameter-set behavior**
+  - Fixed a PowerShell fallback failure where `Split-Path -LiteralPath ... -Parent/-Leaf` could throw "Parameter set cannot be resolved" on some systems.
+  - Fallback now uses .NET path parsing (`System.IO.Path::GetDirectoryName/GetFileName`) before Shell namespace recycle move.
+- **Queue editor and typed-delete text input focus stability hardened**
+  - Queue list replacement is now always paused while a queue text-editable field is focused (instead of only when background uploads/scheduler were idle), reducing caret-loss and focus jumps during active edits.
+  - Added a pointer-down focus recovery guard that re-focuses clicked text-editable targets if a concurrent render/update steals focus in the same frame.
+
+### Post-Release Fixes (2026-04-21)
+- **Flickr group-add retries now execute due groups instead of deferring them**
+  - Fixed retry scheduling so overdue Flickr group-add retries are attempted immediately when due, rather than being bumped forward before attempt selection.
+  - Due Flickr group retries are now processed at the group level: each selected due group is drained across its eligible photos until completion or until a new retry cooldown is scheduled again for that group.
+  - Keeps group-level cooldown alignment by propagating a newly scheduled retry time to remaining retry entries in that same group when rate-limited again.
+- **Schedule tab now includes `Retry Group Additions Now` for Flickr pending retries**
+  - Added a manual action button next to the "Flickr Groups with Pending Retries" section title.
+  - Clicking it immediately retries pending Flickr group additions as if retry timers were due now, then refreshes the pending-retry view.
+
+- **Tumblr merged title/description captions now preserve blank-line breaks**
+  - In `title_then_description` mode, Tumblr captions now insert a blank line between Title and Description so merged text does not run together.
+  - Appended Tumblr footer text now always starts after a blank line from the main caption body.
+- **Windows trash abort recovery now includes a secondary recycle-bin strategy**
+  - After normal Electron trash retries are exhausted on repeated "Operation was aborted" errors, ShutterQueue now attempts a Windows Shell-based PowerShell recycle move as a fallback.
+  - Successful fallback recoveries are logged so stubborn per-file delete failures can be distinguished from persistent lock/drive issues.
+- **Large manual Upload Now batches now refresh queue state progressively**
+  - Manual multi-item "Upload now" now refreshes dynamic queue state during the run (not only at the end), improving status visibility for long ad-hoc batches.
+  - Background queue refresh now avoids committing unchanged queue snapshots, reducing unnecessary heavy re-renders while many items are uploading.
+
+### Post-Release Fixes (2026-04-18)
+- **Optional PixelFed-first Mastodon reshare flow added (default ON when both services are selected)**
+  - New synced setup toggle (shown in both PixelFed and Mastodon setup panels) controls whether ShutterQueue posts to PixelFed first and then boosts that same post on Mastodon instead of uploading media to Mastodon separately.
+  - Toggle appears only when both PixelFed and Mastodon are authorized and is enabled by default.
+  - Upload orchestration now resolves the PixelFed post URL on Mastodon and performs a reblog/boost when this option is enabled.
+- **Mastodon reshare scope guidance and error messaging improved**
+  - Mastodon setup instructions now explicitly include the extra read scope needed for reshare URL resolution (`read:search`) when using granular scopes.
+  - When Mastodon rejects a reshare with insufficient scopes, the item error now includes a direct re-authorization hint describing the required scopes.
+- **Delete confirmation now counts unique files (not duplicate queue entries)**
+  - If the same photo appears multiple times in queue (for example, cloned entries), the typed delete confirmation now shows the number of unique source files being deleted.
+  - Deletion behavior is unchanged: all linked queue entries for that deleted source file are still removed together.
+- **Delete-to-Recycle Bin reliability increased for repeated abort errors**
+  - Interactive delete now uses more aggressive retry settings (higher attempt count plus final grace retry) when moving originals to the OS bin.
+  - If all failures are repeated "Operation was aborted" responses, the delete result dialog now includes a targeted hint that this may be a drive-level Recycle Bin issue.
 
 ### Summary (Beginner-Friendly)
 - This patch reduces noise from non-critical location capability notices.

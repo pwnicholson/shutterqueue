@@ -632,3 +632,80 @@ select.input option{ background: var(--select-option-bg); color: var(--select-op
   word-break: break-word;
 }
 
+/* Accessibility mode: significantly larger typography while preserving hierarchy. */
+:root[data-font-size="large"]{
+  --pane-bottom-space:92px;
+}
+
+:root[data-font-size="large"] body{
+  font-size:22px;
+  line-height:1.45;
+}
+
+:root[data-font-size="large"] .container{padding:24px}
+:root[data-font-size="large"] .h1{font-size:40px}
+:root[data-font-size="large"] .sub{font-size:20px;line-height:1.45;max-width:1200px}
+:root[data-font-size="large"] .row{gap:14px}
+:root[data-font-size="large"] .grid{gap:18px}
+:root[data-font-size="large"] .card h2{padding:18px 18px 0 18px;font-size:26px}
+:root[data-font-size="large"] .content{padding:18px;overflow-x:auto}
+
+:root[data-font-size="large"] .small{font-size:22px;line-height:1.4}
+:root[data-font-size="large"] .input,
+:root[data-font-size="large"] .textarea,
+:root[data-font-size="large"] select.input{
+  font-size:22px;
+  padding:14px 16px;
+  border-radius:14px;
+}
+
+:root[data-font-size="large"] .btn{
+  font-size:22px;
+  padding:14px 16px;
+  border-radius:14px;
+}
+
+:root[data-font-size="large"] .btn.btn-sm{padding:10px 14px;font-size:20px;border-radius:12px}
+:root[data-font-size="large"] .btn-start,
+:root[data-font-size="large"] .btn-stop{font-size:24px;padding:15px 22px;min-width:120px;min-height:54px}
+
+:root[data-font-size="large"] .badge{font-size:21px;padding:8px 12px;gap:8px}
+:root[data-font-size="large"] .chip{font-size:21px;padding:8px 12px}
+:root[data-font-size="large"] .chipX{font-size:24px}
+
+:root[data-font-size="large"] .qitem{grid-template-columns: 76px minmax(0, 1fr) auto;gap:16px;padding:14px 16px}
+:root[data-font-size="large"] .qitem.large-thumbs{grid-template-columns: 224px minmax(0, 1fr) auto}
+:root[data-font-size="large"] .qthumb-frame,
+:root[data-font-size="large"] .thumb{width:76px;height:76px}
+:root[data-font-size="large"] .qthumb-frame.large{width:224px;height:150px}
+
+:root[data-font-size="large"] .qtitle{font-size:24px;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+:root[data-font-size="large"] .qpath{font-size:21px;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+
+:root[data-font-size="large"] .trirow{gap:12px}
+:root[data-font-size="large"] .tricheck{width:24px;height:24px;min-width:24px;min-height:24px;flex:0 0 24px;margin-top:2px}
+:root[data-font-size="large"] .drag{font-size:20px;padding:10px 12px}
+
+:root[data-font-size="large"] .btnrow{gap:14px}
+:root[data-font-size="large"] .btncluster{gap:14px;padding:10px;border-radius:14px}
+
+:root[data-font-size="large"] .drop-count-badge{min-width:34px;height:34px;padding:0 9px;font-size:20px;line-height:30px}
+
+:root[data-font-size="large"] .schedule-dialog{
+  width:min(760px, 100%);
+  max-height:88vh;
+  overflow:auto;
+  padding:18px;
+}
+
+:root[data-font-size="large"] .footer-fixed{padding:12px 16px}
+:root[data-font-size="large"] .dev-runtime-badge{font-size:18px;padding:6px 10px}
+
+/* Keep content reachable on smaller displays while large-font mode is active. */
+:root[data-font-size="large"] .app,
+:root[data-font-size="large"] .queue-scroll-area,
+:root[data-font-size="large"] .editor-scroll-area,
+:root[data-font-size="large"] .group-info-scroll{
+  overflow-x:auto;
+}
+

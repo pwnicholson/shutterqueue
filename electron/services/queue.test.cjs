@@ -205,3 +205,47 @@ test("createClonedQueueItem copies metadata and resets upload state", () => {
   assert.deepEqual(cloned.serviceStates, {});
   assert.equal(cloned.groupAddStates, undefined);
 });
+
+test("getGroupRetryQueueStats reports retry backlog timing for a group", () => {
+  const stats = queue.__test__.getGroupRetryQueueStats([
+    {
+      id: "1",
+      groupAddStates: {
+        g1: { status: "retry", nextRetryAt: "2026-05-03T08:00:00.000Z" },
+      },
+    },
+    {
+      id: "2",
+      groupAddStates: {
+        g1: { status: "retry", nextRetryAt: "2026-05-03T10:00:00.000Z" },
+      },
+    },
+    {
+      id: "3",
+      groupAddStates: {
+        g1: { status: "done", nextRetryAt: "2026-05-03T09:00:00.000Z" },
+      },
+    },
+  ], "g1");
+
+  assert.equal(stats.hasRetry, true);
+  assert.equal(stats.retryCount, 2);
+  assert.equal(stats.earliestRetryAt, "2026-05-03T08:00:00.000Z");
+  assert.equal(stats.latestRetryAt, "2026-05-03T10:00:00.000Z");
+});
+
+test("getGroupRetryQueueStats excludes a specified item id", () => {
+  const stats = queue.__test__.getGroupRetryQueueStats([
+    {
+      id: "queued-item",
+      groupAddStates: {
+        g1: { status: "retry", nextRetryAt: "2026-05-03T10:00:00.000Z" },
+      },
+    },
+  ], "g1", { excludeItemId: "queued-item" });
+
+  assert.equal(stats.hasRetry, false);
+  assert.equal(stats.retryCount, 0);
+  assert.equal(stats.earliestRetryAt, "");
+  assert.equal(stats.latestRetryAt, "");
+});

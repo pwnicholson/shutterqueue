@@ -445,10 +445,11 @@ async function uploadMedia({ instanceUrl, accessToken, photoPath, description, o
     const effectiveLimits = applyResizeOverrides(limits, imageResizeOptions);
     const prepared = await prepareImageForUpload(photoPath, effectiveLimits);
 
+    let fileStream = null;
     try {
       const form = new FormData();
       const contentType = prepared.contentType || mime.lookup(prepared.filePath) || "application/octet-stream";
-      const fileStream = fs.createReadStream(prepared.filePath);
+      fileStream = fs.createReadStream(prepared.filePath);
       form.append("file", fileStream, {
         contentType,
         filename: path.basename(prepared.filePath),
@@ -484,6 +485,9 @@ async function uploadMedia({ instanceUrl, accessToken, photoPath, description, o
       }
       throw e;
     } finally {
+      if (fileStream) {
+        try { fileStream.destroy(); } catch (_) {}
+      }
       await prepared.cleanup();
     }
   }

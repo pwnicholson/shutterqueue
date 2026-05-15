@@ -198,7 +198,8 @@ async function uploadPhoto({ apiKey, apiSecret, token, tokenSecret, item, onProg
   form.append("safety_level", String(safety));
 
   const contentType = mime.lookup(item.photoPath) || "application/octet-stream";
-  form.append("photo", fs.createReadStream(item.photoPath), { contentType, filename: require("path").basename(item.photoPath) });
+  const photoStream = fs.createReadStream(item.photoPath);
+  form.append("photo", photoStream, { contentType, filename: require("path").basename(item.photoPath) });
 
   // determine total length for progress reporting
   let totalLength = null;
@@ -228,22 +229,48 @@ async function uploadPhoto({ apiKey, apiSecret, token, tokenSecret, item, onProg
   const headers = { ...auth, ...form.getHeaders() };
 
   const res = await new Promise((resolve, reject) => {
+    let settled = false;
+    let progressInterval = null;
+    const doneResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      if (progressInterval) clearInterval(progressInterval);
+      try { photoStream.destroy(); } catch (_) {}
+      resolve(value);
+    };
+    const doneReject = (error) => {
+      if (settled) return;
+      settled = true;
+      if (progressInterval) clearInterval(progressInterval);
+      try { photoStream.destroy(); } catch (_) {}
+      reject(error);
+    };
+
     const u = new URL(url);
     const req = https.request({ method: "POST", hostname: u.hostname, path: u.pathname, headers }, (r) => {
       let data = "";
       r.on("data", (c) => (data += c));
-      r.on("end", () => resolve({ status: r.statusCode || 0, body: data }));
+      r.on("end", () => doneResolve({ status: r.statusCode || 0, body: data }));
     });
-    req.on("error", reject);
+    req.setTimeout(30000, () => {
+      req.destroy(new Error("Flickr upload timed out"));
+    });
+    req.on("error", doneReject);
+    photoStream.on("error", doneReject);
 
     if (onProgress && totalLength != null) {
       req.on('socket', (socket) => {
-        const iv = setInterval(() => {
+        progressInterval = setInterval(() => {
           try {
             onProgress(socket.bytesWritten, totalLength);
           } catch (_) {}
         }, 500);
-        socket.on('close', () => clearInterval(iv));
+        socket.on('close', () => {
+          if (progressInterval) {
+            clearInterval(progressInterval);
+            progressInterval = null;
+          }
+        });
       });
     }
 
@@ -312,6 +339,20 @@ async function createAlbum({ apiKey, apiSecret, token, tokenSecret, title, prima
     id,
     title: decodeHtmlEntities(j?.photoset?.title?._content || j?.photoset?.title || title || ""),
   };
+}
+
+function isLikelyDuplicateAlbumTitleError(err) {
+  const codeRaw = Number(err?.code);
+  const code = Number.isFinite(codeRaw) ? codeRaw : null;
+  const msg = String(err?.message || err || "").toLowerCase();
+
+  const hasDuplicateWords =
+    /already exists|already been taken|duplicate|set with this title|title.*exists/.test(msg);
+  const mentionsAlbum = /album|photoset|set|title/.test(msg);
+
+  if (hasDuplicateWords && mentionsAlbum) return true;
+  if (code === 3 && hasDuplicateWords) return true;
+  return false;
 }
 
 async function addPhotoToGroup({ apiKey, apiSecret, token, tokenSecret, photoId, groupId }) {
@@ -658,6 +699,10 @@ module.exports = {
   getGroupInfo,
   listAlbums,
   getPhotoUrls,
-  setPhotoLocation
+  setPhotoLocation,
+  isLikelyDuplicateAlbumTitleError,
+  __test__: {
+    isLikelyDuplicateAlbumTitleError,
+  },
 };
 

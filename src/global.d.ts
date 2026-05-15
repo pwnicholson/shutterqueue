@@ -62,6 +62,7 @@ declare global {
         adminBlast: string;
         groupUrl: string;
       }>;
+      retryFlickrGroupAdditionsNow: () => Promise<{ ok: boolean; attempts: number; groupsProcessed: number }>;
       fetchAlbums: () => Promise<Album[]>;
 
       getThumbSrc: (photoPath: string, variant?: "square" | "wide") => Promise<string | null>;
@@ -84,6 +85,53 @@ declare global {
         failedCount: number;
         deletedIds: string[];
         failedIds: string[];
+        failed?: Array<{ photoPath: string; error: string; attempts: number }>;
+        trashLabel: string;
+      }>;
+      queueDeleteOriginalsByIds: (payload: {
+        trashIds: string[];
+        removeIds: string[];
+        detachIds: string[];
+        diagnostics?: {
+          displayTab?: string;
+          platformEditorTab?: string;
+          activeId?: string | null;
+          activePhotoPath?: string;
+          selectedIds?: string[];
+          selectedCount?: number;
+          previewOpen?: boolean;
+          previewLoading?: boolean;
+          previewSrcKind?: string;
+          previewTitle?: string;
+          previewCachedPathCount?: number;
+          thumbCachedPathCount?: number;
+          documentHasFocus?: boolean;
+          focusedElementTag?: string;
+          focusedElementType?: string;
+          targetItems?: Array<{
+            id: string;
+            photoPath: string;
+            status?: string;
+            isActive?: boolean;
+            isSelected?: boolean;
+            hasThumbCached?: boolean;
+            hasPreviewCached?: boolean;
+          }>;
+        };
+      }) => Promise<{
+        ok: boolean;
+        error?: string;
+        blocked?: boolean;
+        blockedIds?: string[];
+        queue?: QueueItem[];
+        movedCount: number;
+        skippedMissing: number;
+        failedCount: number;
+        deletedIds: string[];
+        failedIds: string[];
+        removedIds?: string[];
+        detachedIds?: string[];
+        failed?: Array<{ photoPath: string; error: string; attempts: number }>;
         trashLabel: string;
       }>;
       queueRemoveAndTrash: (ids: string[]) => Promise<{
@@ -149,9 +197,11 @@ declare global {
       getPathForFile: (file: File) => string | null;
       openExternal: (options: { url: string }) => Promise<any>;
       setVerboseLogging: (enabled: boolean) => Promise<any>;
+      setAfterUploadAction: (action: "nothing" | "remove" | "delete") => Promise<any>;
       setMinimizeToTray: (enabled: boolean) => Promise<any>;
       setCheckUpdatesOnLaunch: (enabled: boolean) => Promise<any>;
       setUseLargeThumbnails: (enabled: boolean) => Promise<any>;
+      setUseLargeFonts: (enabled: boolean) => Promise<any>;
       setUseLightTheme: (enabled: boolean) => Promise<any>;
       setTumblrPostTextMode: (mode: "bold_title_then_description" | "title_then_description" | "title_only" | "description_only") => Promise<any>;
       setTumblrPostTimingMode: (mode: "publish_now" | "add_to_queue") => Promise<any>;
@@ -163,6 +213,7 @@ declare global {
       setPixelfedPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
       setPixelfedImageResizeOptions: (payload: { enabled: boolean; maxWidth?: number; maxHeight?: number }) => Promise<any>;
       setPixelfedUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
+      setPixelfedMastodonReshareEnabled: (enabled: boolean) => Promise<any>;
       setMastodonPostTextMode: (mode: "merge_title_description_tags" | "merge_title_description" | "merge_title_tags" | "merge_description_tags" | "title_only" | "description_only") => Promise<any>;
       setMastodonImageResizeOptions: (payload: { enabled: boolean; maxWidth?: number; maxHeight?: number }) => Promise<any>;
       setMastodonUseDescriptionAsAltText: (enabled: boolean) => Promise<any>;
@@ -180,6 +231,7 @@ declare global {
       setTumblrAppendText: (text: string) => Promise<any>;
       setTumblrGlobalTags: (tags: string) => Promise<any>;
       setFlickrGlobalTags: (tags: string) => Promise<any>;
+      setFlickrQueueNewUploadsBehindExistingGroupQueues: (enabled: boolean) => Promise<any>;
       setAddShutterQueueTagToAllUploads: (enabled: boolean) => Promise<any>;
       clearLastError: () => Promise<any>;
       checkForUpdates: (options?: { force?: boolean }) => Promise<{

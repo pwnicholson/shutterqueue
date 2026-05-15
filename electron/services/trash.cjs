@@ -19,7 +19,7 @@ function collectUniquePhotoPathsByQueueIds(queueItems, ids) {
   return out;
 }
 
-const RETRYABLE_TRASH_ERROR_RE = /operation was aborted|operation was canceled|request aborted|aborterror/i;
+const RETRYABLE_TRASH_ERROR_RE = /operation was aborted|operation was canceled|request aborted|aborterror|ebusy|eperm|sharing violation|used by another process|being used by another process|file is open in another program|access is denied|recycle fallback did not move file/i;
 const MISSING_FILE_ERROR_RE = /enoent|no such file|cannot find the file|file not found|does not exist/i;
 
 function toPositiveInt(value, fallback) {
@@ -55,12 +55,17 @@ function toTrashErrorDetails(error) {
 async function movePathsToTrash(photoPaths, options = {}) {
   const paths = Array.isArray(photoPaths) ? photoPaths.map((p) => String(p || "").trim()).filter(Boolean) : [];
   const trashItem = typeof options.trashItem === "function" ? options.trashItem : null;
+  const fallbackTrashItem = typeof options.fallbackTrashItem === "function" ? options.fallbackTrashItem : null;
+  const onAttemptFailure = typeof options.onAttemptFailure === "function" ? options.onAttemptFailure : null;
   if (!trashItem) {
     throw new Error("movePathsToTrash requires options.trashItem(photoPath)");
   }
 
   const maxAttempts = toPositiveInt(options.maxAttempts, 7);
   const retryDelayMs = toPositiveInt(options.retryDelayMs, 300);
+  const fallbackMaxAttempts = toPositiveInt(options.fallbackMaxAttempts, 1);
+  const fallbackRetryDelayMs = toPositiveInt(options.fallbackRetryDelayMs, 250);
+  const initialDelayMs = Math.max(0, Math.floor(Number(options.initialDelayMs) || 0));
   const enableFinalGraceRetry = options.enableFinalGraceRetry !== false;
 
   let movedCount = 0;
@@ -70,8 +75,21 @@ async function movePathsToTrash(photoPaths, options = {}) {
   const skippedMissingPaths = [];
   const failed = [];
   const retried = [];
+  const fallbackMoved = [];
+
+  const emitAttemptFailure = async (payload) => {
+    if (!onAttemptFailure) return;
+    try {
+      await onAttemptFailure(payload);
+    } catch {
+      // Never block trash handling due to diagnostics callback errors.
+    }
+  };
 
   for (const photoPath of paths) {
+    if (initialDelayMs > 0) {
+      await waitMs(initialDelayMs);
+    }
     let attempts = 0;
     while (attempts < maxAttempts) {
       attempts++;
@@ -84,6 +102,14 @@ async function movePathsToTrash(photoPaths, options = {}) {
       } catch (error) {
         let finalError = error;
         let finalAttempts = attempts;
+        await emitAttemptFailure({
+          photoPath,
+          stage: "primary",
+          attempt: attempts,
+          isRetryable: isRetryableTrashError(error),
+          isMissing: isMissingFileTrashError(error),
+          details: toTrashErrorDetails(error),
+        });
         if (isMissingFileTrashError(error)) {
           skippedMissing++;
           skippedMissingPaths.push(photoPath);
@@ -117,8 +143,64 @@ async function movePathsToTrash(photoPaths, options = {}) {
             } catch (graceError) {
               finalError = graceError;
               finalAttempts = graceAttempt;
+              await emitAttemptFailure({
+                photoPath,
+                stage: "primary_grace",
+                attempt: graceAttempt,
+                isRetryable: isRetryableTrashError(graceError),
+                isMissing: isMissingFileTrashError(graceError),
+                details: toTrashErrorDetails(graceError),
+              });
             }
           }
+        }
+
+        const shouldTryFallback = fallbackTrashItem && isRetryableTrashError(finalError);
+        if (shouldTryFallback) {
+          let fallbackAttempt = 0;
+          const fallbackBaseAttempts = finalAttempts;
+          while (fallbackAttempt < fallbackMaxAttempts) {
+            fallbackAttempt++;
+            const effectiveAttempts = fallbackBaseAttempts + fallbackAttempt;
+            try {
+              await fallbackTrashItem(photoPath);
+              movedCount++;
+              movedPaths.push(photoPath);
+              retried.push({ photoPath, attempts: effectiveAttempts });
+              fallbackMoved.push({ photoPath, attempts: effectiveAttempts });
+              finalError = null;
+              finalAttempts = effectiveAttempts;
+              break;
+            } catch (fallbackError) {
+              finalError = fallbackError;
+              finalAttempts = effectiveAttempts;
+              await emitAttemptFailure({
+                photoPath,
+                stage: "fallback",
+                attempt: effectiveAttempts,
+                fallbackAttempt,
+                isRetryable: isRetryableTrashError(fallbackError),
+                isMissing: isMissingFileTrashError(fallbackError),
+                details: toTrashErrorDetails(fallbackError),
+              });
+
+              if (isMissingFileTrashError(fallbackError)) {
+                skippedMissing++;
+                skippedMissingPaths.push(photoPath);
+                finalError = null;
+                break;
+              }
+
+              const canRetryFallback = isRetryableTrashError(fallbackError) && fallbackAttempt < fallbackMaxAttempts;
+              if (canRetryFallback) {
+                await waitMs(fallbackRetryDelayMs * fallbackAttempt);
+                continue;
+              }
+              break;
+            }
+          }
+
+          if (!finalError) break;
         }
 
         failedCount++;
@@ -136,6 +218,7 @@ async function movePathsToTrash(photoPaths, options = {}) {
     skippedMissingPaths,
     failed,
     retried,
+    fallbackMoved,
   };
 }
 

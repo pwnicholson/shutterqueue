@@ -18,7 +18,7 @@ type GroupInfoDialogState = {
   groupUrl: string;
   error?: string;
 };
-type LogFilterMode = "all" | "activity" | "warn_error" | "api";
+type LogFilterMode = "all" | "activity" | "warn_error" | "uploads_deletes" | "api";
 type AlbumEditorEntry = Album & { isPendingNew?: boolean; pendingTitle?: string; state?: "all" | "some" | "none" };
 function sortStateOrder(state: "all" | "some" | "none") {
   return state === "all" ? 0 : state === "some" ? 1 : 2;
@@ -267,7 +267,7 @@ function applyItemLemmyCommunityIds(item: QueueItem, ids: string[], preferredOri
 const NEW_ALBUM_ID_PREFIX = "__new_album__:";
 
 function pendingAlbumIdFromTitle(title: string) {
-  return `${NEW_ALBUM_ID_PREFIX}${String(title || "").trim().toLowerCase()}`;
+  return `${NEW_ALBUM_ID_PREFIX}${encodeURIComponent(String(title || "").trim())}`;
 }
 
 function isPendingNewAlbumId(id: string) {
@@ -275,7 +275,14 @@ function isPendingNewAlbumId(id: string) {
 }
 
 function pendingAlbumTitleFromId(id: string) {
-  return String(id || "").slice(NEW_ALBUM_ID_PREFIX.length);
+  const raw = String(id || "").slice(NEW_ALBUM_ID_PREFIX.length);
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    // Backward compatibility for any previously generated non-encoded ids.
+    return raw;
+  }
 }
 
 function hasCreateAlbumName(names: string[] | undefined, target: string) {
@@ -310,6 +317,25 @@ function fileNameFromPath(p?: string) {
   } catch {
     return "";
   }
+}
+
+function summarizeDeleteErrorForToast(raw: string, maxLen = 180) {
+  let text = String(raw || "").trim();
+  if (!text) return "";
+  text = text.replace(/^Error:\s*/i, "");
+
+  if (/Command failed:\s*powershell\.exe/i.test(text)) {
+    const known = text.match(/PowerShell recycle fallback did not move file\.|Unable to parse source path for recycle fallback\.|Unable to resolve source folder shell namespace\.|Unable to resolve source file in shell namespace\.|Unable to resolve recycle bin shell namespace\.|Missing closing '\}' in statement block or type definition\./i);
+    if (known && known[0]) {
+      text = `PowerShell recycle fallback failed: ${known[0]}`;
+    } else {
+      text = "PowerShell recycle fallback failed.";
+    }
+  }
+
+  text = text.replace(/\s+/g, " ").trim();
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, Math.max(1, maxLen - 3)).trimEnd()}...`;
 }
 
 function resolveThumbSrc(item: any, thumbs: Record<string, string | null | undefined>, flickrUrls: Record<string, {thumbUrl:string; previewUrl:string} | undefined>) {
@@ -548,6 +574,22 @@ function normalizeSavedIdSets(input: any): SavedIdSet[] {
   return out;
 }
 
+function isTextEditableElement(el: Element | null): el is HTMLElement {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  const tag = String(el.tagName || "").toUpperCase();
+  if (el.isContentEditable) return true;
+  if (tag === "TEXTAREA") {
+    const ta = el as HTMLTextAreaElement;
+    return !ta.readOnly && !ta.disabled;
+  }
+  if (tag !== "INPUT") return false;
+  const input = el as HTMLInputElement;
+  const type = String(input.type || "text").toLowerCase();
+  if (input.readOnly || input.disabled) return false;
+  if (["checkbox", "radio", "button", "submit", "reset", "range", "color", "file"].includes(type)) return false;
+  return true;
+}
+
 
 
 function TriCheck(props: {
@@ -781,6 +823,7 @@ export default function App() {
   const [pixelfedAccessToken, setPixelfedAccessToken] = useState("");
   const [pixelfedPostTextMode, setPixelfedPostTextMode] = useState<PixelFedPostTextMode>("merge_title_description_tags");
   const [pixelfedUseDescriptionAsAltText, setPixelfedUseDescriptionAsAltText] = useState(true);
+  const [pixelfedMastodonReshareEnabled, setPixelfedMastodonReshareEnabled] = useState(true);
   const [pixelfedImageResizeEnabled, setPixelfedImageResizeEnabled] = useState(false);
   const [pixelfedImageResizeMaxWidth, setPixelfedImageResizeMaxWidth] = useState(0);
   const [pixelfedImageResizeMaxHeight, setPixelfedImageResizeMaxHeight] = useState(0);
@@ -996,10 +1039,17 @@ const matchesLogFilter = (line: string, mode: LogFilterMode) => {
   const text = String(line || "");
   const isApi = /\[API\s+(OK|ERROR)\]/i.test(text);
   const isWarnOrError = /\[(WARN|ERROR)\]/i.test(text);
+
+  const isUploadLog = /\bUploading photo\b|\bUpload item outcome\b|\bPost-upload file release probe\b|\buploaded to\b|\bUploaded to\b|\bUploaded photo\b|\bupload failed for all platforms\b|\bupload will retry automatically\b|\bReshared PixelFed post to Mastodon\b|\bUploaded original post to Lemmy\b|\bCross-posted to Lemmy community\b/i.test(text);
+  const isDeleteLog = /\bRemoved items from queue \(hard\)\b|\bRemoved queue items and moved originals to trash\b|\bMoved original files to trash\b|\bFailed to move original file to trash\b|\bDetached items to group-only mode\b|\bPruned image cache for removed queue items\b|\bRetried moving original files to trash after transient abort\b|\bRecovered trash move using PowerShell recycle fallback\b/i.test(text);
+  const isUploadOrDelete = isUploadLog || isDeleteLog;
+
   if (mode === "all") return true;
   if (mode === "api") return isApi;
-  if (mode === "warn_error") return isWarnOrError;
-  return !isApi;
+  if (mode === "warn_error") return !isApi && isWarnOrError;
+  if (mode === "uploads_deletes") return !isApi && isUploadOrDelete;
+  if (mode === "activity") return !isApi;
+  return true;
 };
 
 
@@ -1018,6 +1068,15 @@ const matchesLogFilter = (line: string, mode: LogFilterMode) => {
     const [showSetup, setShowSetup] = useState(true);
 const [queue, setQueue] = useState<QueueItem[]>([]);
   const queueRef = useRef<QueueItem[]>([]);
+  const activeTextPersistTimersRef = useRef<{
+    title: ReturnType<typeof setTimeout> | null;
+    description: ReturnType<typeof setTimeout> | null;
+    tags: ReturnType<typeof setTimeout> | null;
+  }>({
+    title: null,
+    description: null,
+    tags: null,
+  });
   const [undoStack, setUndoStack] = useState<QueueUndoEntry[]>([]);
   const undoStackRef = useRef<QueueUndoEntry[]>([]);
   const [undoBusy, setUndoBusy] = useState(false);
@@ -1066,6 +1125,14 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const deleteDialogRef = useRef<HTMLDivElement | null>(null);
   const [groupRemoveDialog, setGroupRemoveDialog] = useState<{ waitingCount: number } | null>(null);
   const groupRemoveDialogResolveRef = useRef<((choice: "all" | "keep" | "cancel") => void) | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    cancelLabel: string;
+    danger?: boolean;
+  } | null>(null);
+  const confirmDialogResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
   const dismissedDuplicateKeysRef = useRef<Set<string>>(new Set());
 
   const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
@@ -1091,6 +1158,7 @@ const [queue, setQueue] = useState<QueueItem[]>([]);
   const queueScrollTopRef = useRef(0);
 
   const [pendingGroupFocus, setPendingGroupFocus] = useState<string>("");
+  const [retryingGroupAddsNow, setRetryingGroupAddsNow] = useState(false);
 
   const queuePathSignature = useMemo(
     () => queue.map((it) => `${it.id}:${String(it.photoPath || "")}`).join("|"),
@@ -1934,6 +2002,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [sched, setSched] = useState<any>(null);
 
   const [toast, setToast] = useState<{ message: string; actionUrl?: string } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [dismissedMessages, setDismissedMessages] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [logFilterMode, setLogFilterMode] = useState<LogFilterMode>("all");
@@ -1941,8 +2010,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   const [minimizeToTray, setMinimizeToTray] = useState(false);
   const [checkUpdatesOnLaunch, setCheckUpdatesOnLaunch] = useState(true);
   const [useLargeThumbnails, setUseLargeThumbnails] = useState(true);
+  const [useLargeFonts, setUseLargeFonts] = useState(false);
   const [useLightTheme, setUseLightTheme] = useState(false);
   const [addShutterQueueTagToAllUploads, setAddShutterQueueTagToAllUploads] = useState(true);
+  const [afterUploadAction, setAfterUploadAction] = useState<"nothing" | "remove" | "delete">("nothing");
+  const [afterUploadDeleteConfirmOpen, setAfterUploadDeleteConfirmOpen] = useState(false);
+  const [afterUploadDeleteConfirmInput, setAfterUploadDeleteConfirmInput] = useState("");
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
   const [updateCheckStatus, setUpdateCheckStatus] = useState("");
   const [updateAvailableNotice, setUpdateAvailableNotice] = useState<{ message: string; releaseUrl?: string } | null>(null);
@@ -1952,12 +2025,34 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   useEffect(() => {
     const root = document.documentElement;
     root.setAttribute("data-theme", useLightTheme ? "light" : "dark");
-  }, [useLightTheme]);
+    root.setAttribute("data-font-size", useLargeFonts ? "large" : "normal");
+  }, [useLightTheme, useLargeFonts]);
 
-  const showToast = (message: string, options?: { actionUrl?: string }) => {
-    setToast({ message, actionUrl: options?.actionUrl });
-    setTimeout(() => setToast(null), 2800);
+  const showToast = (message: string, options?: { actionUrl?: string; durationMs?: number }) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    const normalizedMessage = String(message || "").replace(/\s+/g, " ").trim();
+    const cappedMessage = normalizedMessage.length > 520
+      ? `${normalizedMessage.slice(0, 517).trimEnd()}...`
+      : normalizedMessage;
+    setToast({ message: cappedMessage, actionUrl: options?.actionUrl });
+    const durationMs = Math.max(1200, Math.min(15000, Math.round(Number(options?.durationMs || 2800))));
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, durationMs);
   };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const globalBannerMessages = useMemo(() => splitBannerMessages(cfg?.lastError), [cfg?.lastError]);
   const allKnownBannerMessages = useMemo(() => {
@@ -2011,6 +2106,24 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     return visibleItemMessageParts(s).some((msg) => categorizeMessage(msg) === "error");
   };
 
+  const queueRefreshSignature = (items: QueueItem[]): string => {
+    return items
+      .map((it) => {
+        const serviceStateSummary = Object.entries((it.serviceStates || {}) as Record<string, any>)
+          .map(([svc, st]) => `${svc}:${String(st?.status || "")}:${String(st?.remoteId || "")}:${String(st?.retryAfter || "")}`)
+          .sort()
+          .join(",");
+        return [
+          String(it.id || ""),
+          String(it.status || ""),
+          String(it.uploadedAt || ""),
+          String(it.lastError || ""),
+          serviceStateSummary,
+        ].join("|");
+      })
+      .join("||");
+  };
+
   const allTargetServicesSucceeded = (item: QueueItem): boolean => {
     const targets = normalizeTargetServices(item.targetServices as UploadService[] | undefined);
     if (!targets.length) return false;
@@ -2049,8 +2162,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setMinimizeToTray(Boolean(c.minimizeToTray));
     setCheckUpdatesOnLaunch(Boolean((c as any).checkUpdatesOnLaunch));
     setUseLargeThumbnails(Boolean((c as any).useLargeThumbnails));
+    setUseLargeFonts(Boolean((c as any).useLargeFonts));
     setUseLightTheme(Boolean((c as any).useLightTheme));
     setAddShutterQueueTagToAllUploads((c as any).addShutterQueueTagToAllUploads !== false);
+    const rawAfterUpload = String((c as any).afterUploadAction || "nothing");
+    setAfterUploadAction((rawAfterUpload === "remove" || rawAfterUpload === "delete") ? rawAfterUpload : "nothing");
     const rawTumblrMode = String((c as any).tumblrPostTextMode || "bold_title_then_description");
     const tumblrMode: TumblrPostTextMode =
       rawTumblrMode === "title_then_description" || rawTumblrMode === "title_only" || rawTumblrMode === "description_only"
@@ -2079,6 +2195,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         : "merge_title_description_tags";
     setPixelfedPostTextMode(pixelfedMode);
     setPixelfedUseDescriptionAsAltText((c as any).pixelfedUseDescriptionAsAltText !== false);
+    setPixelfedMastodonReshareEnabled((c as any).pixelfedMastodonReshareEnabled !== false);
     setPixelfedImageResizeEnabled(Boolean((c as any).pixelfedImageResizeEnabled));
     setPixelfedImageResizeMaxWidth(Math.max(0, Math.round(Number((c as any).pixelfedImageResizeMaxWidth || 0))));
     setPixelfedImageResizeMaxHeight(Math.max(0, Math.round(Number((c as any).pixelfedImageResizeMaxHeight || 0))));
@@ -2152,27 +2269,20 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   // refresh data that may change without user interaction
   const refreshDynamic = async () => {
     const activeEl = document.activeElement as HTMLElement | null;
-    const isQueueTextEditing = (() => {
-      if (displayTab !== "queue") return false;
-      if (!activeEl) return false;
-      const tag = String(activeEl.tagName || "").toUpperCase();
-      const isContentEditable = Boolean(activeEl.isContentEditable);
-      if (tag === "TEXTAREA" || isContentEditable) return true;
-      if (tag !== "INPUT") return false;
-      const input = activeEl as HTMLInputElement;
-      const type = String(input.type || "text").toLowerCase();
-      if (input.readOnly || input.disabled) return false;
-      if (["checkbox", "radio", "button", "submit", "reset", "range", "color", "file"].includes(type)) return false;
-      return true;
-    })();
+    const isQueueTextEditing = displayTab === "queue" && isTextEditableElement(activeEl);
+    const shouldSkipQueueRefreshForEditing = isQueueTextEditing;
 
-    if (!isQueueTextEditing) {
+    if (!shouldSkipQueueRefreshForEditing) {
       const q = await window.sq.queueGet();
-      startTransition(() => {
-        setQueue(q);
-        const firstVisible = q.find((it) => it.status !== "group_only");
-        if (!activeId && firstVisible) setActiveId(firstVisible.id);
-      });
+      const currentSig = queueRefreshSignature(queue);
+      const nextSig = queueRefreshSignature(q);
+      if (currentSig !== nextSig) {
+        startTransition(() => {
+          setQueue(q);
+          const firstVisible = q.find((it) => it.status !== "group_only");
+          if (!activeId) setActiveId(firstVisible?.id || null);
+        });
+      }
     }
     setSched(await window.sq.schedulerStatus());
     try { setLogs(await window.sq.logGet()); } catch { /* ignore */ }
@@ -2212,7 +2322,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const q = await window.sq.queueGet();
     setQueue(q);
     const firstVisible = q.find((it) => it.status !== "group_only");
-    if (!activeId && firstVisible) setActiveId(firstVisible.id);
+    if (!activeId) setActiveId(firstVisible?.id || null);
 
     // Ensure default titles (filename without extension) for items missing a title
     try {
@@ -2705,6 +2815,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     }).catch(console.error);
   };
 
+  const savePixelfedMastodonReshareEnabled = (enabled: boolean) => {
+    setPixelfedMastodonReshareEnabled(enabled);
+    window.sq.setPixelfedMastodonReshareEnabled(enabled).catch(console.error);
+  };
+
+  const saveFlickrQueueNewUploadsBehindExistingGroupQueues = (enabled: boolean) => {
+    setCfg((prev: any) => (prev ? { ...prev, flickrQueueNewUploadsBehindExistingGroupQueues: enabled } : prev));
+    window.sq.setFlickrQueueNewUploadsBehindExistingGroupQueues(enabled).catch(console.error);
+  };
+
   const saveLemmyImageResizeOptions = (enabled: boolean, maxWidth: number, maxHeight: number) => {
     window.sq.setLemmyImageResizeOptions({
       enabled,
@@ -2977,6 +3097,35 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     showToast(`Removed ${ids.length} duplicate photo(s).`);
   };
 
+  const promptConfirm = (options: {
+    title?: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    danger?: boolean;
+  }): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if (confirmDialogResolveRef.current) {
+        confirmDialogResolveRef.current(false);
+      }
+      confirmDialogResolveRef.current = resolve;
+      setConfirmDialog({
+        title: options.title || "Please Confirm",
+        message: options.message,
+        confirmLabel: options.confirmLabel || "Confirm",
+        cancelLabel: options.cancelLabel || "Cancel",
+        danger: Boolean(options.danger),
+      });
+    });
+  };
+
+  const resolveConfirmDialog = (confirmed: boolean) => {
+    const resolve = confirmDialogResolveRef.current;
+    confirmDialogResolveRef.current = null;
+    setConfirmDialog(null);
+    resolve?.(confirmed);
+  };
+
   const addPhotos = async () => {
     const paths = await window.sq.pickPhotos();
     if (!paths.length) return;
@@ -3019,7 +3168,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
   };
 
   const clearThumbnailCache = async () => {
-    const confirmed = window.confirm("Permanently delete all cached thumbnails and preview images now?");
+    const confirmed = await promptConfirm({
+      title: "Clear Thumbnail Cache",
+      message: "Permanently delete all cached thumbnails and preview images now?",
+      confirmLabel: "Delete Cache",
+      danger: true,
+    });
     if (!confirmed) return;
     const result = await window.sq.clearImageCache();
     if (!result?.ok) {
@@ -3093,6 +3247,34 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     el.addEventListener('blur', onBlur);
     return () => el.removeEventListener('blur', onBlur);
   }, [typedDeleteDialog]);
+
+  useEffect(() => {
+    const onPointerDownCapture = (e: PointerEvent) => {
+      if (displayTab !== "queue") return;
+      const target = e.target as Element | null;
+      if (!isTextEditableElement(target)) return;
+      const editable = target as HTMLElement;
+
+      // If a concurrent refresh/update steals focus from the clicked input,
+      // restore it on the next frame to keep caret placement reliable.
+      window.requestAnimationFrame(() => {
+        if (!document.hasFocus()) return;
+        if (document.activeElement === editable) return;
+        try {
+          editable.focus({ preventScroll: true });
+        } catch {
+          try {
+            editable.focus();
+          } catch {
+            // Ignore focus repair failures.
+          }
+        }
+      });
+    };
+
+    document.addEventListener("pointerdown", onPointerDownCapture, true);
+    return () => document.removeEventListener("pointerdown", onPointerDownCapture, true);
+  }, [displayTab]);
 
   useEffect(() => {
     setMissingRelinkPromptSuppressed(false);
@@ -3357,7 +3539,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     void window.sq.openExternal({ url: groupInfoDialog.groupUrl });
   };
 
-  const onGroupInfoHtmlClick = (e: React.MouseEvent<HTMLDivElement>) => {
+  const onGroupInfoHtmlClick = async (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement | null;
     const link = target?.closest("a") as HTMLAnchorElement | null;
     if (!link) return;
@@ -3368,7 +3550,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const href = normalizeAllowedExternalHref(link.getAttribute("href") || "");
     if (!href) return;
 
-    const confirmed = window.confirm(`Do you want to open this link in your browser?\n\n${href}`);
+    const confirmed = await promptConfirm({
+      title: "Open External Link",
+      message: `Do you want to open this link in your browser?\n\n${href}`,
+      confirmLabel: "Open Link",
+    });
     if (!confirmed) return;
     void window.sq.openExternal({ url: href });
   };
@@ -3522,11 +3708,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       return;
     }
     
-    const confirmed = window.confirm(
+    const confirmed = await promptConfirm({
+      title: "Remove Queue Items",
+      message:
       idsToRemove.length === 1
         ? "Remove this item from the queue?"
-        : `Remove ${idsToRemove.length} items from the queue?`
-    );
+        : `Remove ${idsToRemove.length} items from the queue?`,
+      confirmLabel: "Remove",
+      danger: true,
+    });
     
     if (!confirmed) return;
     
@@ -3570,9 +3760,13 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
           .map((it) => it.id);
 
         if (relatedPendingIds.length > 0) {
-          const confirmed = window.confirm(
-            "You have one or more other queue listings for this image that are still pending upload. If you delete the file, those listings can no longer be uploaded.\n\nDo you still want to delete the file?"
-          );
+          const confirmed = await promptConfirm({
+            title: "Delete Original File",
+            message:
+              "You have one or more other queue listings for this image that are still pending upload. If you delete the file, those listings can no longer be uploaded.\n\nDo you still want to delete the file?",
+            confirmLabel: "Delete File",
+            danger: true,
+          });
           if (!confirmed) return;
         }
 
@@ -3594,17 +3788,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         });
 
         if (hasNotYetUploadedItems) {
+          const fileCount = countUniqueOriginalFilesByIds(trashIds);
           setUnuploadedDeleteDialog({
             ids: trashIds,
             removeIds,
             detachIds,
             trashIds,
-            fileCount: trashIds.length,
+            fileCount,
           });
           return;
         }
 
-        const fileCount = trashIds.length;
+        const fileCount = countUniqueOriginalFilesByIds(trashIds);
         setTypedDeleteInput("");
         setTypedDeleteDialog({
           ids: trashIds,
@@ -3621,22 +3816,29 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setContextMenu(null);
     if (!idsToUpload.length) return;
     
-    const confirmed = window.confirm(
+    const confirmed = await promptConfirm({
+      title: "Upload Now",
+      message:
       idsToUpload.length === 1
         ? "Upload this item now?"
-        : `Upload ${idsToUpload.length} items now?`
-    );
+        : `Upload ${idsToUpload.length} items now?`,
+      confirmLabel: "Upload",
+    });
     
     if (!confirmed) return;
     
+    let processed = 0;
     for (const id of idsToUpload) {
       try {
         await window.sq.uploadNowOne({ itemId: id });
       } catch (e) {
         console.error("Upload failed:", e);
       }
+      processed += 1;
+      if (processed % 3 === 0 || processed === idsToUpload.length) {
+        await refreshDynamic();
+      }
     }
-    await refreshDynamic();
     showToast(`Uploaded ${idsToUpload.length} item(s).`);
   };
 
@@ -3822,14 +4024,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     });
   };
 
-  const shouldConfirmDuplicatePlatformSelection = (item: QueueItem, serviceId: UploadService): boolean => {
+  const shouldConfirmDuplicatePlatformSelection = async (item: QueueItem, serviceId: UploadService): Promise<boolean> => {
     if (!hasDuplicatePlatformConflict(item, serviceId)) return true;
 
     const platformName = platformLabel(serviceId);
     const itemDisplay = getQueueItemDisplayName(item);
-    return window.confirm(
-      `You have already selected ${platformName} for the image ${itemDisplay} on another queue listing, are you sure you want to upload the same image to that platform more than once?`
-    );
+    return await promptConfirm({
+      title: "Duplicate Platform Selection",
+      message: `You have already selected ${platformName} for the image ${itemDisplay} on another queue listing, are you sure you want to upload the same image to that platform more than once?`,
+      confirmLabel: "Continue",
+    });
   };
 
   const toggleScheduleContextMenu = () => {
@@ -3946,6 +4150,19 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setMissingRelinkPromptSuppressed(true);
   };
 
+  const countUniqueOriginalFilesByIds = (ids: string[]): number => {
+    const keys = new Set(
+      ids
+        .map((id) => {
+          const item = queue.find((it) => it.id === id);
+          const pathKey = normalizePhotoPathKey(item?.photoPath);
+          return pathKey || `id:${String(id || "").trim()}`;
+        })
+        .filter(Boolean)
+    );
+    return keys.size;
+  };
+
   const resolveMissingRelinkPrompt = async () => {
     if (!missingRelinkPrompt) return;
     setMissingRelinkPromptBusy(true);
@@ -4020,6 +4237,48 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     ? typedDeleteInput.trim().toLowerCase() === typedDeleteDialog.requiredText.trim().toLowerCase()
     : false;
 
+  const buildDeleteRequestDiagnostics = useCallback((trashIds: string[]) => {
+    const idSet = new Set((Array.isArray(trashIds) ? trashIds : []).map((id) => String(id || "")).filter(Boolean));
+    const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+    const targetItems = queue
+      .filter((it) => idSet.has(String(it.id || "")))
+      .map((it) => ({
+        id: String(it.id || ""),
+        photoPath: String(it.photoPath || ""),
+        status: String(it.status || ""),
+        isActive: String(activeId || "") === String(it.id || ""),
+        isSelected: selectedIds.includes(String(it.id || "")),
+        hasThumbCached: Boolean(thumbsRef.current[String(it.photoPath || "")]),
+        hasPreviewCached: Boolean(previewCacheRef.current[String(it.photoPath || "")]),
+      }));
+
+    let previewSrcKind = "none";
+    if (preview?.src) {
+      if (/^sqimg:\/\//i.test(preview.src)) previewSrcKind = "sqimg";
+      else if (/^https?:\/\//i.test(preview.src)) previewSrcKind = "remote";
+      else previewSrcKind = "other";
+    }
+
+    return {
+      displayTab,
+      platformEditorTab,
+      activeId: activeId || null,
+      activePhotoPath: String(active?.photoPath || ""),
+      selectedIds: selectedIds.map((id) => String(id || "")).filter(Boolean),
+      selectedCount: selectedIds.length,
+      previewOpen: Boolean(preview),
+      previewLoading: Boolean(preview?.loading),
+      previewSrcKind,
+      previewTitle: String(preview?.title || ""),
+      previewCachedPathCount: Object.keys(previewCacheRef.current).length,
+      thumbCachedPathCount: Object.keys(thumbsRef.current).length,
+      documentHasFocus: typeof document !== "undefined" ? document.hasFocus() : false,
+      focusedElementTag: String(activeEl?.tagName || ""),
+      focusedElementType: String((activeEl as HTMLInputElement | null)?.type || ""),
+      targetItems,
+    };
+  }, [active, activeId, displayTab, platformEditorTab, preview, queue, selectedIds]);
+
   const confirmTypedOriginalFileDeletion = async () => {
     if (!typedDeleteDialog) return;
     if (!matchesTypedDeleteConfirmation) return;
@@ -4035,7 +4294,15 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const detachIds = Array.isArray(typedDeleteDialog.detachIds) ? typedDeleteDialog.detachIds : [];
     const trashIds = Array.isArray(typedDeleteDialog.trashIds) ? typedDeleteDialog.trashIds : typedDeleteDialog.ids;
 
-    const trashResult = await window.sq.queueTrashOriginalsByIds(trashIds);
+    const trashResult = await window.sq.queueDeleteOriginalsByIds({
+      trashIds,
+      removeIds,
+      detachIds,
+      diagnostics: buildDeleteRequestDiagnostics(trashIds),
+    });
+    if (!trashResult?.ok) {
+      throw new Error(String(trashResult?.error || "Delete failed."));
+    }
     const deletedIdSet = new Set<string>(
       Array.isArray((trashResult as any)?.deletedIds)
         ? (trashResult as any).deletedIds.map((id: any) => String(id || "")).filter(Boolean)
@@ -4044,63 +4311,97 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     const failedIds = Array.isArray((trashResult as any)?.failedIds)
       ? (trashResult as any).failedIds.map((id: any) => String(id || "")).filter(Boolean)
       : [];
-
-    const removableIds = removeIds.filter((id) => deletedIdSet.has(String(id || "")));
-    const detachableIds = detachIds.filter((id) => deletedIdSet.has(String(id || "")));
-
-    if (detachableIds.length > 0) {
-      await window.sq.queueDetachToGroupOnly(detachableIds);
-    }
-    if (removableIds.length > 0) {
-      await window.sq.queueRemoveHard(removableIds);
-    }
-
-    const nextQueue = await window.sq.queueGet();
+    const nextQueue: QueueItem[] = Array.isArray((trashResult as any)?.queue)
+      ? (trashResult as any).queue
+      : await window.sq.queueGet();
     const movedCount = Number(trashResult?.movedCount || 0);
     const failedCount = Number(trashResult?.failedCount || 0);
     const skippedMissing = Number(trashResult?.skippedMissing || 0);
     const trashLabel = String(trashResult?.trashLabel || "Recycle Bin");
+    const failedEntries = Array.isArray((trashResult as any)?.failed) ? (trashResult as any).failed : [];
+    const hasOnlyAbortFailures =
+      failedCount > 0 &&
+      failedEntries.length > 0 &&
+      failedEntries.every((entry: any) => /operation was aborted|aborterror/i.test(String(entry?.error || "")));
+    const hasRecyclePathFailure =
+      failedCount > 0 &&
+      failedEntries.length > 0 &&
+      failedEntries.some((entry: any) => /recycle fallback did not move file/i.test(String(entry?.error || "")));
+    const abortHint = hasOnlyAbortFailures
+      ? ` Windows aborted the ${trashLabel} move on this drive. Try deleting the same file in File Explorer to confirm drive-level ${trashLabel} behavior.`
+      : "";
+    const recyclePathHint = hasRecyclePathFailure
+      ? ` Recycle Bin move is failing on this drive/session. This is often a Recycle Bin path issue rather than a true file lock. If needed, Shift+Delete can still work (permanent delete).`
+      : "";
 
     setQueue(nextQueue);
     setSelectedIds([]);
     const firstVisible = nextQueue.find((it) => it.status !== "group_only");
     setActiveId(firstVisible?.id || null);
+    try {
+      const missingAfter = await window.sq.queueGetMissingPathGroups();
+      if (missingAfter?.ok && Array.isArray(missingAfter.groups)) {
+        const missingIds = Array.from(new Set(missingAfter.groups.flatMap((g: any) => Array.isArray(g?.ids) ? g.ids.map((id: any) => String(id || "")).filter(Boolean) : [])));
+        setMissingFileIds(missingIds);
+        if (!missingAfter.groups.length) {
+          setMissingRelinkPrompt(null);
+        }
+      } else {
+        setMissingFileIds([]);
+        setMissingRelinkPrompt(null);
+      }
+    } catch {
+      setMissingFileIds([]);
+    }
     setTypedDeleteDialog(null);
     setTypedDeleteInput("");
     setTypedDeleteBusy(false);
 
+    const parts: string[] = [];
     if (movedCount > 0) {
-      const plural = movedCount === 1 ? "file has" : "files have";
-      let summary = `${movedCount} ${plural} been moved to the ${trashLabel}. You can recover ${movedCount === 1 ? "it" : "them"} from the ${trashLabel}.`;
-      if (failedCount > 0 || skippedMissing > 0) {
-        const notes: string[] = [];
-        if (failedCount > 0) notes.push(`${failedCount} failed`);
-        if (skippedMissing > 0) notes.push(`${skippedMissing} missing on disk`);
-        summary += ` Some files could not be moved: ${notes.join(", ")}.`;
-      }
-      window.alert(summary);
+      const plural = movedCount === 1 ? "file was" : "files were";
+      parts.push(`${movedCount} ${plural} moved to the ${trashLabel}.`);
     } else {
-      const notes: string[] = [];
-      if (failedCount > 0) notes.push(`${failedCount} failed`);
-      if (skippedMissing > 0) notes.push(`${skippedMissing} missing on disk`);
-      const detail = notes.length ? ` Details: ${notes.join(", ")}.` : "";
-      window.alert(`No files were moved to the ${trashLabel}.${detail}`);
+      parts.push(`No files were moved to the ${trashLabel}.`);
     }
 
     if (failedCount > 0 || skippedMissing > 0) {
       const notes: string[] = [];
       if (failedCount > 0) notes.push(`${failedCount} failed`);
       if (skippedMissing > 0) notes.push(`${skippedMissing} missing on disk`);
-      showToast(`Some files could not be moved to ${trashLabel}: ${notes.join(", ")}.`);
+      parts.push(`Some files could not be moved: ${notes.join(", ")}.`);
     }
+
+    if (failedCount > 0 && failedEntries.length > 0) {
+      const failedNames = failedEntries
+        .map((entry: any) => fileNameFromPath(String(entry?.photoPath || "")))
+        .filter(Boolean);
+      if (failedNames.length > 0) {
+        const preview = failedNames.slice(0, 3).join(", ");
+        const more = failedNames.length > 3 ? ` (+${failedNames.length - 3} more)` : "";
+        parts.push(`Failed files: ${preview}${more}.`);
+      }
+
+      const firstErrorSummary = summarizeDeleteErrorForToast(String(failedEntries[0]?.error || ""));
+      if (firstErrorSummary) {
+        parts.push(`First error: ${firstErrorSummary}`);
+      }
+    }
+
     if (failedIds.length > 0) {
-      showToast(`${failedIds.length} item(s) were kept in queue because their originals could not be moved to ${trashLabel}.`);
+      parts.push(`${failedIds.length} item(s) were kept in queue.`);
     }
+
+    if (abortHint) parts.push(abortHint.trim());
+    if (recyclePathHint) parts.push(recyclePathHint.trim());
+
+    showToast(parts.join(" "), {
+      durationMs: failedCount > 0 || skippedMissing > 0 ? 10000 : 4500,
+    });
 
     } catch (e) {
       const msg = String((e as any)?.message || e || "Delete failed.");
-      window.alert(`Delete failed: ${msg}`);
-      showToast(`Delete failed: ${msg}`);
+      showToast(`Delete failed: ${msg}`, { durationMs: 10000 });
       setTypedDeleteBusy(false);
     }
 
@@ -4327,15 +4628,72 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const updateItems = async (
     items: QueueItem[],
-    options?: { recordUndo?: boolean; label?: string; beforeQueue?: QueueItem[] }
+    options?: {
+      recordUndo?: boolean;
+      label?: string;
+      beforeQueue?: QueueItem[];
+      avoidQueueReplaceWhileTextEditing?: boolean;
+    }
   ) => {
     const beforeQueue = options?.beforeQueue || queueRef.current;
     const q = await window.sq.queueUpdate(items);
-    setQueue(q);
+    const activeEl = document.activeElement as HTMLElement | null;
+    const isQueueTextEditing = displayTab === "queue" && isTextEditableElement(activeEl);
+    if (!(options?.avoidQueueReplaceWhileTextEditing && isQueueTextEditing)) {
+      setQueue(q);
+    }
     if (options?.recordUndo !== false) {
       recordUndoFromQueues(beforeQueue, q, options?.label || "Edited queue items");
     }
   };
+
+  const persistActiveTextEdits = useCallback(async () => {
+    if (!activeId) return;
+    const latest = queueRef.current.find((it) => it.id === activeId);
+    if (!latest) return;
+    await updateItems([latest], {
+      label: "Edited queue item text",
+      avoidQueueReplaceWhileTextEditing: true,
+    });
+  }, [activeId, updateItems]);
+
+  const scheduleActiveTextPersist = useCallback((field: "title" | "description" | "tags") => {
+    const existing = activeTextPersistTimersRef.current[field];
+    if (existing) clearTimeout(existing);
+    activeTextPersistTimersRef.current[field] = setTimeout(() => {
+      activeTextPersistTimersRef.current[field] = null;
+      void persistActiveTextEdits();
+    }, 700);
+  }, [persistActiveTextEdits]);
+
+  const flushActiveTextPersist = useCallback((field: "title" | "description" | "tags") => {
+    const existing = activeTextPersistTimersRef.current[field];
+    if (existing) {
+      clearTimeout(existing);
+      activeTextPersistTimersRef.current[field] = null;
+    }
+    void persistActiveTextEdits();
+  }, [persistActiveTextEdits]);
+
+  const updateActiveTextField = useCallback((field: "title" | "description" | "tags", value: string) => {
+    if (!active) return;
+    const updated: QueueItem = {
+      ...active,
+      [field]: value,
+    };
+    setQueue((prev) => prev.map((it) => it.id === updated.id ? updated : it));
+    scheduleActiveTextPersist(field);
+  }, [active, scheduleActiveTextPersist]);
+
+  useEffect(() => {
+    return () => {
+      for (const field of ["title", "description", "tags"] as const) {
+        const timer = activeTextPersistTimersRef.current[field];
+        if (timer) clearTimeout(timer);
+        activeTextPersistTimersRef.current[field] = null;
+      }
+    };
+  }, []);
 
   const searchLocation = async () => {
     const query = locationSearchQuery.trim();
@@ -4350,11 +4708,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       if (result.ok && result.results) {
         setLocationSearchResults(result.results);
       } else {
-        alert(`Location search failed: ${result.error || "Unknown error"}`);
+        showToast(`Location search failed: ${result.error || "Unknown error"}`);
         setLocationSearchResults([]);
       }
     } catch (err: any) {
-      alert(`Location search failed: ${err.message || String(err)}`);
+      showToast(`Location search failed: ${err.message || String(err)}`);
       setLocationSearchResults([]);
     } finally {
       setLocationSearching(false);
@@ -4445,11 +4803,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       if (result.ok && result.results) {
         setBatchLocationResults(result.results);
       } else {
-        alert(`Location search failed: ${result.error || "Unknown error"}`);
+        showToast(`Location search failed: ${result.error || "Unknown error"}`);
         setBatchLocationResults([]);
       }
     } catch (err: any) {
-      alert(`Location search failed: ${err.message || String(err)}`);
+      showToast(`Location search failed: ${err.message || String(err)}`);
       setBatchLocationResults([]);
     } finally {
       setBatchLocationSearching(false);
@@ -4687,6 +5045,22 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
     setPendingRetryDragOver(null);
     if (changed.length) {
       await updateItems(changed);
+    }
+  };
+
+  const retryGroupAdditionsNow = async () => {
+    if (retryingGroupAddsNow) return;
+    setRetryingGroupAddsNow(true);
+    try {
+      const result = await window.sq.retryFlickrGroupAdditionsNow();
+      await refreshDynamic();
+      const attempts = Number(result?.attempts || 0);
+      const groupsProcessed = Number(result?.groupsProcessed || 0);
+      showToast(`Flickr group retries triggered now. Groups: ${groupsProcessed}. Attempts: ${attempts}.`);
+    } catch (e: any) {
+      showToast(`Error: ${String(e?.message || e || "Failed to retry Flickr group additions now.")}`);
+    } finally {
+      setRetryingGroupAddsNow(false);
     }
   };
 
@@ -5193,9 +5567,11 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         const platformName = platformLabel(svc);
         const previewLines = conflictItems.slice(0, 10).map((it) => `- ${getQueueItemDisplayName(it)}`);
         const moreLine = conflictItems.length > 10 ? "\n...and other files" : "";
-        const confirmed = window.confirm(
-          `You have already selected ${platformName} for the image on another queue listing for these items:\n\n${previewLines.join("\n")}${moreLine}\n\nAre you sure you want to upload the same image to that platform more than once?`
-        );
+        const confirmed = await promptConfirm({
+          title: "Duplicate Platform Selection",
+          message: `You have already selected ${platformName} for the image on another queue listing for these items:\n\n${previewLines.join("\n")}${moreLine}\n\nAre you sure you want to upload the same image to that platform more than once?`,
+          confirmLabel: "Continue",
+        });
         if (!confirmed) {
           for (const it of conflictItems) skipConflictServiceAddForIds.add(String(it.id || ""));
         }
@@ -5216,7 +5592,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             // User declined the batch duplicate-platform confirmation.
           } else if (selectedIds.length > 1) {
             set.add(svc);
-          } else if (shouldConfirmDuplicatePlatformSelection(it, svc)) {
+          } else if (await shouldConfirmDuplicatePlatformSelection(it, svc)) {
             set.add(svc);
           }
         } else {
@@ -5312,9 +5688,12 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
   const deleteSavedSet = async (kind: "group" | "album" | "tag" | "lemmy_community", name: string) => {
     const label = kind === "group" ? "groups" : kind === "album" ? "albums" : kind === "tag" ? "tags" : "communities";
-    const ok = window.confirm(
-      `Delete saved ${kind} set "${name}"?\n\nThis only deletes the saved set definition. Photos will remain assigned to their current ${label}.`
-    );
+    const ok = await promptConfirm({
+      title: "Delete Saved Set",
+      message: `Delete saved ${kind} set "${name}"?\n\nThis only deletes the saved set definition. Photos will remain assigned to their current ${label}.`,
+      confirmLabel: "Delete Set",
+      danger: true,
+    });
     if (!ok) return;
     const existing = kind === "group" ? savedGroupSets : kind === "album" ? savedAlbumSets : kind === "tag" ? savedTagSets : savedLemmyCommunitySets;
     const next = existing.filter(s => s.name !== name);
@@ -5660,9 +6039,9 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
       </div>
 
       {toast ? (
-        <div className="badge" style={{ position: "fixed", top: 12, right: 12, zIndex: 200, borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <div className="badge" style={{ position: "fixed", top: 12, right: 12, zIndex: 200, borderColor: "rgba(139,211,255,0.35)", color: "var(--accent)", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, maxWidth: "min(680px, 92vw)", width: "fit-content" }}>
           <span
-            style={{ cursor: toast.actionUrl ? "pointer" : "default" }}
+            style={{ cursor: toast.actionUrl ? "pointer" : "default", whiteSpace: "normal", overflowWrap: "anywhere" }}
             title={toast.actionUrl ? "Open release page" : undefined}
             onClick={() => {
               if (toast.actionUrl) {
@@ -5835,6 +6214,18 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       </div>
                     </>
                   )}
+
+                  <div style={{ height: 14 }} />
+                  <label className="small" style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean((cfg as any)?.flickrQueueNewUploadsBehindExistingGroupQueues)}
+                      onChange={(e) => saveFlickrQueueNewUploadsBehindExistingGroupQueues(Boolean(e.target.checked))}
+                    />
+                    <span>
+                      Add new uploads to the bottom of the existing Group-add queues (do not immediately try to add new photos to Groups with existing queues)
+                    </span>
+                  </label>
 
                   <div className="hr" />
                   <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Flickr Groups / Albums</div>
@@ -6414,6 +6805,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   ) : null}
                   <div style={{ height: 12 }} />
                   <div className="small">PixelFed status: {((cfg as any)?.pixelfedAuthed) ? `Authorized${(cfg as any)?.pixelfedUsername ? ` as @${(cfg as any).pixelfedUsername}` : ""}` : "Not authorized"}</div>
+                  {((cfg as any)?.pixelfedAuthed && (cfg as any)?.mastodonAuthed) ? (
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                      <input
+                        type="checkbox"
+                        checked={pixelfedMastodonReshareEnabled}
+                        onChange={(e) => savePixelfedMastodonReshareEnabled(e.target.checked)}
+                      />
+                      <span>When both PixelFed and Mastodon are selected, post to PixelFed first and then reshare to Mastodon</span>
+                    </label>
+                  ) : null}
                   <div style={{ height: 12 }} />
                   <div className="small" style={{ color: "var(--warn)", marginBottom: 6 }}>
                     Upload note: PixelFed limits vary by instance. ShutterQueue discovers and caches your instance limits, then auto-resizes/compresses (JPEG quality scale 0-100, floor 70).
@@ -6599,7 +7000,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                       <ol className="small" style={{ marginLeft: 20, lineHeight: 1.6, color: "var(--text-secondary)" }}>
                         <li style={{ marginBottom: 6 }}>On your Mastodon instance, go to Account Settings -&gt; Development -&gt; New application.</li>
                         <li style={{ marginBottom: 6 }}>Set Name to <b>ShutterQueue</b>. Website is optional. For Redirect URI, keep the default (<code>urn:ietf:wg:oauth:2.0:oob</code>) or use any valid HTTPS URL if your instance requires one.</li>
-                        <li style={{ marginBottom: 6 }}>In Scopes, select exactly <b>read:accounts</b>, <b>write:media</b>, and <b>write:statuses</b>, then create/save the app.</li>
+                        <li style={{ marginBottom: 6 }}>In Scopes, either select broad <b>read</b> + <b>write</b>, or select granular <b>read:accounts</b>, <b>read:search</b>, <b>write:media</b>, and <b>write:statuses</b>, then create/save the app.</li>
                         <li style={{ marginBottom: 6 }}>Open the app you created and copy the generated access token (or create/copy a token for that app, depending on your instance UI).</li>
                         <li style={{ marginBottom: 6 }}>Enter your Mastodon instance URL and access token below, then click Save.</li>
                         <li style={{ marginBottom: 6 }}>Click Test Mastodon Authorization to verify credentials before uploading.</li>
@@ -6631,6 +7032,16 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   ) : null}
                   <div style={{ height: 12 }} />
                   <div className="small">Mastodon status: {((cfg as any)?.mastodonAuthed) ? `Authorized${(cfg as any)?.mastodonUsername ? ` as @${(cfg as any).mastodonUsername}` : ""}` : "Not authorized"}</div>
+                  {((cfg as any)?.pixelfedAuthed && (cfg as any)?.mastodonAuthed) ? (
+                    <label className="small" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                      <input
+                        type="checkbox"
+                        checked={pixelfedMastodonReshareEnabled}
+                        onChange={(e) => savePixelfedMastodonReshareEnabled(e.target.checked)}
+                      />
+                      <span>When both PixelFed and Mastodon are selected, post to PixelFed first and then reshare to Mastodon</span>
+                    </label>
+                  ) : null}
                   <div style={{ height: 12 }} />
                   <div className="small" style={{ color: "var(--warn)", marginBottom: 6 }}>
                     Upload note: Mastodon limits vary by instance. ShutterQueue discovers and caches your instance limits, then auto-resizes/compresses (JPEG quality scale 0-100, floor 70).
@@ -6806,7 +7217,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                     Mastodon supports public/private visibility and accessibility alt text. Friends/family privacy and location tagging are not supported and will be adjusted/ignored when posting.
                   </div>
                   <div className="small" style={{ marginTop: 6 }}>
-                    Token scopes: select <b>read</b> and <b>write</b>. You do not need follow/push/admin scopes.
+                    Token scopes: use broad <b>read</b> + <b>write</b> (recommended), or granular <b>read:accounts</b>, <b>read:search</b>, <b>write:media</b>, and <b>write:statuses</b>. You do not need follow/push/admin scopes.
                   </div>
                 </>
               ) : setupServiceTab === "lemmy" ? (
@@ -7063,6 +7474,38 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   window.sq.setUseLightTheme(next).catch(console.error);
                 }} />
                 <span className="small">Use Light Theme</span>
+              </label>
+              <div style={{ height: 8 }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={useLargeFonts} onChange={(e) => {
+                  const next = e.target.checked;
+                  setUseLargeFonts(next);
+                  window.sq.setUseLargeFonts(next).catch(console.error);
+                }} />
+                <span className="small">Use Large Fonts</span>
+              </label>
+              <div style={{ height: 8 }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="small" style={{ minWidth: 160 }}>After image uploads:</span>
+                <select
+                  className="input"
+                  style={{ flex: 1 }}
+                  value={afterUploadAction}
+                  onChange={(e) => {
+                    const val = e.target.value as "nothing" | "remove" | "delete";
+                    if (val === "delete") {
+                      setAfterUploadDeleteConfirmInput("");
+                      setAfterUploadDeleteConfirmOpen(true);
+                    } else {
+                      setAfterUploadAction(val);
+                      window.sq.setAfterUploadAction(val).catch(console.error);
+                    }
+                  }}
+                >
+                  <option value="nothing">Do Nothing (leave items in queue)</option>
+                  <option value="remove">Remove items from queue (do not delete)</option>
+                  <option value="delete">Delete items and remove from queue</option>
+                </select>
               </label>
               <div style={{ height: 8 }} />
               <button className="btn" onClick={() => { void clearThumbnailCache(); }}>
@@ -8294,10 +8737,10 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                               <input
                                 type="checkbox"
                                 checked={enabled}
-                                onChange={(e) => {
+                                onChange={async (e) => {
                                   const set = new Set(normalizeTargetServices(active.targetServices));
                                   if (e.target.checked) {
-                                    if (set.has(svc.id) || shouldConfirmDuplicatePlatformSelection(active, svc.id)) {
+                                    if (set.has(svc.id) || await shouldConfirmDuplicatePlatformSelection(active, svc.id)) {
                                       set.add(svc.id);
                                     } else {
                                       set.delete(svc.id);
@@ -8316,15 +8759,34 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                   )}
 
                   <label className="small">Title</label>
-                  <input className="input" disabled={isUploaded} value={active.title} onChange={(e) => updateActive({ title: e.target.value })} />
+                  <input
+                    className="input"
+                    disabled={isUploaded}
+                    value={active.title}
+                    onChange={(e) => updateActiveTextField("title", e.target.value)}
+                    onBlur={() => flushActiveTextPersist("title")}
+                  />
 
                   <div className="section-divider" />
                   <label className="small">Description</label>
-                  <textarea className="textarea" disabled={isUploaded} value={active.description} onChange={(e) => updateActive({ description: e.target.value })} />
+                  <textarea
+                    className="textarea"
+                    disabled={isUploaded}
+                    value={active.description}
+                    onChange={(e) => updateActiveTextField("description", e.target.value)}
+                    onBlur={() => flushActiveTextPersist("description")}
+                  />
 
                   <div className="section-divider" />
                   <label className="small">Tags (comma-separated)</label>
-                  <input className="input" disabled={isUploaded} value={active.tags} onChange={(e) => updateActive({ tags: e.target.value })} placeholder="e.g., travel, street photo, black and white" />
+                  <input
+                    className="input"
+                    disabled={isUploaded}
+                    value={active.tags}
+                    onChange={(e) => updateActiveTextField("tags", e.target.value)}
+                    onBlur={() => flushActiveTextPersist("tags")}
+                    placeholder="e.g., travel, street photo, black and white"
+                  />
                   <div className="small" style={{ marginTop: 6 }}>
                     Multi-word tags are supported. Don't use a '#' - we'll add it for you where needed.
                   </div>
@@ -8963,8 +9425,30 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
 
 
           <div className="card" style={{ gridColumn: "1 / -1" }}>
-            <h2>Flickr Groups with Pending Retries</h2>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <h2 style={{ margin: 0 }}>Flickr Groups with Pending Retries</h2>
+              <button
+                className="btn btn-sm"
+                type="button"
+                title="Retry all Flickr group additions immediately"
+                disabled={retryingGroupAddsNow || !pendingRetryGroups.length}
+                onClick={() => { void retryGroupAdditionsNow(); }}
+              >
+                {retryingGroupAddsNow ? "Retrying..." : "Retry Group Additions Now"}
+              </button>
+            </div>
             <div className="content">
+              <label className="small" style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean((cfg as any)?.flickrQueueNewUploadsBehindExistingGroupQueues)}
+                  onChange={(e) => saveFlickrQueueNewUploadsBehindExistingGroupQueues(Boolean(e.target.checked))}
+                />
+                <span>
+                  Add new uploads to the bottom of the existing Group-add queues (do not immediately try to add new photos to Groups with existing queues)
+                </span>
+              </label>
+
               {!pendingRetryGroups.length ? (
                 <div className="small">No groups currently have pending retries.</div>
               ) : (
@@ -9151,6 +9635,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
             <option value="all">All</option>
             <option value="activity">Activity</option>
             <option value="warn_error">Warnings + Errors</option>
+            <option value="uploads_deletes">Uploads + Deletes</option>
             <option value="api">API</option>
           </select>
           <span className="small">Showing {filteredLogLines.length} of {logs.length}</span>
@@ -9178,7 +9663,7 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
         </div>
         <div className="footer-right">
           {isDevRuntime && <span className="dev-runtime-badge">DEV {devSessionStamp}</span>}
-          <span className="mono">v{appVersion || "0.9.8a"}</span>
+          <span className="mono">v{appVersion || "0.9.9"}</span>
         </div>
       </div>
 
@@ -9197,6 +9682,28 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
               <button className="btn" onClick={dismissMissingRelinkPrompt} disabled={missingRelinkPromptBusy}>Not now</button>
               <button className="btn primary" onClick={() => { void resolveMissingRelinkPrompt(); }} disabled={missingRelinkPromptBusy}>
                 {missingRelinkPromptBusy ? "Relinking..." : "Select Folder"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDialog && (
+        <div className="schedule-dialog-backdrop" onClick={() => resolveConfirmDialog(false)}>
+          <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 800, marginBottom: 10 }}>
+              {confirmDialog.title}
+            </div>
+            <div className="small" style={{ marginBottom: 10, whiteSpace: "pre-wrap" }}>
+              {confirmDialog.message}
+            </div>
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={() => resolveConfirmDialog(false)}>{confirmDialog.cancelLabel}</button>
+              <button
+                className={confirmDialog.danger ? "btn danger" : "btn primary"}
+                onClick={() => resolveConfirmDialog(true)}
+              >
+                {confirmDialog.confirmLabel}
               </button>
             </div>
           </div>
@@ -9419,6 +9926,42 @@ const removePendingRetryForGroup = async (groupId: string, itemId: string) => {
                 disabled={!matchesTypedDeleteConfirmation || typedDeleteBusy}
               >
                 {typedDeleteBusy ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {afterUploadDeleteConfirmOpen && (
+        <div className="schedule-dialog-backdrop" onClick={() => { setAfterUploadDeleteConfirmOpen(false); setAfterUploadDeleteConfirmInput(""); }}>
+          <div className="schedule-dialog" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 900, marginBottom: 8, color: "#ff8f8f", fontSize: 18 }}>
+              Are you sure you want to automatically delete files after uploading?
+            </div>
+            <div className="small" style={{ marginBottom: 12 }}>
+              This will automatically delete your original files from your disk after they have been uploaded. Type <strong>Delete My Files</strong> below to confirm.
+            </div>
+            <input
+              className="input"
+              value={afterUploadDeleteConfirmInput}
+              onChange={(e) => setAfterUploadDeleteConfirmInput(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
+              placeholder="Delete My Files"
+              autoFocus
+            />
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={() => { setAfterUploadDeleteConfirmOpen(false); setAfterUploadDeleteConfirmInput(""); }}>Cancel</button>
+              <button
+                className="btn danger"
+                disabled={afterUploadDeleteConfirmInput.trim().toLowerCase() !== "delete my files"}
+                onClick={() => {
+                  setAfterUploadDeleteConfirmOpen(false);
+                  setAfterUploadDeleteConfirmInput("");
+                  setAfterUploadAction("delete");
+                  window.sq.setAfterUploadAction("delete").catch(console.error);
+                }}
+              >
+                Confirm
               </button>
             </div>
           </div>

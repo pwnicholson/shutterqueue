@@ -103,7 +103,7 @@ test("movePathsToTrash reports non-retryable failures", async () => {
   let attempts = 0;
   const fakeTrashItem = async () => {
     attempts++;
-    throw new Error("Access denied");
+    throw new Error("Unexpected policy failure");
   };
 
   const out = await trash.movePathsToTrash(["C:/photos/locked.jpg"], {
@@ -117,6 +117,28 @@ test("movePathsToTrash reports non-retryable failures", async () => {
   assert.equal(out.failedCount, 1);
   assert.equal(out.skippedMissing, 0);
   assert.equal(out.failed[0].attempts, 1);
+});
+
+test("movePathsToTrash retries common Windows lock signatures", async () => {
+  let attempts = 0;
+  const fakeTrashItem = async () => {
+    attempts++;
+    if (attempts < 3) {
+      throw new Error("EPERM: operation not permitted, file is open in another program");
+    }
+  };
+
+  const out = await trash.movePathsToTrash(["C:/photos/locked-transient.jpg"], {
+    trashItem: fakeTrashItem,
+    maxAttempts: 4,
+    retryDelayMs: 1,
+  });
+
+  assert.equal(attempts, 3);
+  assert.equal(out.movedCount, 1);
+  assert.equal(out.failedCount, 0);
+  assert.equal(out.retried.length, 1);
+  assert.equal(out.retried[0].attempts, 3);
 });
 
 test("movePathsToTrash reports moved path list", async () => {
@@ -141,4 +163,138 @@ test("movePathsToTrash reports skipped-missing path list", async () => {
 
   assert.deepEqual(out.movedPaths, []);
   assert.deepEqual(out.skippedMissingPaths, ["C:/photos/missing.jpg"]);
+});
+
+test("movePathsToTrash uses fallback strategy after retryable abort failures", async () => {
+  let primaryAttempts = 0;
+  let fallbackAttempts = 0;
+  const out = await trash.movePathsToTrash([__filename], {
+    trashItem: async () => {
+      primaryAttempts++;
+      throw new Error("Operation was aborted");
+    },
+    fallbackTrashItem: async () => {
+      fallbackAttempts++;
+    },
+    maxAttempts: 2,
+    retryDelayMs: 1,
+  });
+
+  assert.equal(primaryAttempts, 3); // 2 attempts + 1 grace attempt
+  assert.equal(fallbackAttempts, 1);
+  assert.equal(out.movedCount, 1);
+  assert.equal(out.failedCount, 0);
+  assert.equal(out.fallbackMoved.length, 1);
+  assert.equal(out.fallbackMoved[0].photoPath, __filename);
+});
+
+test("movePathsToTrash reports failure when fallback strategy also fails", async () => {
+  const out = await trash.movePathsToTrash([__filename], {
+    trashItem: async () => {
+      throw new Error("Operation was aborted");
+    },
+    fallbackTrashItem: async () => {
+      throw new Error("PowerShell recycle fallback failed");
+    },
+    maxAttempts: 1,
+    retryDelayMs: 1,
+  });
+
+  assert.equal(out.movedCount, 0);
+  assert.equal(out.failedCount, 1);
+  assert.equal(out.fallbackMoved.length, 0);
+  assert.match(String(out.failed[0].error || ""), /PowerShell recycle fallback failed/);
+  assert.equal(out.failed[0].attempts, 3); // initial + grace + fallback
+});
+
+test("movePathsToTrash can retry fallback strategy before succeeding", async () => {
+  let fallbackAttempts = 0;
+  const out = await trash.movePathsToTrash([__filename], {
+    trashItem: async () => {
+      throw new Error("Operation was aborted");
+    },
+    fallbackTrashItem: async () => {
+      fallbackAttempts++;
+      if (fallbackAttempts < 3) {
+        throw new Error("EPERM: file is open in another program");
+      }
+    },
+    maxAttempts: 1,
+    retryDelayMs: 1,
+    fallbackMaxAttempts: 3,
+    fallbackRetryDelayMs: 1,
+  });
+
+  assert.equal(fallbackAttempts, 3);
+  assert.equal(out.movedCount, 1);
+  assert.equal(out.failedCount, 0);
+  assert.equal(out.fallbackMoved.length, 1);
+  assert.equal(out.fallbackMoved[0].attempts, 5); // initial + grace + 3 fallback tries
+});
+
+test("movePathsToTrash retries PowerShell did-not-move fallback outcomes", async () => {
+  let fallbackAttempts = 0;
+  const out = await trash.movePathsToTrash([__filename], {
+    trashItem: async () => {
+      throw new Error("Operation was aborted");
+    },
+    fallbackTrashItem: async () => {
+      fallbackAttempts++;
+      if (fallbackAttempts < 2) {
+        throw new Error("PowerShell recycle fallback failed: PowerShell recycle fallback did not move file.");
+      }
+    },
+    maxAttempts: 1,
+    retryDelayMs: 1,
+    fallbackMaxAttempts: 2,
+    fallbackRetryDelayMs: 1,
+  });
+
+  assert.equal(fallbackAttempts, 2);
+  assert.equal(out.movedCount, 1);
+  assert.equal(out.failedCount, 0);
+  assert.equal(out.fallbackMoved.length, 1);
+  assert.equal(out.fallbackMoved[0].attempts, 4); // initial + grace + 2 fallback tries
+});
+
+test("movePathsToTrash honors initialDelayMs before first attempt", async () => {
+  const startedAt = Date.now();
+  let firstAttemptAt = 0;
+  const out = await trash.movePathsToTrash(["C:/photos/initial-delay.jpg"], {
+    trashItem: async () => {
+      if (!firstAttemptAt) firstAttemptAt = Date.now();
+    },
+    maxAttempts: 1,
+    retryDelayMs: 1,
+    initialDelayMs: 20,
+  });
+
+  assert.equal(out.movedCount, 1);
+  assert.equal(out.failedCount, 0);
+  assert.ok(firstAttemptAt - startedAt >= 15);
+});
+
+test("movePathsToTrash reports per-attempt failures to callback", async () => {
+  const events = [];
+  const out = await trash.movePathsToTrash([__filename], {
+    trashItem: async () => {
+      throw new Error("Operation was aborted");
+    },
+    fallbackTrashItem: async () => {
+      throw new Error("EPERM: file is open in another program");
+    },
+    maxAttempts: 1,
+    retryDelayMs: 1,
+    fallbackMaxAttempts: 2,
+    fallbackRetryDelayMs: 1,
+    onAttemptFailure: async (event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(out.failedCount, 1);
+  assert.ok(events.length >= 3);
+  assert.equal(events[0].stage, "primary");
+  assert.equal(events[1].stage, "primary_grace");
+  assert.equal(events[2].stage, "fallback");
 });

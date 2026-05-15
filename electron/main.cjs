@@ -4,7 +4,9 @@ const fs = require("fs");
 const https = require("https");
 const http = require("http");
 const crypto = require("crypto");
+const { execFile } = require("child_process");
 const { pathToFileURL } = require("url");
+const sharp = require("sharp");
 const Store = require("electron-store");
 const update = require("./services/update.cjs");
 const trash = require("./services/trash.cjs");
@@ -107,6 +109,62 @@ function deleteScratchFilePermanently(filePath) {
 
 const thumbBuildsInFlight = new Map();
 const previewBuildsInFlight = new Map();
+const recentPhotoAccess = new Map();
+
+function rememberPhotoAccess(photoPath, kind, details = {}) {
+  const p = String(photoPath || "").trim();
+  if (!p) return null;
+
+  const nowIso = new Date().toISOString();
+  const prev = recentPhotoAccess.get(p) || {
+    photoPath: p,
+    accessCount: 0,
+    firstAccessIso: nowIso,
+    lastAccessIso: nowIso,
+    lastAccessKind: "",
+    lastThumbVariant: "",
+    lastPreviewMaxEdge: null,
+  };
+
+  const next = {
+    ...prev,
+    photoPath: p,
+    accessCount: Number(prev.accessCount || 0) + 1,
+    lastAccessIso: nowIso,
+    lastAccessKind: String(kind || ""),
+  };
+
+  if (String(kind || "") === "thumb") {
+    next.lastThumbVariant = String(details?.variant || "");
+  }
+  if (String(kind || "") === "preview") {
+    next.lastPreviewMaxEdge = Number.isFinite(Number(details?.maxEdge)) ? Number(details.maxEdge) : null;
+  }
+
+  recentPhotoAccess.set(p, next);
+  if (recentPhotoAccess.size > 1000) {
+    const oldestKey = recentPhotoAccess.keys().next().value;
+    if (oldestKey) recentPhotoAccess.delete(oldestKey);
+  }
+
+  return next;
+}
+
+function getRecentPhotoAccess(photoPath) {
+  const p = String(photoPath || "").trim();
+  if (!p) return null;
+  const access = recentPhotoAccess.get(p);
+  if (!access) return null;
+  return {
+    photoPath: access.photoPath,
+    accessCount: Number(access.accessCount || 0),
+    firstAccessIso: String(access.firstAccessIso || ""),
+    lastAccessIso: String(access.lastAccessIso || ""),
+    lastAccessKind: String(access.lastAccessKind || ""),
+    lastThumbVariant: String(access.lastThumbVariant || ""),
+    lastPreviewMaxEdge: Number.isFinite(Number(access.lastPreviewMaxEdge)) ? Number(access.lastPreviewMaxEdge) : null,
+  };
+}
 
 function deleteCacheFilesForPathHash(pathHash) {
   if (!pathHash) return 0;
@@ -150,7 +208,7 @@ function pruneImageCacheForRemovedItems(beforeQueue, afterQueue) {
     deleted += deleteCacheFilesForPathHash(h);
   }
   if (deleted > 0 || removedPathHashes.size > 0) {
-    logEvent("INFO", "Pruned image cache for removed queue items", {
+    logEventVerbose("INFO", "Pruned image cache for removed queue items", {
       removedPaths: removedPathHashes.size,
       deletedFiles: deleted,
     });
@@ -179,6 +237,7 @@ function clearAllImageCacheFiles() {
 async function getOrCreateThumbPath(photoPath, variant = "square") {
   const p = String(photoPath || "");
   if (!p) return null;
+  rememberPhotoAccess(p, "thumb", { variant });
   ensureImageCacheDirs();
   const pathHash = getPhotoPathHash(p);
   const key = getPhotoCacheKey(p);
@@ -190,36 +249,26 @@ async function getOrCreateThumbPath(photoPath, variant = "square") {
   if (existing) return existing;
 
   const work = (async () => {
-    const image = nativeImage.createFromPath(p);
-    if (!image || image.isEmpty()) return null;
-    const { width, height } = image.getSize();
-    let thumb;
-    if (thumbVariant === "wide") {
-      const targetAspect = 3 / 2;
-      const safeHeight = Math.max(1, height);
-      const sourceAspect = width > 0 ? (width / safeHeight) : targetAspect;
-      let working = image;
-
-      if (sourceAspect > targetAspect) {
-        const cropWidth = Math.max(1, Math.round(height * targetAspect));
-        const x = Math.max(0, Math.floor((width - cropWidth) / 2));
-        working = image.crop({ x, y: 0, width: cropWidth, height });
+    try {
+      if (thumbVariant === "wide") {
+        // Crop to 3:2 aspect ratio at height 72 (108×72), center-cropped
+        await sharp(p, { failOn: "none" })
+          .rotate()
+          .resize(108, 72, { fit: "cover", position: "centre" })
+          .jpeg({ quality: 84 })
+          .toFile(outPath);
+      } else {
+        // Center-crop to square, 96×96
+        await sharp(p, { failOn: "none" })
+          .rotate()
+          .resize(96, 96, { fit: "cover", position: "centre" })
+          .jpeg({ quality: 84 })
+          .toFile(outPath);
       }
-
-      const workingSize = working.getSize();
-      const targetHeight = 72;
-      const scaledWidth = Math.max(1, Math.round((workingSize.width / Math.max(1, workingSize.height)) * targetHeight));
-      thumb = working.resize({ width: scaledWidth, height: targetHeight, quality: "good" });
-    } else {
-      const side = Math.max(1, Math.min(width, height));
-      const x = Math.max(0, Math.floor((width - side) / 2));
-      const y = Math.max(0, Math.floor((height - side) / 2));
-      const cropped = image.crop({ x, y, width: side, height: side });
-      thumb = cropped.resize({ width: 96, height: 96, quality: "good" });
+      return outPath;
+    } catch {
+      return null;
     }
-    const jpg = thumb.toJPEG(84);
-    fs.writeFileSync(outPath, jpg);
-    return outPath;
   })();
 
   thumbBuildsInFlight.set(outPath, work);
@@ -233,6 +282,7 @@ async function getOrCreateThumbPath(photoPath, variant = "square") {
 async function getOrCreatePreviewPath(photoPath, maxEdge) {
   const p = String(photoPath || "");
   if (!p) return null;
+  rememberPhotoAccess(p, "preview", { maxEdge });
   ensureImageCacheDirs();
   const cap = Math.max(512, Math.min(4096, Number(maxEdge) || 2560));
   const pathHash = getPhotoPathHash(p);
@@ -244,24 +294,16 @@ async function getOrCreatePreviewPath(photoPath, maxEdge) {
   if (existing) return existing;
 
   const work = (async () => {
-    const image = nativeImage.createFromPath(p);
-    if (!image || image.isEmpty()) return null;
-
-    const size = image.getSize();
-    const longest = Math.max(size.width || 0, size.height || 0);
-    let preview = image;
-    if (longest > cap && size.width > 0 && size.height > 0) {
-      const scale = cap / longest;
-      preview = image.resize({
-        width: Math.max(1, Math.round(size.width * scale)),
-        height: Math.max(1, Math.round(size.height * scale)),
-        quality: "good",
-      });
+    try {
+      await sharp(p, { failOn: "none" })
+        .rotate()
+        .resize(cap, cap, { fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 88 })
+        .toFile(outPath);
+      return outPath;
+    } catch {
+      return null;
     }
-
-    const jpg = preview.toJPEG(88);
-    fs.writeFileSync(outPath, jpg);
-    return outPath;
   })();
 
   previewBuildsInFlight.set(outPath, work);
@@ -283,6 +325,37 @@ function logEvent(level, msg, extra) {
   const ts = new Date().toISOString();
   const suffix = extra ? ` ${JSON.stringify(extra)}` : "";
   logLine(`${ts} [${level}] ${msg}${suffix}`);
+}
+
+function logEventVerbose(level, msg, extra) {
+  if (!store.get("verboseLogging")) return;
+  logEvent(level, msg, extra);
+}
+
+// Two-tier logging helpers:
+//   logMode.operational — always-on, user-facing significant events
+//   logMode.diagnostic  — verbose-only, developer/debug detail
+const logMode = {
+  operational: (msg, extra) => logEvent("INFO", msg, extra),
+  diagnostic:  (msg, extra) => logEventVerbose("DEBUG", msg, extra),
+};
+
+// Display names for platform keys used in combined success messages.
+const SERVICE_DISPLAY_NAMES = {
+  flickr:   "Flickr",
+  tumblr:   "Tumblr",
+  bluesky:  "Bluesky",
+  mastodon: "Mastodon",
+  pixelfed: "PixelFed",
+  lemmy:    "Lemmy",
+};
+
+// Format an array of names as "A, B, and C".
+function formatServiceList(names) {
+  if (!names.length) return "";
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
 }
 
 function logApiCallVerbose(methodName, params, result, error) {
@@ -553,6 +626,7 @@ const store = new Store({
     pixelfedUsername: "",
     pixelfedPostTextMode: "merge_title_description_tags",
     pixelfedUseDescriptionAsAltText: true,
+    pixelfedMastodonReshareEnabled: true,
     pixelfedImageResizeEnabled: false,
     pixelfedImageResizeMaxWidth: 0,
     pixelfedImageResizeMaxHeight: 0,
@@ -595,6 +669,7 @@ const store = new Store({
     tumblrAppendText: "",
     tumblrGlobalTags: "",
     flickrGlobalTags: "",
+    flickrQueueNewUploadsBehindExistingGroupQueues: false,
     intervalHours: 24,
     schedulerOn: false,
     nextRunAt: null,
@@ -610,7 +685,9 @@ const store = new Store({
     minimizeToTray: false,
     checkUpdatesOnLaunch: true,
     useLargeThumbnails: true,
+    useLargeFonts: false,
     addShutterQueueTagToAllUploads: true,
+    afterUploadAction: "nothing",
     savedGroupSets: [],
     savedAlbumSets: [],
     savedTagSets: [],
@@ -781,7 +858,8 @@ function getFlickrAuth() {
     apiKey: store.get("apiKey") || "",
     apiSecret: decryptCredential(store.get("apiSecretEnc") || ""),
     token: decryptCredential(store.get("tokenEnc") || ""),
-    tokenSecret: decryptCredential(store.get("tokenSecretEnc") || "")
+    tokenSecret: decryptCredential(store.get("tokenSecretEnc") || ""),
+    userNsid: store.get("userNsid") || "",
   };
 }
 
@@ -864,7 +942,7 @@ function startTumblrOAuthLoopbackServer() {
       if (oauthVerifier) {
         store.set("tumblrPendingVerifier", oauthVerifier);
         if (oauthToken) store.set("tumblrPendingOauthToken", oauthToken);
-        logEvent("INFO", "Captured Tumblr OAuth verifier from loopback callback", { via: "loopback" });
+        logEvent("INFO", "Tumblr authorization received via callback", {});
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(`<!doctype html><html><head><meta charset="utf-8"><title>ShutterQueue Authorization</title></head><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;background:#0f1115;color:#e8eef7;"><h2 style="margin:0 0 10px;">Tumblr authorization received</h2><p style="margin:0;color:#aeb8c8;">You can close this tab and return to ShutterQueue.</p></body></html>`);
         return;
@@ -884,7 +962,7 @@ function startTumblrOAuthLoopbackServer() {
   });
 
   tumblrOAuthLoopbackServer.listen(TUMBLR_OAUTH_LOOPBACK_PORT, TUMBLR_OAUTH_LOOPBACK_HOST, () => {
-    logEvent("INFO", "Tumblr OAuth loopback listener started", {
+    logEventVerbose("INFO", "Tumblr OAuth loopback listener started", {
       host: TUMBLR_OAUTH_LOOPBACK_HOST,
       port: TUMBLR_OAUTH_LOOPBACK_PORT,
       path: TUMBLR_OAUTH_LOOPBACK_PATH,
@@ -927,7 +1005,7 @@ function startPixelfedOAuthLoopbackServer() {
       const code = String(incomingUrl.searchParams.get("code") || "").trim();
       if (code) {
         store.set("pixelfedPendingCode", code);
-        logEvent("INFO", "Captured PixelFed OAuth code from loopback callback");
+        logEventVerbose("INFO", "Captured PixelFed OAuth code from loopback callback");
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(`<!doctype html><html><head><meta charset="utf-8"><title>ShutterQueue Authorization</title></head><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;background:#0f1115;color:#e8eef7;"><h2 style="margin:0 0 10px;">PixelFed authorization received</h2><p style="margin:0;color:#aeb8c8;">You can close this tab and return to ShutterQueue, then click "Complete Authorization".</p></body></html>`);
         return;
@@ -949,7 +1027,7 @@ function startPixelfedOAuthLoopbackServer() {
   });
 
   pixelfedOAuthLoopbackServer.listen(PIXELFED_OAUTH_LOOPBACK_PORT, PIXELFED_OAUTH_LOOPBACK_HOST, () => {
-    logEvent("INFO", "PixelFed OAuth loopback listener started", {
+    logEventVerbose("INFO", "PixelFed OAuth loopback listener started", {
       host: PIXELFED_OAUTH_LOOPBACK_HOST,
       port: PIXELFED_OAUTH_LOOPBACK_PORT,
       path: PIXELFED_OAUTH_LOOPBACK_PATH,
@@ -1056,7 +1134,7 @@ function startGroupCountsRefreshInBackground(groups) {
   });
   if (!needsRefresh) return;
 
-  logEvent("INFO", "Refreshing group sizes", { totalGroups: list.length, cacheMaxAgeDays: 14 });
+  logEventVerbose("INFO", "Refreshing group sizes", { totalGroups: list.length, cacheMaxAgeDays: 14 });
 
   groupCountsRefreshState = {
     inProgress: true,
@@ -1124,7 +1202,7 @@ function startGroupCountsRefreshInBackground(groups) {
       store.set("groupsCache", updated);
       store.set("groupCountFetchedAtById", fetchedAtById);
       store.set("groupsCountsFetchedAt", Date.now());
-      logEvent("INFO", "Group size refresh complete", {
+      logEventVerbose("INFO", "Group size refresh complete", {
         totalGroups: list.length,
         refreshedGroups: refreshedCount,
         skippedFreshGroups: skippedFreshCount,
@@ -1398,129 +1476,172 @@ async function attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item, 
   }
 }
 
-async function processDueGroupRetries({ apiKey, apiSecret, token, tokenSecret, maxAttempts }) {
+async function processDueGroupRetries({ apiKey, apiSecret, token, tokenSecret, maxAttempts, forceDue, preserveTimerOnRejection, groupsFilter }) {
   const q = queue.loadQueue();
-  const now = Date.now();
   let attempts = 0;
+  let groupsProcessed = 0;
   let changed = false;
+  const maxGroupsPerCycle = Math.max(1, Math.floor(Number(maxAttempts) || 5));
+  const includeNotYetDue = Boolean(forceDue);
+  const doPreserveTimer = Boolean(preserveTimerOnRejection);
+  const allowedGroups = groupsFilter instanceof Set ? groupsFilter : null;
+  const blockedGroupIds = new Set();
 
-  // First pass: bump any stale overdue retry times to ensure they're never shown in the past.
-  // This handles cases where the retry time was scheduled for a past date (e.g., after app restart).
-  const groupsWithOverdueRetries = new Map(); // groupId -> overdue item count
-  for (const it of q) {
-    if (!it?.photoId || !it.groupAddStates) continue;
-    for (const [gid, st] of Object.entries(it.groupAddStates)) {
-      if (!st || st.status !== "retry") continue;
-      const due = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : 0;
-      if (due && due > now) continue; // Not overdue
-      // This retry is overdue (or has no valid date); track which groups have this
-      if (!groupsWithOverdueRetries.has(gid)) {
-        groupsWithOverdueRetries.set(gid, 0);
-      }
-      groupsWithOverdueRetries.set(gid, groupsWithOverdueRetries.get(gid) + 1);
-    }
-  }
-
-  // For each group with overdue retries, bump all their retry times forward to avoid showing past dates
-  if (groupsWithOverdueRetries.size > 0) {
-    const futureTime = new Date(now + 60 * 60 * 1000).toISOString(); // now + 1 hour
-    for (const [gid, count] of groupsWithOverdueRetries) {
-      for (const it of q) {
-        const st = it.groupAddStates?.[gid];
+  function collectDueGroups(nowTs) {
+    const dueByGroup = new Map();
+    for (let idx = 0; idx < q.length; idx++) {
+      const it = q[idx];
+      if (!it || !it.photoId || !it.groupAddStates) continue;
+      for (const [gid, st] of Object.entries(it.groupAddStates)) {
+        if (blockedGroupIds.has(gid)) continue;
+        if (allowedGroups && !allowedGroups.has(gid)) continue;
         if (!st || st.status !== "retry") continue;
         const due = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : 0;
-        if (due && due > now) continue; // Keep future times as-is
-        st.nextRetryAt = futureTime;
-        changed = true;
-      }
-    }
-  }
-
-  // Group-level scheduling: one retry attempt per group per cycle.
-  // Candidate within each group is selected by retryPriority, then queue order.
-  const dueByGroup = new Map();
-
-  for (let idx = 0; idx < q.length; idx++) {
-    const it = q[idx];
-    if (!it || !it.photoId) continue;
-    const states = it.groupAddStates;
-    if (!states) continue;
-
-    for (const [gid, st] of Object.entries(states)) {
-      if (!st || st.status !== "retry") continue;
-      const due = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : 0;
-      if (!due || due > now) continue;
-
-      const job = {
-        item: it,
-        groupId: gid,
-        due,
-        queueIndex: idx,
-        retryPriority: Number.isFinite(Number(st.retryPriority)) ? Number(st.retryPriority) : Number.MAX_SAFE_INTEGER,
-      };
-
-      const prev = dueByGroup.get(gid);
-      if (!prev) {
-        dueByGroup.set(gid, job);
-      } else {
+        const isDue = includeNotYetDue || !due || due <= nowTs;
+        if (!isDue) continue;
+        const retryPriority = Number.isFinite(Number(st.retryPriority)) ? Number(st.retryPriority) : Number.MAX_SAFE_INTEGER;
+        const prev = dueByGroup.get(gid);
+        if (!prev) {
+          dueByGroup.set(gid, { groupId: gid, due, retryPriority, queueIndex: idx });
+          continue;
+        }
         const better =
-          (job.retryPriority < prev.retryPriority) ||
-          (job.retryPriority === prev.retryPriority && job.queueIndex < prev.queueIndex);
-        if (better) dueByGroup.set(gid, job);
-      }
-    }
-  }
-
-  const groupJobs = Array.from(dueByGroup.values()).sort((a, b) => {
-    if (a.due !== b.due) return a.due - b.due;
-    if (a.retryPriority !== b.retryPriority) return a.retryPriority - b.retryPriority;
-    return a.queueIndex - b.queueIndex;
-  });
-
-  for (const job of groupJobs) {
-    if (attempts >= (maxAttempts || 5)) break;
-    attempts++;
-
-    await attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item: job.item, groupId: job.groupId });
-
-    const attemptedState = job.item.groupAddStates?.[job.groupId];
-    let propagatedNextRetryAt = "";
-    if (attemptedState && attemptedState.status === "retry" && attemptedState.nextRetryAt) {
-      propagatedNextRetryAt = attemptedState.nextRetryAt;
-    } else {
-      // If any retry entries for this group remain overdue, bump them together
-      // to avoid repeatedly hammering the same group/API window.
-      let hasOverdueRetry = false;
-      for (const it of q) {
-        const st = it.groupAddStates?.[job.groupId];
-        if (!st || st.status !== "retry") continue;
-        const due = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : 0;
-        if (!due || due <= Date.now()) {
-          hasOverdueRetry = true;
-          break;
+          (due < prev.due) ||
+          (due === prev.due && retryPriority < prev.retryPriority) ||
+          (due === prev.due && retryPriority === prev.retryPriority && idx < prev.queueIndex);
+        if (better) {
+          dueByGroup.set(gid, { groupId: gid, due, retryPriority, queueIndex: idx });
         }
       }
-      if (hasOverdueRetry) {
-        propagatedNextRetryAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-      }
     }
+    return Array.from(dueByGroup.values()).sort((a, b) => {
+      if (a.due !== b.due) return a.due - b.due;
+      if (a.retryPriority !== b.retryPriority) return a.retryPriority - b.retryPriority;
+      return a.queueIndex - b.queueIndex;
+    });
+  }
 
-    if (propagatedNextRetryAt) {
-      // Propagate the group-level retry slot to all retrying photos for this group.
+  function pickDueCandidateForGroup(groupId, nowTs) {
+    let best = null;
+    for (let idx = 0; idx < q.length; idx++) {
+      const it = q[idx];
+      if (!it || !it.photoId || !it.groupAddStates) continue;
+      const st = it.groupAddStates[groupId];
+      if (!st || st.status !== "retry") continue;
+      const due = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : 0;
+      const isDue = includeNotYetDue || !due || due <= nowTs;
+      if (!isDue) continue;
+      const retryPriority = Number.isFinite(Number(st.retryPriority)) ? Number(st.retryPriority) : Number.MAX_SAFE_INTEGER;
+      const cand = { item: it, queueIndex: idx, due, retryPriority, groupId };
+      if (!best) {
+        best = cand;
+        continue;
+      }
+      const better =
+        (cand.retryPriority < best.retryPriority) ||
+        (cand.retryPriority === best.retryPriority && cand.due < best.due) ||
+        (cand.retryPriority === best.retryPriority && cand.due === best.due && cand.queueIndex < best.queueIndex);
+      if (better) best = cand;
+    }
+    return best;
+  }
+
+  while (groupsProcessed < maxGroupsPerCycle) {
+    const dueGroups = collectDueGroups(Date.now());
+    if (!dueGroups.length) {
+      let retryStateCount = 0;
+      let earliestPendingRetryAt = "";
+      let earliestPendingRetryAtMs = Number.POSITIVE_INFINITY;
+      if (!includeNotYetDue) {
+        for (const it of q) {
+          if (!it || !it.groupAddStates) continue;
+          for (const st of Object.values(it.groupAddStates)) {
+            if (!st || st.status !== "retry") continue;
+            retryStateCount++;
+            const retryMs = st.nextRetryAt ? new Date(st.nextRetryAt).getTime() : NaN;
+            if (Number.isFinite(retryMs) && retryMs < earliestPendingRetryAtMs) {
+              earliestPendingRetryAtMs = retryMs;
+              earliestPendingRetryAt = String(st.nextRetryAt || "");
+            }
+          }
+        }
+      }
+      logEventVerbose("DEBUG", "processDueGroupRetries: no due groups found", {
+        forceDue,
+        maxAttempts,
+        queueLength: q.length,
+        retryStateCount,
+        earliestPendingRetryAt: earliestPendingRetryAt || null
+      });
+      break;
+    }
+    logEventVerbose("INFO", "processDueGroupRetries: attempting group retries", { dueGroupCount: dueGroups.length, forceDue });
+    const activeGroupId = dueGroups[0].groupId;
+    groupsProcessed++;
+
+    let groupBlocked = false;
+    let groupSuccessCount = 0;
+    // Snapshot existing nextRetryAt for all items in this group, so we can restore
+    // them if the very first attempt is rejected and preserveTimerOnRejection is set.
+    const savedGroupTimers = new Map();
+    if (doPreserveTimer) {
       for (const it of q) {
-        const st = it.groupAddStates?.[job.groupId];
+        const st = it.groupAddStates?.[activeGroupId];
         if (!st || st.status !== "retry") continue;
-        st.nextRetryAt = propagatedNextRetryAt;
+        savedGroupTimers.set(it.id, st.nextRetryAt);
       }
     }
+    while (!groupBlocked) {
+      const job = pickDueCandidateForGroup(activeGroupId, Date.now());
+      if (!job) break;
 
-    const existingNonGroupParts = String(job.item.lastError || "")
+      attempts++;
+      await attemptAddToGroup({ apiKey, apiSecret, token, tokenSecret, item: job.item, groupId: activeGroupId });
+
+      const attemptedState = job.item.groupAddStates?.[activeGroupId];
+      if (attemptedState && attemptedState.status === "retry") {
+        // A retryable rejection means this group is back in cooldown.
+        if (doPreserveTimer && groupSuccessCount === 0) {
+          // No successful adds yet for this group — restore saved timers so the
+          // existing backoff schedule is not disrupted by a forced sweep.
+          // Exception: if the saved timer is more than 24h in the future, cap it to 1h.
+          const nowMs = Date.now();
+          const cap24h = nowMs + 24 * 60 * 60 * 1000;
+          for (const it of q) {
+            const st = it.groupAddStates?.[activeGroupId];
+            if (!st || st.status !== "retry") continue;
+            const saved = savedGroupTimers.get(it.id);
+            const savedMs = saved ? new Date(saved).getTime() : NaN;
+            if (Number.isFinite(savedMs) && savedMs <= cap24h) {
+              st.nextRetryAt = saved;
+            } else {
+              st.nextRetryAt = new Date(nowMs + 60 * 60 * 1000).toISOString();
+            }
+          }
+          logEventVerbose("DEBUG", "Group retry: preserved existing timer (immediate rejection on forced sweep)", { groupId: activeGroupId });
+        } else {
+          // Keep all retrying photos aligned to the same group-level retry slot.
+          const nextRetryAt = attemptedState.nextRetryAt || new Date(Date.now() + 60 * 60 * 1000).toISOString();
+          for (const it of q) {
+            const st = it.groupAddStates?.[activeGroupId];
+            if (!st || st.status !== "retry") continue;
+            st.nextRetryAt = nextRetryAt;
+          }
+        }
+        blockedGroupIds.add(activeGroupId);
+        groupBlocked = true;
+      } else {
+        groupSuccessCount++;
+      }
+
+      const existingNonGroupParts = String(job.item.lastError || "")
       .split("|")
       .map(s => s.trim())
       .filter(Boolean)
       .filter(s => !/^user limit reached for group\s/i.test(s) && !/^adding to group\s/i.test(s) && !/^group add failed/i.test(s) && !/^photo already in pool/i.test(s) && !/^photo added to group moderation/i.test(s));
-    setItemLastErrorFromGroupStates(job.item, existingNonGroupParts);
-    changed = true;
+      setItemLastErrorFromGroupStates(job.item, existingNonGroupParts);
+      changed = true;
+    }
   }
 
   if (changed) {
@@ -1539,7 +1660,34 @@ async function processDueGroupRetries({ apiKey, apiSecret, token, tokenSecret, m
     });
     queue.saveQueue(merged);
   }
-  return { ok: true, attempts };
+  return { ok: true, attempts, groupsProcessed };
+}
+
+async function runImmediateGroupRetrySweep(reason) {
+  if (!store.get("schedulerOn")) return;
+  if (!isFlickrAuthed()) {
+    logEventVerbose("DEBUG", "Immediate group retry sweep skipped (Flickr not authed)", { reason });
+    return;
+  }
+  try {
+    const auth = getFlickrAuth();
+    // On launch/start/scheduler-start: attempt ALL groups regardless of due time,
+    // but if a group is immediately rejected with no prior success, preserve its
+    // existing timer (don't reset the backoff schedule from a forced attempt).
+    await processDueGroupRetries({
+      apiKey: auth.apiKey,
+      apiSecret: auth.apiSecret,
+      token: auth.token,
+      tokenSecret: auth.tokenSecret,
+      maxAttempts: 999,
+      forceDue: true,
+      preserveTimerOnRejection: true
+    });
+    logEventVerbose("INFO", "Immediate group retry sweep completed", { reason });
+  } catch (e) {
+    const msg = e?.message ? String(e.message) : String(e);
+    logEvent("WARN", "Immediate group retry sweep failed", { reason, error: msg });
+  }
 }
 
 function createWindow() {
@@ -1683,6 +1831,35 @@ function createWindow() {
       sendFilesToRenderer();
     }, 500);
   });
+
+  // Keep BrowserWindow focus and renderer (webContents) focus in sync.
+  // This mitigates intermittent cases where text fields stop accepting input
+  // until the app is alt-tabbed away and back.
+  const syncWebContentsFocus = (reason) => {
+    if (!win || win.isDestroyed()) return;
+    if (!win.isFocused()) return;
+
+    const tryFocus = () => {
+      if (!win || win.isDestroyed()) return;
+      if (!win.isFocused()) return;
+      if (win.webContents && !win.webContents.isDestroyed() && !win.webContents.isFocused()) {
+        try {
+          win.webContents.focus();
+          logEventVerbose("DEBUG", "Re-focused renderer webContents", { reason });
+        } catch (_) {
+          // keep focus recovery best-effort only
+        }
+      }
+    };
+
+    // Try immediately and once more shortly after focus transitions settle.
+    setTimeout(tryFocus, 0);
+    setTimeout(tryFocus, 60);
+  };
+
+  win.on("focus", () => syncWebContentsFocus("window_focus"));
+  win.on("show", () => syncWebContentsFocus("window_show"));
+  win.on("restore", () => syncWebContentsFocus("window_restore"));
 }
 
 function createTray() {
@@ -1742,7 +1919,8 @@ function createTray() {
             const hours = store.get("intervalHours") || 24;
             store.set("schedulerOn", true);
             if (schedTimer) clearInterval(schedTimer);
-            schedTimer = setInterval(() => tickScheduler().catch(() => {}), 1000);
+            schedTimer = setInterval(() => tickScheduler().catch(() => {}), 600000);
+            runImmediateGroupRetrySweep("tray_start").catch(() => {});
           }
           updateTrayMenu();
           updateTrayIcon();
@@ -1986,7 +2164,8 @@ app.whenReady().then(() => {
   if (store.get("resumeOnLaunch") && store.get("schedulerOn")) {
     // Resume scheduler loop
     if (schedTimer) clearInterval(schedTimer);
-    schedTimer = setInterval(() => tickScheduler().catch(() => {}), 1000);
+    schedTimer = setInterval(() => tickScheduler().catch(() => {}), 600000);
+    runImmediateGroupRetrySweep("resume_on_launch").catch(() => {});
   }
   // Always run Lemmy retry processing independently of the upload scheduler.
   // Transient Lemmy failures must retry even when the user hasn't started the scheduler.
@@ -2082,6 +2261,7 @@ ipcMain.handle("cfg:get", async () => ({
   pixelfedUsername: String(store.get("pixelfedUsername") || ""),
   pixelfedPostTextMode: String(store.get("pixelfedPostTextMode") || "merge_title_description_tags"),
   pixelfedUseDescriptionAsAltText: store.get("pixelfedUseDescriptionAsAltText") !== false,
+  pixelfedMastodonReshareEnabled: store.get("pixelfedMastodonReshareEnabled") !== false,
   pixelfedImageResizeEnabled: Boolean(store.get("pixelfedImageResizeEnabled")),
   pixelfedImageResizeMaxWidth: Math.max(0, Math.round(Number(store.get("pixelfedImageResizeMaxWidth") || 0))),
   pixelfedImageResizeMaxHeight: Math.max(0, Math.round(Number(store.get("pixelfedImageResizeMaxHeight") || 0))),
@@ -2118,6 +2298,7 @@ ipcMain.handle("cfg:get", async () => ({
   tumblrAppendText: String(store.get("tumblrAppendText") || ""),
   tumblrGlobalTags: String(store.get("tumblrGlobalTags") || ""),
   flickrGlobalTags: String(store.get("flickrGlobalTags") || ""),
+  flickrQueueNewUploadsBehindExistingGroupQueues: Boolean(store.get("flickrQueueNewUploadsBehindExistingGroupQueues")),
   authed: isAuthed(),
   username: store.get("username") || "",
   fullname: store.get("fullname") || "",
@@ -2137,8 +2318,10 @@ ipcMain.handle("cfg:get", async () => ({
   minimizeToTray: Boolean(store.get("minimizeToTray")),
   checkUpdatesOnLaunch: Boolean(store.get("checkUpdatesOnLaunch")),
   useLargeThumbnails: Boolean(store.get("useLargeThumbnails")),
+  useLargeFonts: Boolean(store.get("useLargeFonts")),
   useLightTheme: Boolean(store.get("useLightTheme")),
   addShutterQueueTagToAllUploads: store.get("addShutterQueueTagToAllUploads") !== false,
+  afterUploadAction: ["nothing", "remove", "delete"].includes(String(store.get("afterUploadAction") || "")) ? String(store.get("afterUploadAction")) : "nothing",
   savedGroupSets: Array.isArray(store.get("savedGroupSets")) ? store.get("savedGroupSets") : [],
   savedAlbumSets: Array.isArray(store.get("savedAlbumSets")) ? store.get("savedAlbumSets") : [],
   savedTagSets: Array.isArray(store.get("savedTagSets")) ? store.get("savedTagSets") : [],
@@ -2525,7 +2708,7 @@ ipcMain.handle("flickr:groups", async (_e, opts = {}) => {
     startGroupCountsRefreshInBackground(merged);
 
     logApiCallVerbose("flickr.groups.pools.getGroups", { cache: false }, merged);
-    logEvent("INFO", "Loaded groups list", { source: "flickr", count: merged.length, forceRefresh: force });
+    logEventVerbose("INFO", "Loaded groups list", { source: "flickr", count: merged.length, forceRefresh: force });
     return merged;
   } catch (e) {
     logApiCallVerbose("flickr.groups.pools.getGroups", { cache: false }, null, e);
@@ -2574,10 +2757,17 @@ ipcMain.handle("flickr:albums", async () => {
       apiSecret: auth.apiSecret,
       token: auth.token,
       tokenSecret: auth.tokenSecret,
-      userNsid: store.get("userNsid"),
+      userNsid: auth.userNsid,
     });
+    const reconcileResult = await reconcileQueuedCreateAlbumsAgainstExisting({ auth });
+    if (Number(reconcileResult?.updatedItems || 0) > 0) {
+      logEvent("INFO", "Reconciled queued create-album titles to existing albums", {
+        updatedItems: Number(reconcileResult.updatedItems || 0),
+        matchedTitles: Number(reconcileResult.matchedTitles || 0),
+      });
+    }
     logApiCallVerbose("flickr.photosets.getList", {}, result);
-    logEvent("INFO", "Loaded albums list", { count: Array.isArray(result) ? result.length : 0 });
+    logEventVerbose("INFO", "Loaded albums list", { count: Array.isArray(result) ? result.length : 0 });
     return result;
   } catch (e) {
     logApiCallVerbose("flickr.photosets.getList", {}, null, e);
@@ -2628,10 +2818,10 @@ ipcMain.handle("image:getPreviewSrc", async (_e, { photoPath, maxEdge }) => {
 ipcMain.handle("cache:clearImageCache", async () => {
   try {
     const result = clearAllImageCacheFiles();
-    logEvent("INFO", "Cleared image cache files", result);
+    logEventVerbose("INFO", "Cleared image cache files", result);
     return { ok: true, ...result };
   } catch (e) {
-    logEvent("ERROR", "Failed to clear image cache files", { error: String(e) });
+    logEventVerbose("ERROR", "Failed to clear image cache files", { error: String(e) });
     return { ok: false, error: String(e) };
   }
 });
@@ -2690,14 +2880,383 @@ function checkAccess(filePath, mode) {
   }
 }
 
-function buildTrashFailureDiagnostics(photoPath) {
+function summarizeActiveHandleTypes() {
+  try {
+    if (typeof process._getActiveHandles !== "function") return {};
+    const handles = process._getActiveHandles();
+    const out = {};
+    for (const h of Array.isArray(handles) ? handles : []) {
+      const name = String(h?.constructor?.name || typeof h || "unknown");
+      out[name] = Number(out[name] || 0) + 1;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function probeRenameRoundTrip(photoPath) {
+  const p = String(photoPath || "").trim();
+  if (!p) return { canRenameRoundTrip: false, renameRoundTripError: "Missing path" };
+  if (!fs.existsSync(p)) return { canRenameRoundTrip: false, renameRoundTripError: "Path missing on disk" };
+
+  const probeSuffix = `.sqdiag-rename-probe-${process.pid}-${Date.now()}`;
+  const probePath = `${p}${probeSuffix}`;
+
+  try {
+    fs.renameSync(p, probePath);
+    fs.renameSync(probePath, p);
+    return { canRenameRoundTrip: true, renameRoundTripError: "" };
+  } catch (e) {
+    try {
+      if (fs.existsSync(probePath) && !fs.existsSync(p)) {
+        fs.renameSync(probePath, p);
+      }
+    } catch {
+      // Ignore restore probe errors and keep original failure reason.
+    }
+    return {
+      canRenameRoundTrip: false,
+      renameRoundTripError: String(e?.message || e || "rename probe failed"),
+    };
+  }
+}
+
+function probeExclusiveOpenWindows(photoPath) {
+  if (process.platform !== "win32") {
+    return Promise.resolve({ canOpenExclusive: null, exclusiveOpenError: "exclusive-open probe only runs on Windows" });
+  }
+
+  const p = String(photoPath || "").trim();
+  if (!p) {
+    return Promise.resolve({ canOpenExclusive: false, exclusiveOpenError: "Missing path" });
+  }
+
+  const escapedPath = p.replace(/'/g, "''");
+  const script = [
+    `$path = '${escapedPath}'`,
+    "if (-not (Test-Path -LiteralPath $path)) { Write-Output 'MISSING'; exit 0 }",
+    "try {",
+    "  $f = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)",
+    "  $f.Close()",
+    "  $f.Dispose()",
+    "  Write-Output 'OK'",
+    "} catch {",
+    "  Write-Output ('ERR:' + $_.Exception.Message)",
+    "}",
+  ].join(";");
+
+  return new Promise((resolve) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+      { windowsHide: true, timeout: 5000 },
+      (error, stdout, stderr) => {
+        const out = String(stdout || "").trim();
+        const err = String(stderr || "").trim();
+        if (out === "OK") {
+          resolve({ canOpenExclusive: true, exclusiveOpenError: "" });
+          return;
+        }
+        if (out === "MISSING") {
+          resolve({ canOpenExclusive: false, exclusiveOpenError: "Path missing on disk" });
+          return;
+        }
+        if (out.startsWith("ERR:")) {
+          resolve({ canOpenExclusive: false, exclusiveOpenError: out.slice(4).trim() });
+          return;
+        }
+        const fallbackError = String(error?.message || "") || err || out || "exclusive-open probe failed";
+        resolve({ canOpenExclusive: false, exclusiveOpenError: fallbackError });
+      }
+    );
+  });
+}
+
+function probeWindowsLockingProcesses(photoPath) {
+  if (process.platform !== "win32") {
+    return Promise.resolve({ lockers: [], error: "locker probe only runs on Windows" });
+  }
+
+  const p = String(photoPath || "").trim();
+  if (!p) {
+    return Promise.resolve({ lockers: [], error: "Missing path" });
+  }
+
+  const escapedPath = p.replace(/'/g, "''");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$path = '${escapedPath}'`,
+    "if (-not (Test-Path -LiteralPath $path)) { Write-Output '{\"lockers\":[],\"error\":\"Path missing on disk\"}'; exit 0 }",
+    "$src = @\"",
+    "using System;",
+    "using System.Runtime.InteropServices;",
+    "public static class RmProbe {",
+    "  public const int CCH_RM_SESSION_KEY = 32;",
+    "  public const int CCH_RM_MAX_APP_NAME = 255;",
+    "  public const int CCH_RM_MAX_SVC_NAME = 63;",
+    "  [StructLayout(LayoutKind.Sequential)]",
+    "  public struct RM_UNIQUE_PROCESS {",
+    "    public int dwProcessId;",
+    "    public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime;",
+    "  }",
+    "  public enum RM_APP_TYPE {",
+    "    RmUnknownApp = 0, RmMainWindow = 1, RmOtherWindow = 2, RmService = 3, RmExplorer = 4, RmConsole = 5, RmCritical = 1000",
+    "  }",
+    "  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]",
+    "  public struct RM_PROCESS_INFO {",
+    "    public RM_UNIQUE_PROCESS Process;",
+    "    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCH_RM_MAX_APP_NAME + 1)] public string strAppName;",
+    "    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCH_RM_MAX_SVC_NAME + 1)] public string strServiceShortName;",
+    "    public RM_APP_TYPE ApplicationType;",
+    "    public uint AppStatus;",
+    "    public uint TSSessionId;",
+    "    [MarshalAs(UnmanagedType.Bool)] public bool bRestartable;",
+    "  }",
+    "  [DllImport(\"rstrtmgr.dll\", CharSet = CharSet.Unicode)]",
+    "  public static extern int RmStartSession(out uint pSessionHandle, int dwSessionFlags, string strSessionKey);",
+    "  [DllImport(\"rstrtmgr.dll\")]",
+    "  public static extern int RmEndSession(uint pSessionHandle);",
+    "  [DllImport(\"rstrtmgr.dll\", CharSet = CharSet.Unicode)]",
+    "  public static extern int RmRegisterResources(uint dwSessionHandle, uint nFiles, string[] rgsFileNames, uint nApplications, IntPtr rgApplications, uint nServices, string[] rgsServiceNames);",
+    "  [DllImport(\"rstrtmgr.dll\", CharSet = CharSet.Unicode)]",
+    "  public static extern int RmGetList(uint dwSessionHandle, out uint pnProcInfoNeeded, ref uint pnProcInfo, [In, Out] RM_PROCESS_INFO[] rgAffectedApps, ref uint lpdwRebootReasons);",
+    "}",
+    "\"@",
+    "Add-Type -TypeDefinition $src -Language CSharp | Out-Null",
+    "$handle = 0",
+    "$key = [Guid]::NewGuid().ToString('N')",
+    "$startRes = [RmProbe]::RmStartSession([ref]$handle, 0, $key)",
+    "if ($startRes -ne 0) { Write-Output ('{\"lockers\":[],\"error\":\"RmStartSession failed: ' + $startRes + '\"}'); exit 0 }",
+    "try {",
+    "  $registerRes = [RmProbe]::RmRegisterResources($handle, 1, [string[]]@($path), 0, [IntPtr]::Zero, 0, $null)",
+    "  if ($registerRes -ne 0) { Write-Output ('{\"lockers\":[],\"error\":\"RmRegisterResources failed: ' + $registerRes + '\"}'); exit 0 }",
+    "  $needed = 0",
+    "  $count = 0",
+    "  $reboot = 0",
+    "  $first = [RmProbe]::RmGetList($handle, [ref]$needed, [ref]$count, $null, [ref]$reboot)",
+    "  if ($first -ne 0 -and $first -ne 234) { Write-Output ('{\"lockers\":[],\"error\":\"RmGetList(1) failed: ' + $first + '\"}'); exit 0 }",
+    "  $count = $needed",
+    "  if ($count -le 0) { Write-Output '{\"lockers\":[],\"error\":\"\"}'; exit 0 }",
+    "  $arr = New-Object RmProbe+RM_PROCESS_INFO[] ($count)",
+    "  $second = [RmProbe]::RmGetList($handle, [ref]$needed, [ref]$count, $arr, [ref]$reboot)",
+    "  if ($second -ne 0) { Write-Output ('{\"lockers\":[],\"error\":\"RmGetList(2) failed: ' + $second + '\"}'); exit 0 }",
+    "  $out = @()",
+    "  foreach ($pi in $arr) {",
+    "    $pid = [int]$pi.Process.dwProcessId",
+    "    if ($pid -le 0) { continue }",
+    "    $procName = ''",
+    "    try { $procName = (Get-Process -Id $pid -ErrorAction Stop).ProcessName } catch { $procName = '' }",
+    "    $out += [PSCustomObject]@{ pid = $pid; appName = [string]$pi.strAppName; processName = [string]$procName; service = [string]$pi.strServiceShortName; appType = [string]$pi.ApplicationType }",
+    "  }",
+    "  $json = [PSCustomObject]@{ lockers = $out; error = '' } | ConvertTo-Json -Compress -Depth 4",
+    "  Write-Output $json",
+    "} finally {",
+    "  [RmProbe]::RmEndSession($handle) | Out-Null",
+    "}",
+  ].join("\n");
+
+  return new Promise((resolve) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+      { windowsHide: true, timeout: 7000 },
+      (_error, stdout, stderr) => {
+        const stdoutText = String(stdout || "").trim();
+        const stderrText = String(stderr || "").trim();
+        let parsed = null;
+        try {
+          parsed = stdoutText ? JSON.parse(stdoutText) : null;
+        } catch {
+          parsed = null;
+        }
+
+        const lockers = Array.isArray(parsed?.lockers)
+          ? parsed.lockers.map((it) => ({
+              pid: Number(it?.pid || 0),
+              processName: String(it?.processName || ""),
+              appName: String(it?.appName || ""),
+              service: String(it?.service || ""),
+              appType: String(it?.appType || ""),
+            })).filter((it) => it.pid > 0)
+          : [];
+        const probeError = String(parsed?.error || stderrText || "").trim();
+        resolve({
+          lockers,
+          error: probeError,
+          parsed: Boolean(parsed),
+          rawStdout: stdoutText,
+          rawStderr: stderrText,
+        });
+      }
+    );
+  });
+}
+
+function probeWindowsPathEnvironment(photoPath) {
+  if (process.platform !== "win32") {
+    return Promise.resolve({
+      isUncPath: false,
+      rootPath: "",
+      driveType: "",
+      driveFormat: "",
+      driveIsReady: null,
+      driveError: "path-environment probe only runs on Windows",
+    });
+  }
+
+  const p = String(photoPath || "").trim();
+  if (!p) {
+    return Promise.resolve({
+      isUncPath: false,
+      rootPath: "",
+      driveType: "",
+      driveFormat: "",
+      driveIsReady: null,
+      driveError: "Missing path",
+    });
+  }
+
+  const escapedPath = p.replace(/'/g, "''");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$path = '${escapedPath}'`,
+    "$root = [System.IO.Path]::GetPathRoot($path)",
+    "$driveType = ''",
+    "$driveFormat = ''",
+    "$isReady = $null",
+    "$driveError = ''",
+    "try {",
+    "  if (-not [string]::IsNullOrWhiteSpace($root)) {",
+    "    $di = New-Object System.IO.DriveInfo($root)",
+    "    $driveType = [string]$di.DriveType",
+    "    $driveFormat = [string]$di.DriveFormat",
+    "    $isReady = [bool]$di.IsReady",
+    "  }",
+    "} catch {",
+    "  $driveError = [string]$_.Exception.Message",
+    "}",
+    "$out = [PSCustomObject]@{",
+    "  isUncPath = [bool]$path.StartsWith('\\\\')",
+    "  rootPath = [string]$root",
+    "  driveType = [string]$driveType",
+    "  driveFormat = [string]$driveFormat",
+    "  driveIsReady = $isReady",
+    "  driveError = [string]$driveError",
+    "}",
+    "$out | ConvertTo-Json -Compress -Depth 3",
+  ].join("\n");
+
+  return new Promise((resolve) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+      { windowsHide: true, timeout: 5000 },
+      (_error, stdout, stderr) => {
+        const stdoutText = String(stdout || "").trim();
+        const stderrText = String(stderr || "").trim();
+        let parsed = null;
+        try {
+          parsed = stdoutText ? JSON.parse(stdoutText) : null;
+        } catch {
+          parsed = null;
+        }
+
+        resolve({
+          isUncPath: Boolean(parsed?.isUncPath),
+          rootPath: String(parsed?.rootPath || ""),
+          driveType: String(parsed?.driveType || ""),
+          driveFormat: String(parsed?.driveFormat || ""),
+          driveIsReady: typeof parsed?.driveIsReady === "boolean" ? parsed.driveIsReady : null,
+          driveError: String(parsed?.driveError || stderrText || "").trim(),
+        });
+      }
+    );
+  });
+}
+
+async function buildVerboseUploadFileReleaseDiagnostics(photoPath) {
+  const p = String(photoPath || "").trim();
+  const info = {
+    photoPath: p,
+    exists: false,
+    fileReadable: false,
+    fileWritable: false,
+    sizeBytes: null,
+    mtimeIso: "",
+    canOpenExclusive: null,
+    exclusiveOpenError: "",
+    activeHandleTypes: summarizeActiveHandleTypes(),
+    recentPhotoAccess: getRecentPhotoAccess(p),
+  };
+
+  if (!p) {
+    info.exclusiveOpenError = "Missing path";
+    return info;
+  }
+
+  try {
+    info.exists = fs.existsSync(p);
+  } catch {
+    info.exists = false;
+  }
+
+  if (info.exists) {
+    info.fileReadable = checkAccess(p, fs.constants.R_OK);
+    info.fileWritable = checkAccess(p, fs.constants.W_OK);
+    try {
+      const stat = fs.statSync(p);
+      info.sizeBytes = Number(stat.size);
+      info.mtimeIso = new Date(stat.mtimeMs || stat.mtime || Date.now()).toISOString();
+    } catch (e) {
+      info.exclusiveOpenError = String(e?.message || e || "stat failed");
+    }
+  } else {
+    info.exclusiveOpenError = "Path missing on disk";
+  }
+
+  const exclusive = await probeExclusiveOpenWindows(p);
+  info.canOpenExclusive = exclusive.canOpenExclusive;
+  if (exclusive.exclusiveOpenError) {
+    info.exclusiveOpenError = String(exclusive.exclusiveOpenError || "");
+  }
+
+  return info;
+}
+
+async function logVerboseUploadFileReleaseProbe({ itemId, photoPath, outcome, finalStatus, successfulServices, retryingServices }) {
+  if (!store.get("verboseLogging")) return;
+
+  const diagnostics = await buildVerboseUploadFileReleaseDiagnostics(photoPath);
+  logEvent("DEBUG", "Post-upload file release probe", {
+    id: String(itemId || ""),
+    outcome: String(outcome || ""),
+    finalStatus: String(finalStatus || ""),
+    successfulServices: Number(successfulServices || 0),
+    retryingServices: Number(retryingServices || 0),
+    ...diagnostics,
+  });
+}
+
+async function buildTrashFailureDiagnostics(photoPath) {
   const p = String(photoPath || "").trim();
   const parentDir = path.dirname(p);
   const root = path.parse(p).root;
   const info = {
+    diagnosticsVersion: 4,
+    capturedAtIso: new Date().toISOString(),
+    nodePid: Number(process.pid || 0),
+    appVersion: app.getVersion(),
+    processUptimeSec: Math.round(Number(process.uptime?.() || 0)),
+    activeHandleTypes: summarizeActiveHandleTypes(),
     pathLength: p.length,
     parentDir,
     root,
+    isUncPath: false,
+    driveType: "",
+    driveFormat: "",
+    driveIsReady: null,
+    driveProbeError: "",
     exists: false,
     parentExists: false,
     rootExists: false,
@@ -2707,6 +3266,16 @@ function buildTrashFailureDiagnostics(photoPath) {
     parentWritable: false,
     canOpenRead: false,
     canOpenReadWrite: false,
+    canOpenExclusive: null,
+    exclusiveOpenError: "",
+    canRenameRoundTrip: null,
+    renameRoundTripError: "",
+    lockingProcesses: [],
+    lockingProcessProbeError: "",
+    lockingProcessProbeParsed: null,
+    lockingProcessProbeStdoutSnippet: "",
+    lockingProcessProbeStderrSnippet: "",
+    recentPhotoAccess: getRecentPhotoAccess(p),
     isFile: false,
     sizeBytes: null,
     mtimeIso: "",
@@ -2770,7 +3339,348 @@ function buildTrashFailureDiagnostics(photoPath) {
     info.parentWritable = checkAccess(parentDir, fs.constants.W_OK);
   }
 
+  const exclusive = await probeExclusiveOpenWindows(p);
+  info.canOpenExclusive = exclusive.canOpenExclusive;
+  info.exclusiveOpenError = String(exclusive.exclusiveOpenError || "");
+
+  const driveProbe = await probeWindowsPathEnvironment(p);
+  info.isUncPath = Boolean(driveProbe?.isUncPath);
+  info.driveType = String(driveProbe?.driveType || "");
+  info.driveFormat = String(driveProbe?.driveFormat || "");
+  info.driveIsReady = typeof driveProbe?.driveIsReady === "boolean" ? driveProbe.driveIsReady : null;
+  info.driveProbeError = String(driveProbe?.driveError || "");
+
+  const renameProbe = probeRenameRoundTrip(p);
+  info.canRenameRoundTrip = renameProbe.canRenameRoundTrip;
+  info.renameRoundTripError = String(renameProbe.renameRoundTripError || "");
+
+  const lockProbe = await probeWindowsLockingProcesses(p);
+  info.lockingProcesses = Array.isArray(lockProbe?.lockers) ? lockProbe.lockers : [];
+  info.lockingProcessProbeError = String(lockProbe?.error || "");
+  info.lockingProcessProbeParsed = typeof lockProbe?.parsed === "boolean" ? lockProbe.parsed : null;
+  info.lockingProcessProbeStdoutSnippet = String(lockProbe?.rawStdout || "").slice(0, 300);
+  info.lockingProcessProbeStderrSnippet = String(lockProbe?.rawStderr || "").slice(0, 300);
+
   return info;
+}
+
+function moveToRecycleBinViaPowerShell(photoPath) {
+  if (process.platform !== "win32") {
+    return Promise.reject(new Error("PowerShell recycle fallback is only available on Windows."));
+  }
+
+  const target = String(photoPath || "").trim();
+  if (!target) {
+    return Promise.reject(new Error("Missing photo path for PowerShell recycle fallback."));
+  }
+
+  const escapedTarget = target.replace(/'/g, "''");
+
+  // Bypass Windows Shell SHFileOperation entirely by directly renaming the file into
+  // the $Recycle.Bin folder. This uses System.IO.File.Move (equivalent to fs.rename),
+  // which the canRenameRoundTrip probe proves works even when Shell COM methods fail.
+  // We also write the standard $I metadata file so Windows Explorer shows the item correctly.
+  const script = [
+    `$path = '${escapedTarget}'`,
+    "if (-not (Test-Path -LiteralPath $path)) { exit 0 }",
+    "$moved = $false",
+    "try {",
+    "  $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+    "  $drive = [System.IO.Path]::GetPathRoot($path)",
+    "  $rbRoot = [System.IO.Path]::Combine($drive, '$Recycle.Bin', $sid)",
+    "  if (-not (Test-Path -LiteralPath $rbRoot)) { throw 'Recycle Bin SID folder not found.' }",
+    "  $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'",
+    "  $rand = -join (1..6 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })",
+    "  $ext = [System.IO.Path]::GetExtension($path)",
+    "  $rFile = [System.IO.Path]::Combine($rbRoot, '$R' + $rand + $ext)",
+    "  $iFile = [System.IO.Path]::Combine($rbRoot, '$I' + $rand)",
+    "  $fileSize = (Get-Item -LiteralPath $path).Length",
+    "  $pathNullTerm = $path + [char]0",
+    "  $pathBytes = [System.Text.Encoding]::Unicode.GetBytes($pathNullTerm)",
+    "  $pathCharCount = $pathNullTerm.Length",
+    "  $buf = New-Object byte[] (28 + $pathBytes.Length)",
+    "  $buf[0] = 1",
+    "  [System.BitConverter]::GetBytes([int64]$fileSize).CopyTo($buf, 8)",
+    "  [System.BitConverter]::GetBytes([int64]([System.DateTime]::UtcNow.ToFileTimeUtc())).CopyTo($buf, 16)",
+    "  [System.BitConverter]::GetBytes([int32]$pathCharCount).CopyTo($buf, 24)",
+    "  $pathBytes.CopyTo($buf, 28)",
+    "  [System.IO.File]::WriteAllBytes($iFile, $buf)",
+    "  [System.IO.File]::Move($path, $rFile)",
+    "  if (-not (Test-Path -LiteralPath $path)) { $moved = $true }",
+    "  if (-not $moved) { Remove-Item -LiteralPath $iFile -Force -ErrorAction SilentlyContinue }",
+    "} catch {",
+    "  $null = $null",
+    "}",
+    "if ($moved) { exit 0 }",
+    "throw 'PowerShell recycle fallback did not move file.'",
+  ].join("\n");
+
+  const summarizePowerShellFallbackFailure = (rawText) => {
+    const text = String(rawText || "").trim();
+    if (!text) return "PowerShell recycle fallback failed.";
+
+    const known = text.match(/PowerShell recycle fallback did not move file\.|Recycle Bin SID folder not found\.|Missing closing '\}' in statement block or type definition\./i);
+    if (known && known[0]) {
+      return `PowerShell recycle fallback failed: ${known[0]}`;
+    }
+
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !/^Command failed:/i.test(line))
+      .filter((line) => !/^powershell\.exe\b/i.test(line))
+      .filter((line) => !/^\$[a-z_]/i.test(line))
+      .filter((line) => !/^if\s*\(/i.test(line))
+      .filter((line) => !/^while\s*\(/i.test(line))
+      .filter((line) => !/^\}\s*catch/i.test(line))
+      .filter((line) => !/^CategoryInfo:/i.test(line))
+      .filter((line) => !/^FullyQualifiedErrorId:/i.test(line));
+
+    const first = String(lines[0] || "").replace(/^Error:\s*/i, "").trim();
+    if (!first) return "PowerShell recycle fallback failed.";
+    const compact = first.replace(/\s+/g, " ").trim();
+    if (compact.length <= 220) return `PowerShell recycle fallback failed: ${compact}`;
+    return `PowerShell recycle fallback failed: ${compact.slice(0, 217)}...`;
+  };
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script],
+      { windowsHide: true, timeout: 8000 },
+      (error, stdout, stderr) => {
+        if (error) {
+          const stdoutText = String(stdout || "").trim();
+          const stderrText = String(stderr || "").trim();
+          const message = summarizePowerShellFallbackFailure(`${stderrText}\n${stdoutText}\n${String(error?.message || "")}`);
+          reject(new Error(message));
+          return;
+        }
+        resolve();
+      }
+    );
+  });
+}
+
+function normalizeIdList(ids) {
+  return Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
+}
+
+function normalizePhotoPathKeyForDelete(photoPath) {
+  return String(photoPath || "").trim().toLowerCase();
+}
+
+function summarizeDeleteRequestDiagnostics(queueItems, ids, diagnostics = {}) {
+  const list = normalizeIdList(ids);
+  const byId = new Map((Array.isArray(queueItems) ? queueItems : []).map((it) => [String(it?.id || ""), it]));
+  const targetItems = list
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map((it) => ({
+      id: String(it.id || ""),
+      photoPath: String(it.photoPath || ""),
+      status: String(it.status || ""),
+      uploadedAt: String(it.uploadedAt || ""),
+      serviceStates: it.serviceStates && typeof it.serviceStates === "object"
+        ? Object.fromEntries(Object.entries(it.serviceStates).map(([service, state]) => [service, String(state?.status || "")]))
+        : {},
+      recentPhotoAccess: getRecentPhotoAccess(it.photoPath),
+    }));
+
+  return {
+    requestedIds: list,
+    renderer: diagnostics && typeof diagnostics === "object" ? {
+      displayTab: String(diagnostics.displayTab || ""),
+      platformEditorTab: String(diagnostics.platformEditorTab || ""),
+      activeId: diagnostics.activeId == null ? null : String(diagnostics.activeId || ""),
+      activePhotoPath: String(diagnostics.activePhotoPath || ""),
+      selectedIds: Array.isArray(diagnostics.selectedIds) ? diagnostics.selectedIds.map((id) => String(id || "")).filter(Boolean) : [],
+      selectedCount: Number(diagnostics.selectedCount || 0),
+      previewOpen: diagnostics.previewOpen === true,
+      previewLoading: diagnostics.previewLoading === true,
+      previewSrcKind: String(diagnostics.previewSrcKind || ""),
+      previewTitle: String(diagnostics.previewTitle || ""),
+      previewCachedPathCount: Number(diagnostics.previewCachedPathCount || 0),
+      thumbCachedPathCount: Number(diagnostics.thumbCachedPathCount || 0),
+      documentHasFocus: diagnostics.documentHasFocus === true,
+      focusedElementTag: String(diagnostics.focusedElementTag || ""),
+      focusedElementType: String(diagnostics.focusedElementType || ""),
+      targetItems: Array.isArray(diagnostics.targetItems)
+        ? diagnostics.targetItems.map((entry) => ({
+            id: String(entry?.id || ""),
+            photoPath: String(entry?.photoPath || ""),
+            status: String(entry?.status || ""),
+            isActive: entry?.isActive === true,
+            isSelected: entry?.isSelected === true,
+            hasThumbCached: entry?.hasThumbCached === true,
+            hasPreviewCached: entry?.hasPreviewCached === true,
+          }))
+        : [],
+    } : null,
+    queueTargets: targetItems,
+  };
+}
+
+async function buildDeletePreflightDiagnostics(queueItems, ids) {
+  const list = normalizeIdList(ids);
+  const byId = new Map((Array.isArray(queueItems) ? queueItems : []).map((it) => [String(it?.id || ""), it]));
+  const out = [];
+
+  for (const id of list) {
+    const item = byId.get(id);
+    if (!item) continue;
+    const resolvedPath = resolvePhotoPathOnDisk(item.photoPath) || String(item.photoPath || "");
+    const diag = await buildVerboseUploadFileReleaseDiagnostics(resolvedPath);
+    out.push({
+      id: String(item.id || ""),
+      photoPath: String(item.photoPath || ""),
+      resolvedPath,
+      status: String(item.status || ""),
+      uploadedAt: String(item.uploadedAt || ""),
+      recentPhotoAccess: getRecentPhotoAccess(item.photoPath),
+      preflight: diag,
+    });
+  }
+
+  return out;
+}
+
+async function trashOriginalsForQueueIds(queueItems, ids, options = {}) {
+  const list = normalizeIdList(ids);
+  const rejectUploading = options.rejectUploading === true;
+  const byId = new Map((Array.isArray(queueItems) ? queueItems : []).map((it) => [String(it?.id || ""), it]));
+
+  const targetPathKeys = new Set(
+    list
+      .map((id) => byId.get(id))
+      .map((it) => normalizePhotoPathKeyForDelete(it?.photoPath))
+      .filter(Boolean)
+  );
+
+  if (rejectUploading && targetPathKeys.size > 0) {
+    const blockedIds = (Array.isArray(queueItems) ? queueItems : [])
+      .filter((it) => String(it?.status || "") === "uploading")
+      .filter((it) => targetPathKeys.has(normalizePhotoPathKeyForDelete(it?.photoPath)))
+      .map((it) => String(it?.id || ""))
+      .filter(Boolean);
+
+    if (blockedIds.length > 0) {
+      return {
+        ok: false,
+        blocked: true,
+        blockedIds,
+        error: "One or more selected files are actively uploading. Cancel the upload before deleting the original file.",
+      };
+    }
+  }
+
+  let movedCount = 0;
+  let skippedMissing = 0;
+  let failedCount = 0;
+  const photoPaths = [];
+  const seen = new Set();
+  const initialMissingIds = [];
+  const resolvedPathById = new Map();
+
+  for (const id of list) {
+    const it = byId.get(String(id || ""));
+    if (!it) continue;
+    const p = resolvePhotoPathOnDisk(it.photoPath);
+    if (!p) {
+      skippedMissing++;
+      initialMissingIds.push(String(id || ""));
+      continue;
+    }
+    resolvedPathById.set(String(id || ""), p);
+    if (seen.has(p)) continue;
+    seen.add(p);
+    photoPaths.push(p);
+  }
+
+  const trashMove = await trash.movePathsToTrash(photoPaths, {
+    trashItem: (photoPath) => shell.trashItem(photoPath),
+    fallbackTrashItem: process.platform === "win32" ? (photoPath) => moveToRecycleBinViaPowerShell(photoPath) : null,
+    maxAttempts: 5,
+    retryDelayMs: 180,
+    fallbackMaxAttempts: 3,
+    fallbackRetryDelayMs: 250,
+    enableFinalGraceRetry: true,
+  });
+
+  movedCount += Number(trashMove?.movedCount || 0);
+  skippedMissing += Number(trashMove?.skippedMissing || 0);
+  failedCount += Number(trashMove?.failedCount || 0);
+
+  const failedPathSet = new Set(
+    (Array.isArray(trashMove?.failed) ? trashMove.failed : [])
+      .map((f) => String(f?.photoPath || "").trim())
+      .filter(Boolean)
+  );
+  const deletedIds = [];
+  const failedIds = [];
+  const initialMissingIdSet = new Set(initialMissingIds);
+  for (const id of list) {
+    const sid = String(id || "");
+    if (initialMissingIdSet.has(sid)) {
+      deletedIds.push(sid);
+      continue;
+    }
+    const p = String(resolvedPathById.get(sid) || "").trim();
+    if (!p) continue;
+    if (failedPathSet.has(p)) failedIds.push(sid);
+    else deletedIds.push(sid);
+  }
+
+  for (const failure of Array.isArray(trashMove?.failed) ? trashMove.failed : []) {
+    const failedPath = String(failure?.photoPath || "");
+    const errorText = String(failure?.error || "Unknown trash move failure");
+    const diagnostics = await buildTrashFailureDiagnostics(failedPath);
+    const likelyRecyclePathIssue =
+      /recycle fallback did not move file/i.test(errorText) &&
+      diagnostics?.canOpenExclusive === true &&
+      diagnostics?.canRenameRoundTrip === true;
+    logEvent("WARN", "Failed to move original file to trash", {
+      photoPath: failedPath,
+      error: errorText,
+      errorName: String(failure?.errorName || ""),
+      errorCode: String(failure?.errorCode || ""),
+      errorErrno: Number.isFinite(Number(failure?.errorErrno)) ? Number(failure.errorErrno) : null,
+      errorSyscall: String(failure?.errorSyscall || ""),
+      attempts: Number(failure?.attempts || 1),
+      likelyRecyclePathIssue,
+      likelyRecyclePathIssueHint: likelyRecyclePathIssue
+        ? "Fallback recycle move reported did-not-move while exclusive-open and rename probes succeeded."
+        : "",
+      diagnostics,
+    });
+  }
+
+  const retriedPaths = Array.isArray(trashMove?.retried) ? trashMove.retried.length : 0;
+  if (retriedPaths > 0) {
+    logEventVerbose("INFO", "Retried moving original files to trash after transient abort", { retriedPaths });
+  }
+  const fallbackRecoveredPaths = Array.isArray(trashMove?.fallbackMoved) ? trashMove.fallbackMoved.length : 0;
+  if (fallbackRecoveredPaths > 0) {
+    logEventVerbose("INFO", "Recovered trash move using PowerShell recycle fallback", { fallbackRecoveredPaths });
+  }
+
+  return {
+    ok: true,
+    movedCount,
+    skippedMissing,
+    failedCount,
+    deletedIds,
+    failedIds,
+    failed: Array.isArray(trashMove?.failed)
+      ? trashMove.failed.map((entry) => ({
+          photoPath: String(entry?.photoPath || ""),
+          error: String(entry?.error || ""),
+          attempts: Number(entry?.attempts || 1),
+        }))
+      : [],
+    trashLabel: trash.getTrashLabel(process.platform),
+  };
 }
 
 ipcMain.handle("queue:detachToGroupOnly", async (_e, { ids }) => {
@@ -2779,191 +3689,97 @@ ipcMain.handle("queue:detachToGroupOnly", async (_e, { ids }) => {
   logEvent("INFO", "Detached items to group-only mode", { detached: list.length, queueSize: Array.isArray(out) ? out.length : 0 });
   return out;
 });
+
 ipcMain.handle("queue:removeAndTrash", async (_e, { ids }) => {
-  const list = Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
+  const list = normalizeIdList(ids);
   const before = queue.loadQueue();
-  const byId = new Map((Array.isArray(before) ? before : []).map((it) => [String(it?.id || ""), it]));
-
-  let movedCount = 0;
-  let skippedMissing = 0;
-  let failedCount = 0;
-  const photoPaths = [];
-  const seen = new Set();
-  const initialMissingIds = [];
-  const resolvedPathById = new Map();
-  for (const id of list) {
-    const it = byId.get(String(id || ""));
-    if (!it) continue;
-    const p = resolvePhotoPathOnDisk(it.photoPath);
-    if (!p) {
-      skippedMissing++;
-      initialMissingIds.push(String(id || ""));
-      continue;
-    }
-    resolvedPathById.set(String(id || ""), p);
-    if (seen.has(p)) continue;
-    seen.add(p);
-    photoPaths.push(p);
-  }
-  const trashMove = await trash.movePathsToTrash(photoPaths, {
-    trashItem: (photoPath) => shell.trashItem(photoPath),
-    maxAttempts: 3,
-    retryDelayMs: 120,
-    enableFinalGraceRetry: false,
-  });
-  movedCount += Number(trashMove?.movedCount || 0);
-  skippedMissing += Number(trashMove?.skippedMissing || 0);
-  failedCount += Number(trashMove?.failedCount || 0);
-  const failedPathSet = new Set(
-    (Array.isArray(trashMove?.failed) ? trashMove.failed : [])
-      .map((f) => String(f?.photoPath || "").trim())
-      .filter(Boolean)
-  );
-  const deletedIds = [];
-  const failedIds = [];
-  const initialMissingIdSet = new Set(initialMissingIds);
-  for (const id of list) {
-    const sid = String(id || "");
-    if (initialMissingIdSet.has(sid)) {
-      deletedIds.push(sid);
-      continue;
-    }
-    const p = String(resolvedPathById.get(sid) || "").trim();
-    if (!p) continue;
-    if (failedPathSet.has(p)) failedIds.push(sid);
-    else deletedIds.push(sid);
-  }
-  for (const failure of Array.isArray(trashMove?.failed) ? trashMove.failed : []) {
-    const failedPath = String(failure?.photoPath || "");
-    logEvent("WARN", "Failed to move original file to trash", {
-      photoPath: failedPath,
-      error: String(failure?.error || "Unknown trash move failure"),
-      errorName: String(failure?.errorName || ""),
-      errorCode: String(failure?.errorCode || ""),
-      errorErrno: Number.isFinite(Number(failure?.errorErrno)) ? Number(failure.errorErrno) : null,
-      errorSyscall: String(failure?.errorSyscall || ""),
-      attempts: Number(failure?.attempts || 1),
-      diagnostics: buildTrashFailureDiagnostics(failedPath),
-    });
-  }
-  const retriedPaths = Array.isArray(trashMove?.retried) ? trashMove.retried.length : 0;
-  if (retriedPaths > 0) {
-    logEvent("INFO", "Retried moving original files to trash after transient abort", { retriedPaths });
-  }
-
-  const out = await queue.removeIds(deletedIds);
+  const trashResult = await trashOriginalsForQueueIds(before, list);
+  const out = await queue.removeIds(trashResult.deletedIds);
   pruneImageCacheForRemovedItems(before, out);
-  const trashLabel = trash.getTrashLabel(process.platform);
   logEvent("INFO", "Removed queue items and moved originals to trash", {
-    removed: deletedIds.length,
-    movedCount,
-    skippedMissing,
-    failedCount,
-    keptInQueue: failedIds.length,
+    removed: trashResult.deletedIds.length,
+    movedCount: trashResult.movedCount,
+    skippedMissing: trashResult.skippedMissing,
+    failedCount: trashResult.failedCount,
+    keptInQueue: trashResult.failedIds.length,
     queueSize: Array.isArray(out) ? out.length : 0,
   });
 
   return {
-    ok: true,
+    ...trashResult,
     queue: out,
-    movedCount,
-    skippedMissing,
-    failedCount,
-    deletedIds,
-    failedIds,
-    trashLabel,
   };
 });
 ipcMain.handle("queue:trashOriginalsByIds", async (_e, { ids }) => {
-  const list = Array.isArray(ids) ? ids.map((id) => String(id || "")).filter(Boolean) : [];
+  const list = normalizeIdList(ids);
   const current = queue.loadQueue();
-  const byId = new Map((Array.isArray(current) ? current : []).map((it) => [String(it?.id || ""), it]));
-
-  let movedCount = 0;
-  let skippedMissing = 0;
-  let failedCount = 0;
-  const photoPaths = [];
-  const seen = new Set();
-  const initialMissingIds = [];
-  const resolvedPathById = new Map();
-  for (const id of list) {
-    const it = byId.get(String(id || ""));
-    if (!it) continue;
-    const p = resolvePhotoPathOnDisk(it.photoPath);
-    if (!p) {
-      skippedMissing++;
-      initialMissingIds.push(String(id || ""));
-      continue;
-    }
-    resolvedPathById.set(String(id || ""), p);
-    if (seen.has(p)) continue;
-    seen.add(p);
-    photoPaths.push(p);
-  }
-  const trashMove = await trash.movePathsToTrash(photoPaths, {
-    trashItem: (photoPath) => shell.trashItem(photoPath),
-    maxAttempts: 3,
-    retryDelayMs: 120,
-    enableFinalGraceRetry: false,
-  });
-  movedCount += Number(trashMove?.movedCount || 0);
-  skippedMissing += Number(trashMove?.skippedMissing || 0);
-  failedCount += Number(trashMove?.failedCount || 0);
-  const failedPathSet = new Set(
-    (Array.isArray(trashMove?.failed) ? trashMove.failed : [])
-      .map((f) => String(f?.photoPath || "").trim())
-      .filter(Boolean)
-  );
-  const deletedIds = [];
-  const failedIds = [];
-  const initialMissingIdSet = new Set(initialMissingIds);
-  for (const id of list) {
-    const sid = String(id || "");
-    if (initialMissingIdSet.has(sid)) {
-      deletedIds.push(sid);
-      continue;
-    }
-    const p = String(resolvedPathById.get(sid) || "").trim();
-    if (!p) continue;
-    if (failedPathSet.has(p)) failedIds.push(sid);
-    else deletedIds.push(sid);
-  }
-  for (const failure of Array.isArray(trashMove?.failed) ? trashMove.failed : []) {
-    const failedPath = String(failure?.photoPath || "");
-    logEvent("WARN", "Failed to move original file to trash", {
-      photoPath: failedPath,
-      error: String(failure?.error || "Unknown trash move failure"),
-      errorName: String(failure?.errorName || ""),
-      errorCode: String(failure?.errorCode || ""),
-      errorErrno: Number.isFinite(Number(failure?.errorErrno)) ? Number(failure.errorErrno) : null,
-      errorSyscall: String(failure?.errorSyscall || ""),
-      attempts: Number(failure?.attempts || 1),
-      diagnostics: buildTrashFailureDiagnostics(failedPath),
-    });
-  }
-  const retriedPaths = Array.isArray(trashMove?.retried) ? trashMove.retried.length : 0;
-  if (retriedPaths > 0) {
-    logEvent("INFO", "Retried moving original files to trash after transient abort", { retriedPaths });
-  }
-
-  const trashLabel = trash.getTrashLabel(process.platform);
+  const trashResult = await trashOriginalsForQueueIds(current, list);
   logEvent("INFO", "Moved original files to trash", {
     requested: list.length,
-    movedCount,
-    skippedMissing,
-    failedCount,
-    succeededIds: deletedIds.length,
-    failedIds: failedIds.length,
+    movedCount: trashResult.movedCount,
+    skippedMissing: trashResult.skippedMissing,
+    failedCount: trashResult.failedCount,
+    succeededIds: trashResult.deletedIds.length,
+    failedIds: trashResult.failedIds.length,
+  });
+
+  return trashResult;
+});
+ipcMain.handle("queue:deleteOriginalsByIds", async (_e, payload = {}) => {
+  const trashIds = normalizeIdList(payload?.trashIds);
+  const removeIds = normalizeIdList(payload?.removeIds);
+  const detachIds = normalizeIdList(payload?.detachIds);
+  const before = queue.loadQueue();
+
+  try {
+    logEventVerbose("DEBUG", "Delete originals request snapshot", summarizeDeleteRequestDiagnostics(before, trashIds, payload?.diagnostics));
+    const preflightDiagnostics = await buildDeletePreflightDiagnostics(before, trashIds);
+    logEventVerbose("DEBUG", "Delete originals preflight diagnostics", {
+      requested: trashIds.length,
+      entries: preflightDiagnostics,
+    });
+  } catch (e) {
+    logEvent("WARN", "Delete diagnostics logging failed", { error: String(e?.message || e || "Unknown diagnostics logging error") });
+  }
+
+  const trashResult = await trashOriginalsForQueueIds(before, trashIds, { rejectUploading: true });
+
+  if (!trashResult?.ok) {
+    return trashResult;
+  }
+
+  const deletedIdSet = new Set((Array.isArray(trashResult.deletedIds) ? trashResult.deletedIds : []).map((id) => String(id || "")).filter(Boolean));
+  const finalDetachIds = Array.from(new Set(detachIds.filter((id) => deletedIdSet.has(String(id || "")))));
+  const finalRemoveIds = Array.from(new Set(removeIds.filter((id) => deletedIdSet.has(String(id || "")))));
+
+  let out = before;
+  if (finalDetachIds.length > 0) {
+    out = await queue.detachToGroupOnly(finalDetachIds);
+  }
+  if (finalRemoveIds.length > 0) {
+    out = await queue.removeIdsHard(finalRemoveIds);
+  }
+  if (finalDetachIds.length === 0 && finalRemoveIds.length === 0) {
+    out = queue.loadQueue();
+  }
+
+  pruneImageCacheForRemovedItems(before, out);
+  logEvent("INFO", "Deleted originals and updated queue", {
+    requested: trashIds.length,
+    movedCount: trashResult.movedCount,
+    skippedMissing: trashResult.skippedMissing,
+    failedCount: trashResult.failedCount,
+    removed: finalRemoveIds.length,
+    detached: finalDetachIds.length,
+    keptInQueue: trashResult.failedIds.length,
+    queueSize: Array.isArray(out) ? out.length : 0,
   });
 
   return {
-    ok: true,
-    movedCount,
-    skippedMissing,
-    failedCount,
-    deletedIds,
-    failedIds,
-    trashLabel,
+    ...trashResult,
+    queue: out,
+    removedIds: finalRemoveIds,
+    detachedIds: finalDetachIds,
   };
 });
 ipcMain.handle("queue:getMissingPathGroups", async () => {
@@ -3106,7 +3922,7 @@ ipcMain.handle("queue:update", async (_e, { items }) => {
 ipcMain.handle("queue:reorder", async (_e, { idsInOrder }) => {
   const list = Array.isArray(idsInOrder) ? idsInOrder : [];
   const out = await queue.reorder(list);
-  logEvent("INFO", "Reordered queue", { itemCount: list.length });
+  logEventVerbose("INFO", "Reordered queue", { itemCount: list.length });
   return out;
 });
 ipcMain.handle("queue:clearUploaded", async () => {
@@ -3262,7 +4078,7 @@ ipcMain.handle("log:get", async () => {
     ensureRootDir();
     if (!fs.existsSync(LOG_PATH)) return [];
     const lines = fs.readFileSync(LOG_PATH, "utf-8").split(/\r?\n/).filter(Boolean);
-    return lines.slice(-500); // keep last 500 lines
+    return lines.slice(-1000); // keep last 1000 lines
   } catch {
     return [];
   }
@@ -3279,6 +4095,13 @@ ipcMain.handle("log:clear", async () => {
 ipcMain.handle("cfg:setVerboseLogging", async (_e, { enabled }) => {
   store.set("verboseLogging", Boolean(enabled));
   return { ok: true };
+});
+
+ipcMain.handle("cfg:setAfterUploadAction", async (_e, { action }) => {
+  const valid = ["nothing", "remove", "delete"];
+  const next = valid.includes(String(action || "")) ? String(action) : "nothing";
+  store.set("afterUploadAction", next);
+  return { ok: true, afterUploadAction: next };
 });
 
 ipcMain.handle("cfg:setMinimizeToTray", async (_e, { enabled }) => {
@@ -3301,6 +4124,12 @@ ipcMain.handle("cfg:setUseLargeThumbnails", async (_e, { enabled }) => {
   const next = Boolean(enabled);
   store.set("useLargeThumbnails", next);
   return { ok: true, useLargeThumbnails: next };
+});
+
+ipcMain.handle("cfg:setUseLargeFonts", async (_e, { enabled }) => {
+  const next = Boolean(enabled);
+  store.set("useLargeFonts", next);
+  return { ok: true, useLargeFonts: next };
 });
 
 ipcMain.handle("cfg:setUseLightTheme", async (_e, { enabled }) => {
@@ -3419,6 +4248,12 @@ ipcMain.handle("cfg:setMastodonUseDescriptionAsAltText", async (_e, { enabled })
   return { ok: true, mastodonUseDescriptionAsAltText: next };
 });
 
+ipcMain.handle("cfg:setPixelfedMastodonReshareEnabled", async (_e, { enabled }) => {
+  const next = Boolean(enabled);
+  store.set("pixelfedMastodonReshareEnabled", next);
+  return { ok: true, pixelfedMastodonReshareEnabled: next };
+});
+
 ipcMain.handle("cfg:setLemmyPostTextMode", async (_e, { mode }) => {
   const allowed = new Set(["merge_title_description_tags", "merge_title_description", "merge_title_tags", "merge_description_tags", "title_only", "description_only"]);
   const next = allowed.has(String(mode || "").trim()) ? String(mode).trim() : "merge_title_description_tags";
@@ -3485,6 +4320,12 @@ ipcMain.handle("cfg:setTumblrGlobalTags", async (_e, { tags }) => {
 ipcMain.handle("cfg:setFlickrGlobalTags", async (_e, { tags }) => {
   store.set("flickrGlobalTags", String(tags || ""));
   return { ok: true };
+});
+
+ipcMain.handle("cfg:setFlickrQueueNewUploadsBehindExistingGroupQueues", async (_e, { enabled }) => {
+  const next = Boolean(enabled);
+  store.set("flickrQueueNewUploadsBehindExistingGroupQueues", next);
+  return { ok: true, flickrQueueNewUploadsBehindExistingGroupQueues: next };
 });
 
 ipcMain.handle("cfg:setAddShutterQueueTagToAllUploads", async (_e, { enabled }) => {
@@ -3633,8 +4474,9 @@ function normalizeAlbumTitleKey(title) {
 }
 
 async function warmAlbumTitleCache(auth) {
+  const forceRefresh = arguments[1] && arguments[1].force === true;
   const key = `${String(auth?.userNsid || "")}|${String(auth?.token || "")}`;
-  if (albumTitleCacheKey === key && albumTitleToIdCache.size > 0) return;
+  if (!forceRefresh && albumTitleCacheKey === key && albumTitleToIdCache.size > 0) return;
 
   const list = await flickr.listAlbums({
     apiKey: auth.apiKey,
@@ -3669,18 +4511,104 @@ async function ensureAlbumByTitle({ title, primaryPhotoId, auth }) {
   const existing = albumTitleToIdCache.get(titleKey);
   if (existing) return { id: existing, createdNow: false };
 
-  const created = await flickr.createAlbum({
-    apiKey: auth.apiKey,
-    apiSecret: auth.apiSecret,
-    token: auth.token,
-    tokenSecret: auth.tokenSecret,
-    title: rawTitle,
-    primaryPhotoId,
-  });
-  const id = String(created?.id || "");
-  if (!id) throw new Error("Album creation succeeded but no album id was returned.");
-  albumTitleToIdCache.set(titleKey, id);
-  return { id, createdNow: true };
+  // Cache may be stale after long gaps/restarts or prior transient list failures.
+  // Force one fresh scan before creating a new album.
+  try {
+    await warmAlbumTitleCache(auth, { force: true });
+    const refreshedExisting = albumTitleToIdCache.get(titleKey);
+    if (refreshedExisting) return { id: refreshedExisting, createdNow: false };
+  } catch (e) {
+    logEvent("WARN", "Failed to refresh album title cache before create", { title: rawTitle, error: String(e) });
+  }
+
+  try {
+    const created = await flickr.createAlbum({
+      apiKey: auth.apiKey,
+      apiSecret: auth.apiSecret,
+      token: auth.token,
+      tokenSecret: auth.tokenSecret,
+      title: rawTitle,
+      primaryPhotoId,
+    });
+    const id = String(created?.id || "");
+    if (!id) throw new Error("Album creation succeeded but no album id was returned.");
+    albumTitleToIdCache.set(titleKey, id);
+    return { id, createdNow: true };
+  } catch (e) {
+    // If Flickr reports a duplicate title race, recover by re-listing albums and
+    // resolving to the existing album instead of failing or creating duplicates.
+    if (!flickr.isLikelyDuplicateAlbumTitleError(e)) throw e;
+
+    try {
+      await warmAlbumTitleCache(auth, { force: true });
+      const recoveredId = albumTitleToIdCache.get(titleKey);
+      if (recoveredId) {
+        logEvent("INFO", "Resolved duplicate album title to existing album", {
+          title: rawTitle,
+          albumId: recoveredId,
+        });
+        return { id: recoveredId, createdNow: false };
+      }
+    } catch (refreshErr) {
+      logEvent("WARN", "Failed album cache refresh after duplicate title error", {
+        title: rawTitle,
+        error: String(refreshErr),
+      });
+    }
+
+    throw e;
+  }
+}
+
+async function reconcileQueuedCreateAlbumsAgainstExisting({ auth, forceRefresh } = {}) {
+  const doForceRefresh = forceRefresh === true;
+  try {
+    if (doForceRefresh) await warmAlbumTitleCache(auth, { force: true });
+    else await warmAlbumTitleCache(auth);
+  } catch (e) {
+    logEvent("WARN", "Failed to warm album cache for queued album reconciliation", {
+      error: String(e?.message || e),
+    });
+    return { updatedItems: 0, matchedTitles: 0 };
+  }
+
+  const q = queue.loadQueue();
+  let updatedItems = 0;
+  let matchedTitles = 0;
+  let touched = false;
+
+  for (const it of q) {
+    const createAlbums = Array.isArray(it?.createAlbums)
+      ? it.createAlbums.map((t) => String(t || "").trim()).filter(Boolean)
+      : [];
+    if (!createAlbums.length) continue;
+
+    const nextCreateAlbums = [];
+    const nextAlbumIds = new Set((Array.isArray(it?.albumIds) ? it.albumIds : []).map((id) => String(id || "").trim()).filter(Boolean));
+    let itemChanged = false;
+
+    for (const title of createAlbums) {
+      const existingAlbumId = albumTitleToIdCache.get(normalizeAlbumTitleKey(title));
+      if (existingAlbumId) {
+        matchedTitles += 1;
+        if (!nextAlbumIds.has(String(existingAlbumId))) {
+          nextAlbumIds.add(String(existingAlbumId));
+        }
+        itemChanged = true;
+        continue;
+      }
+      nextCreateAlbums.push(title);
+    }
+
+    if (!itemChanged) continue;
+    it.albumIds = Array.from(nextAlbumIds);
+    it.createAlbums = nextCreateAlbums;
+    updatedItems += 1;
+    touched = true;
+  }
+
+  if (touched) queue.saveQueue(q);
+  return { updatedItems, matchedTitles };
 }
 
 function normalizeTargetServicesForItem(item) {
@@ -3763,7 +4691,7 @@ async function uploadNowOneInternal(options = {}) {
     next.lastError = "";
     queue.saveQueue(q);
 
-    logEvent("INFO", "Uploading photo", { id: next.id, path: next.photoPath });
+    logEventVerbose("INFO", "Uploading photo", { id: next.id, path: next.photoPath });
 
     let successfulServices = 0;
     const warningParts = [];
@@ -3771,6 +4699,7 @@ async function uploadNowOneInternal(options = {}) {
     const addShutterQueueTag = store.get("addShutterQueueTagToAllUploads") !== false;
     const hasExplicitLocationData = Boolean(String(next.locationDisplayName || "").trim());
     const hasLocationSupportingTarget = next.targetServices.includes("flickr");
+    let pixelfedPostUrlForMastodonReshare = "";
 
     if (next.targetServices.includes("flickr") && next.serviceStates?.flickr?.status !== "done") {
       if (!isFlickrAuthed()) {
@@ -3828,7 +4757,7 @@ async function uploadNowOneInternal(options = {}) {
 
           next.photoId = photoId;
           next.uploadedAt = new Date().toISOString();
-          logEvent("INFO", "Uploaded photo", { id: next.id, photoId });
+          logEventVerbose("INFO", "Uploaded photo", { id: next.id, photoId });
 
           if (next.latitude != null && next.longitude != null) {
             try {
@@ -3870,8 +4799,33 @@ async function uploadNowOneInternal(options = {}) {
             }
           }
           const unresolvedCreateAlbums = [];
+          if (requestedCreateAlbums.length > 0) {
+            try {
+              // Auto-heal queue items: resolve pending create-album titles to existing
+              // albums case-insensitively before any create attempt.
+              await warmAlbumTitleCache(auth, { force: true });
+            } catch (e) {
+              logEvent("WARN", "Failed to refresh album cache before create-album reconciliation", {
+                id: next.id,
+                photoId,
+                error: String(e?.message || e),
+              });
+            }
+          }
           for (const title of requestedCreateAlbums) {
             try {
+              const existingAlbumId = albumTitleToIdCache.get(normalizeAlbumTitleKey(title));
+              if (existingAlbumId) {
+                next.albumIds = Array.from(new Set([...(next.albumIds || []), String(existingAlbumId)]));
+                logEvent("INFO", "Resolved queued create-album title to existing album", {
+                  id: next.id,
+                  photoId,
+                  title,
+                  albumId: String(existingAlbumId),
+                });
+                continue;
+              }
+
               const ensured = await ensureAlbumByTitle({ title, primaryPhotoId: photoId, auth });
               if (!ensured?.id) {
                 unresolvedCreateAlbums.push(title);
@@ -3906,9 +4860,57 @@ async function uploadNowOneInternal(options = {}) {
             }
           }
 
+          const successfullyAddedGroups = new Set();
+          const deferGroupAddsBehindExistingQueues = Boolean(store.get("flickrQueueNewUploadsBehindExistingGroupQueues"));
           for (const gid of (next.groupIds || [])) {
+            if (deferGroupAddsBehindExistingQueues) {
+              const groupQueueStats = queue.getGroupRetryQueueStats(q, gid, { excludeItemId: next.id });
+              if (groupQueueStats.hasRetry) {
+                const states = normalizeGroupAddState(next);
+                const latestRetryMs = groupQueueStats.latestRetryAt
+                  ? new Date(groupQueueStats.latestRetryAt).getTime()
+                  : NaN;
+                const nextRetryAt = Number.isFinite(latestRetryMs)
+                  ? new Date(latestRetryMs + 1000).toISOString()
+                  : new Date(Date.now() + 60 * 60 * 1000).toISOString();
+                states[gid] = {
+                  status: "retry",
+                  message: `Queued behind existing group add queue for group ${gid}.`,
+                  retryCount: 0,
+                  firstFailedAt: nowIso(),
+                  nextRetryAt,
+                  lastAttemptAt: nowIso(),
+                };
+                serviceWarnings.push(`group ${gid}: queued behind existing group-add queue; will retry automatically.`);
+                logEvent("INFO", "Deferred group add behind existing queue", {
+                  id: next.id,
+                  photoId,
+                  groupId: gid,
+                  existingQueuedCount: groupQueueStats.retryCount,
+                  nextRetryAt,
+                });
+                continue;
+              }
+            }
             const res = await attemptAddToGroup({ apiKey: auth.apiKey, apiSecret: auth.apiSecret, token: auth.token, tokenSecret: auth.tokenSecret, item: next, groupId: gid });
             if (!res.ok) serviceWarnings.push(`group ${gid}: ${res.message || "Group add failed"}`);
+            else if (res.ok && !res.info) successfullyAddedGroups.add(gid);  // info=true means moderation queue, not a real add
+          }
+          // If any groups accepted this new photo, those groups may also accept
+          // older photos already waiting in the retry queue. Try them now.
+          if (successfullyAddedGroups.size > 0 && isFlickrAuthed()) {
+            processDueGroupRetries({
+              apiKey: auth.apiKey,
+              apiSecret: auth.apiSecret,
+              token: auth.token,
+              tokenSecret: auth.tokenSecret,
+              maxAttempts: successfullyAddedGroups.size,
+              forceDue: true,
+              preserveTimerOnRejection: true,
+              groupsFilter: successfullyAddedGroups
+            }).catch((e) => {
+              logEvent("WARN", "Post-upload group retry sweep failed", { error: e?.message || String(e) });
+            });
           }
 
           if (serviceWarnings.length) {
@@ -3984,7 +4986,7 @@ async function uploadNowOneInternal(options = {}) {
               uploadedAt,
             };
             successfulServices += 1;
-            logEvent("INFO", "Uploaded to Tumblr", { id: next.id, postId, blogId });
+            logEventVerbose("INFO", "Uploaded to Tumblr", { id: next.id, postId, blogId });
           } catch (e) {
             const msg = e?.message ? String(e.message) : String(e);
             if (isTransientNetworkError(msg)) {
@@ -4050,7 +5052,7 @@ async function uploadNowOneInternal(options = {}) {
           };
           successfulServices += 1;
           store.set("blueskyHandle", String(bauth.handle || store.get("blueskyIdentifier") || ""));
-          logEvent("INFO", "Uploaded to Bluesky", { id: next.id, uri: post.uri || "" });
+          logEventVerbose("INFO", "Uploaded to Bluesky", { id: next.id, uri: post.uri || "" });
         } catch (e) {
           const msg2 = e?.message ? String(e.message) : String(e);
           const canRefresh = /ExpiredToken/i.test(msg2) && String(bauth.refreshJwt || "").trim();
@@ -4091,7 +5093,7 @@ async function uploadNowOneInternal(options = {}) {
                 uploadedAt: new Date().toISOString(),
               };
               successfulServices += 1;
-              logEvent("INFO", "Uploaded to Bluesky after token refresh", { id: next.id, uri: retryPost.uri || "" });
+              logEventVerbose("INFO", "Uploaded to Bluesky after token refresh", { id: next.id, uri: retryPost.uri || "" });
             } catch (refreshErr) {
               const finalMsg = refreshErr?.message ? String(refreshErr.message) : String(refreshErr);
               if (isTransientNetworkError(finalMsg)) {
@@ -4152,7 +5154,7 @@ async function uploadNowOneInternal(options = {}) {
           };
           successfulServices += 1;
           store.set("blueskyHandle", String(bauth.handle || store.get("blueskyIdentifier") || ""));
-          logEvent("INFO", "Uploaded to Bluesky", { id: next.id, uri: post.uri || "" });
+          logEventVerbose("INFO", "Uploaded to Bluesky", { id: next.id, uri: post.uri || "" });
         } catch (e) {
           const msg = e?.message ? String(e.message) : String(e);
           const canRefresh = /ExpiredToken/i.test(msg) && String(bauth.refreshJwt || "").trim();
@@ -4193,7 +5195,7 @@ async function uploadNowOneInternal(options = {}) {
                 uploadedAt: new Date().toISOString(),
               };
               successfulServices += 1;
-              logEvent("INFO", "Uploaded to Bluesky after token refresh", { id: next.id, uri: retryPost.uri || "" });
+              logEventVerbose("INFO", "Uploaded to Bluesky after token refresh", { id: next.id, uri: retryPost.uri || "" });
             } catch (refreshErr) {
               const finalMsg = refreshErr?.message ? String(refreshErr.message) : String(refreshErr);
               if (isTransientNetworkError(finalMsg)) {
@@ -4265,8 +5267,9 @@ async function uploadNowOneInternal(options = {}) {
             remoteId: post.url || post.id || "",
             uploadedAt: new Date().toISOString(),
           };
+          pixelfedPostUrlForMastodonReshare = String(post.url || "").trim();
           successfulServices += 1;
-          logEvent("INFO", "Uploaded to PixelFed", { id: next.id, postId: post.id || "" });
+          logEventVerbose("INFO", "Uploaded to PixelFed", { id: next.id, postId: post.id || "" });
         } catch (e) {
           const msg = e?.message ? String(e.message) : String(e);
           if (isTransientNetworkError(msg)) {
@@ -4279,6 +5282,10 @@ async function uploadNowOneInternal(options = {}) {
         }
       }
     } else if (next.targetServices.includes("pixelfed")) {
+      const priorPixelfedRemoteId = String(next.serviceStates?.pixelfed?.remoteId || "").trim();
+      if (/^https?:\/\//i.test(priorPixelfedRemoteId)) {
+        pixelfedPostUrlForMastodonReshare = priorPixelfedRemoteId;
+      }
       successfulServices += 1;
     }
 
@@ -4289,49 +5296,83 @@ async function uploadNowOneInternal(options = {}) {
         errorParts.push(`Mastodon: ${msg}`);
       } else {
         const mauth = getMastodonAuth();
+        const pixelfedMastodonReshareEnabled = store.get("pixelfedMastodonReshareEnabled") !== false;
+        const shouldReshareFromPixelfed =
+          pixelfedMastodonReshareEnabled &&
+          next.targetServices.includes("pixelfed");
         try {
-          const mapped = mastodon.mapPrivacyToVisibility(String(next.privacy || "private"));
-          if (mapped.warning) warningParts.push(`Mastodon: ${mapped.warning}`);
-          const mastodonPostTextMode = String(store.get("mastodonPostTextMode") || "merge_title_description_tags");
-          const mastodonUseDescriptionAsAltText = store.get("mastodonUseDescriptionAsAltText") !== false;
-          const mastodonImageResizeOptions = {
-            enabled: store.get("mastodonImageResizeEnabled") === true,
-            maxWidth: Number(store.get("mastodonImageResizeMaxWidth") || 0),
-            maxHeight: Number(store.get("mastodonImageResizeMaxHeight") || 0),
-          };
-          const mastodonInstanceLimitsCache = store.get("mastodonInstanceLimitsCache") || {};
-          const mastodonPrependText = String(store.get("mastodonPrependText") || "");
-          const mastodonAppendText = String(store.get("mastodonAppendText") || "");
-          const post = await mastodon.createImagePost({
-            instanceUrl: mauth.instanceUrl,
-            accessToken: mauth.accessToken,
-            item: {
-              ...next,
-              tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
-            },
-            postTextMode: mastodonPostTextMode,
-            useDescriptionAsAltText: mastodonUseDescriptionAsAltText,
-            imageResizeOptions: mastodonImageResizeOptions,
-            instanceLimitsCache: mastodonInstanceLimitsCache,
-            onDiscoveredLimits: ({ instanceKey, limits, cachedAt }) => {
-              const current = store.get("mastodonInstanceLimitsCache") || {};
-              current[String(instanceKey)] = { limits, cachedAt: Number(cachedAt) || Date.now() };
-              store.set("mastodonInstanceLimitsCache", current);
-            },
-            visibility: mapped.visibility,
-            sensitive: Number(next.safetyLevel || 1) >= 2,
-            prependText: mastodonPrependText,
-            appendText: mastodonAppendText,
-          });
-          next.serviceStates.mastodon = {
-            status: "done",
-            remoteId: post.url || post.id || "",
-            uploadedAt: new Date().toISOString(),
-          };
-          successfulServices += 1;
-          logEvent("INFO", "Uploaded to Mastodon", { id: next.id, postId: post.id || "" });
+          if (shouldReshareFromPixelfed) {
+            const sourceUrl = String(pixelfedPostUrlForMastodonReshare || "").trim();
+            if (!/^https?:\/\//i.test(sourceUrl)) {
+              throw new Error("Mastodon reshare requires a PixelFed post URL, but none was available.");
+            }
+            const boost = await mastodon.reshareStatusByUrl({
+              instanceUrl: mauth.instanceUrl,
+              accessToken: mauth.accessToken,
+              statusUrl: sourceUrl,
+            });
+            next.serviceStates.mastodon = {
+              status: "done",
+              remoteId: boost.url || boost.id || boost.resolvedStatusId || "",
+              uploadedAt: new Date().toISOString(),
+            };
+            successfulServices += 1;
+            logEvent("INFO", "Reshared PixelFed post to Mastodon", {
+              id: next.id,
+              sourceUrl,
+              postId: boost.id || "",
+              resolvedStatusId: boost.resolvedStatusId || "",
+            });
+          } else {
+            const mapped = mastodon.mapPrivacyToVisibility(String(next.privacy || "private"));
+            if (mapped.warning) warningParts.push(`Mastodon: ${mapped.warning}`);
+            const mastodonPostTextMode = String(store.get("mastodonPostTextMode") || "merge_title_description_tags");
+            const mastodonUseDescriptionAsAltText = store.get("mastodonUseDescriptionAsAltText") !== false;
+            const mastodonImageResizeOptions = {
+              enabled: store.get("mastodonImageResizeEnabled") === true,
+              maxWidth: Number(store.get("mastodonImageResizeMaxWidth") || 0),
+              maxHeight: Number(store.get("mastodonImageResizeMaxHeight") || 0),
+            };
+            const mastodonInstanceLimitsCache = store.get("mastodonInstanceLimitsCache") || {};
+            const mastodonPrependText = String(store.get("mastodonPrependText") || "");
+            const mastodonAppendText = String(store.get("mastodonAppendText") || "");
+            const post = await mastodon.createImagePost({
+              instanceUrl: mauth.instanceUrl,
+              accessToken: mauth.accessToken,
+              item: {
+                ...next,
+                tags: addShutterQueueTag ? appendImplicitTagCsv(next.tags, "#ShutterQueue") : next.tags,
+              },
+              postTextMode: mastodonPostTextMode,
+              useDescriptionAsAltText: mastodonUseDescriptionAsAltText,
+              imageResizeOptions: mastodonImageResizeOptions,
+              instanceLimitsCache: mastodonInstanceLimitsCache,
+              onDiscoveredLimits: ({ instanceKey, limits, cachedAt }) => {
+                const current = store.get("mastodonInstanceLimitsCache") || {};
+                current[String(instanceKey)] = { limits, cachedAt: Number(cachedAt) || Date.now() };
+                store.set("mastodonInstanceLimitsCache", current);
+              },
+              visibility: mapped.visibility,
+              sensitive: Number(next.safetyLevel || 1) >= 2,
+              prependText: mastodonPrependText,
+              appendText: mastodonAppendText,
+            });
+            next.serviceStates.mastodon = {
+              status: "done",
+              remoteId: post.url || post.id || "",
+              uploadedAt: new Date().toISOString(),
+            };
+            successfulServices += 1;
+            logEventVerbose("INFO", "Uploaded to Mastodon", { id: next.id, postId: post.id || "" });
+          }
         } catch (e) {
-          const msg = e?.message ? String(e.message) : String(e);
+          const rawMsg = e?.message ? String(e.message) : String(e);
+          const missingScopeForReshare =
+            shouldReshareFromPixelfed &&
+            /outside the authorized scopes|insufficient scope|missing scope/i.test(rawMsg);
+          const msg = missingScopeForReshare
+            ? `${rawMsg} Re-authorize Mastodon with read:search and write:statuses (or broad read + write) to allow PixelFed reshares.`
+            : rawMsg;
           if (isTransientNetworkError(msg)) {
             applyTransientRetry(next.serviceStates, "mastodon", msg, warningParts, errorParts, next.id);
           } else {
@@ -4427,7 +5468,7 @@ async function uploadNowOneInternal(options = {}) {
               lemmyImageResizeOptions.enabled = true;
               if (!lemmyImageResizeOptions.maxWidth) lemmyImageResizeOptions.maxWidth = 2000;
               if (!lemmyImageResizeOptions.maxHeight) lemmyImageResizeOptions.maxHeight = 2000;
-              logEvent("INFO", "Lemmy: auto-applying resize due to possible image size limit", { id: next.id });
+              logEventVerbose("INFO", "Lemmy: auto-applying resize due to possible image size limit", { id: next.id });
             }
             const lemmyInstanceLimitsCache = store.get("lemmyInstanceLimitsCache") || {};
             const lemmyInstanceUploadConfigCache = store.get("lemmyInstanceUploadConfigCache") || {};
@@ -4520,7 +5561,7 @@ async function uploadNowOneInternal(options = {}) {
                   throw new Error("Lemmy original post returned no usable post URL for cross-posting.");
                 }
                 completedCommunityIds.add(originalCommunityId);
-                logEvent("INFO", "Uploaded original post to Lemmy", { id: next.id, postId: originalPostId, communityId: originalCommunityId });
+                logEventVerbose("INFO", "Uploaded original post to Lemmy", { id: next.id, postId: originalPostId, communityId: originalCommunityId });
               } catch (postErr) {
                 const postMsg = postErr?.message ? String(postErr.message) : String(postErr);
                 await markCommunityFailure(originalCommunityId, postMsg, "original");
@@ -4544,7 +5585,7 @@ async function uploadNowOneInternal(options = {}) {
                     nsfw: Number(next.safetyLevel || 1) >= 2,
                   });
                   completedCommunityIds.add(communityId);
-                  logEvent("INFO", "Cross-posted to Lemmy community", { id: next.id, postId: post.id || "", communityId, originalPostUrl });
+                  logEventVerbose("INFO", "Cross-posted to Lemmy community", { id: next.id, postId: post.id || "", communityId, originalPostUrl });
                 } catch (postErr) {
                   const postMsg = postErr?.message ? String(postErr.message) : String(postErr);
                   await markCommunityFailure(communityId, postMsg, "crosspost");
@@ -4674,7 +5715,8 @@ async function uploadNowOneInternal(options = {}) {
       next.status = "failed";
       next.lastError = msg;
       queue.saveQueue(q);
-      logEvent("INFO", "Upload item outcome", {
+      logEvent("WARN", `${path.basename(next.photoPath || "")} upload failed: no target services selected`);
+      logEventVerbose("INFO", "Upload item outcome", {
         id: next.id,
         outcome: "failed",
         finalStatus: next.status,
@@ -4708,8 +5750,43 @@ async function uploadNowOneInternal(options = {}) {
     for (const svc of (next.targetServices || [])) {
       perServiceStatus[String(svc)] = String(next.serviceStates?.[svc]?.status || "not_attempted");
     }
-    const logUploadOutcome = (outcome, extra = {}) => {
-      logEvent("INFO", "Upload item outcome", {
+    const logUploadOutcome = async (outcome, extra = {}) => {
+      await logVerboseUploadFileReleaseProbe({
+        itemId: next.id,
+        photoPath: next.photoPath,
+        outcome,
+        finalStatus: next.status,
+        successfulServices,
+        retryingServices,
+      });
+
+      // Always-on human-readable summary line per outcome type.
+      const filename = path.basename(next.photoPath || "");
+      if (outcome === "done" || outcome === "done_with_notice") {
+        const succeededNames = Object.entries(perServiceStatus)
+          .filter(([, v]) => v === "done")
+          .map(([k]) => SERVICE_DISPLAY_NAMES[k] || k);
+        if (succeededNames.length) {
+          logEvent("INFO", `${filename} uploaded to ${formatServiceList(succeededNames)}`);
+        }
+      } else if (outcome === "done_with_warnings") {
+        const succeededNames = Object.entries(perServiceStatus)
+          .filter(([, v]) => v === "done")
+          .map(([k]) => SERVICE_DISPLAY_NAMES[k] || k);
+        const warnMsg = extra.message || warningParts.filter(Boolean).join(" | ");
+        if (succeededNames.length) {
+          logEvent("INFO", `${filename} uploaded to ${formatServiceList(succeededNames)} (with warnings)`, { message: warnMsg });
+        } else {
+          logEvent("WARN", `${filename} upload completed with warnings`, { message: warnMsg });
+        }
+      } else if (outcome === "retry_pending") {
+        logEvent("INFO", `${filename} upload will retry automatically`, { message: extra.message || "" });
+      } else if (outcome === "failed") {
+        logEvent("WARN", `${filename} upload failed for all platforms`, { message: extra.message || "" });
+      }
+
+      // Detailed breakdown is diagnostic (verbose-only).
+      logEventVerbose("INFO", "Upload item outcome", {
         id: next.id,
         outcome,
         finalStatus: next.status,
@@ -4728,7 +5805,7 @@ async function uploadNowOneInternal(options = {}) {
       next.status = "retry";
       next.lastError = warningParts.filter(Boolean).join(" | ") || "Server temporarily unavailable; will retry automatically.";
       queue.saveQueue(q);
-      logUploadOutcome("retry_pending", { message: next.lastError });
+      await logUploadOutcome("retry_pending", { message: next.lastError });
       return { ok: true, warnings: warningParts.filter(Boolean) };
     }
 
@@ -4738,7 +5815,7 @@ async function uploadNowOneInternal(options = {}) {
       next.lastError = msg;
       store.set("lastError", msg);
       queue.saveQueue(q);
-      logUploadOutcome("failed", { message: msg });
+      await logUploadOutcome("failed", { message: msg });
       return { ok: false, error: msg };
     }
 
@@ -4749,13 +5826,13 @@ async function uploadNowOneInternal(options = {}) {
         next.lastError = warningParts.join(" | ");
         queue.saveQueue(q);
         store.set("lastError", "");
-        logUploadOutcome("done_with_notice", { message: next.lastError });
+        await logUploadOutcome("done_with_notice", { message: next.lastError });
         return { ok: true, photoId: next.photoId || "", warnings: combinedMessages };
       }
       next.status = "done_warn";
       next.lastError = combinedMessages.join(" | ");
       queue.saveQueue(q);
-      logUploadOutcome("done_with_warnings", { message: next.lastError });
+      await logUploadOutcome("done_with_warnings", { message: next.lastError });
       return { ok: true, photoId: next.photoId || "", warnings: combinedMessages };
     }
 
@@ -4763,7 +5840,7 @@ async function uploadNowOneInternal(options = {}) {
     next.lastError = "";
     queue.saveQueue(q);
     store.set("lastError", "");
-    logUploadOutcome("done");
+    await logUploadOutcome("done");
     return { ok: true, photoId: next.photoId || "" };
   } catch (err) {
     const msg = err?.message ? String(err.message) : String(err);
@@ -4776,7 +5853,7 @@ async function uploadNowOneInternal(options = {}) {
       next.status = "failed";
       next.lastError = msg;
       queue.saveQueue(q);
-      logEvent("INFO", "Upload item outcome", {
+      logEventVerbose("INFO", "Upload item outcome", {
         id: next.id,
         outcome: "failed",
         finalStatus: next.status,
@@ -4911,7 +5988,7 @@ async function processTransientRetries() {
     });
   });
   if (!dueItems.length) return;
-  logEvent("INFO", "processTransientRetries: found due items", { count: dueItems.length });
+  logEventVerbose("INFO", "processTransientRetries: found due items", { count: dueItems.length });
 
   for (const item of dueItems.slice(0, 2)) {
     const liveQ = queue.loadQueue();
@@ -4952,7 +6029,7 @@ async function processLemmyRetries() {
     return retryAt <= now;
   });
   if (!dueItems.length) return;
-  logEvent("INFO", "processLemmyRetries: found due items", { count: dueItems.length });
+  logEventVerbose("INFO", "processLemmyRetries: found due items", { count: dueItems.length });
 
   for (const item of dueItems.slice(0, 2)) {
     // Reload queue to get fresh state before modifying
@@ -4992,6 +6069,7 @@ async function processLemmyRetries() {
 
 async function tickScheduler() {
   if (!store.get("schedulerOn")) return;
+  logEventVerbose("DEBUG", "tickScheduler: tick", { flickrAuthed: isFlickrAuthed() });
 
   // Always process due group retries (independent of upload schedule).
   // This allows 1h/6h/12h/24h backoff to work even when upload interval is longer.
@@ -5005,6 +6083,8 @@ async function tickScheduler() {
         tokenSecret: auth.tokenSecret,
         maxAttempts: 1
       });
+    } else {
+      logEventVerbose("DEBUG", "tickScheduler: skipping group retries (Flickr not authed)");
     }
   } catch (e) {
     const msg = e?.message ? String(e.message) : String(e);
@@ -5070,15 +6150,124 @@ async function tickScheduler() {
   store.set("batchRunStartedAt", new Date(Date.now()).toISOString());
   store.set("batchRunSize", bs);
   startBatchRunProgress(plannedBatchItems);
+  const uploadedIds = [];
   try {
     for (let i = 0; i < bs; i++) {
+      const itemsBefore = queue.loadQueue().filter(it => it.status === "pending");
       const res = await uploadNowOneInternal();
       // Stop if nothing left to upload.
       if (res && res.message && String(res.message).includes("No pending items")) break;
+      // Track which item transitioned out of pending (i.e. was processed this iteration).
+      if (res && res.ok !== false) {
+        const itemsAfter = queue.loadQueue();
+        const beforeIds = new Set(itemsBefore.map(it => String(it.id || "")));
+        for (const it of itemsAfter) {
+          if (beforeIds.has(String(it.id || "")) && (it.status === "done" || it.status === "done_warn")) {
+            uploadedIds.push(String(it.id || ""));
+          }
+        }
+      }
     }
   } finally {
     store.set("batchRunActive", false);
     resetBatchRunProgress();
+  }
+
+  // Post-upload action: remove or delete successfully uploaded items.
+  if (uploadedIds.length > 0) {
+    const afterAction = String(store.get("afterUploadAction") || "nothing");
+    if (afterAction === "remove" || afterAction === "delete") {
+      try {
+        const qAfter = queue.loadQueue();
+        const byId = new Map(qAfter.map(it => [String(it.id || ""), it]));
+
+        // Only act on items where ALL targeted services successfully uploaded.
+        // Flickr group-add retries in groupAddStates do NOT count as upload errors,
+        // but any serviceState that is not "done" means the upload itself had an error.
+        const eligibleIds = uploadedIds.filter(id => {
+          const it = byId.get(id);
+          if (!it) return false;
+          const status = it.status;
+          if (status !== "done" && status !== "done_warn") return false;
+          const targets = Array.isArray(it.targetServices) ? it.targetServices : [];
+          for (const svc of targets) {
+            const ss = it.serviceStates && it.serviceStates[svc];
+            if (!ss || ss.status !== "done") return false;
+          }
+          return true;
+        });
+
+        if (eligibleIds.length === 0) return;
+
+        // Items with pending Flickr group-add retries must be detached to group_only
+        // so the retry queue continues to work after removal from the main queue.
+        // Items without pending group retries can be fully removed.
+        const detachIds = [];
+        const fullyRemoveIds = [];
+        for (const id of eligibleIds) {
+          const it = byId.get(id);
+          if (!it) continue;
+          const hasPendingGroupRetries = it.groupAddStates &&
+            Object.values(it.groupAddStates).some(st => st?.status === "retry");
+          if (hasPendingGroupRetries) {
+            detachIds.push(id);
+          } else {
+            fullyRemoveIds.push(id);
+          }
+        }
+
+        if (afterAction === "remove") {
+          if (detachIds.length > 0) await queue.detachToGroupOnly(detachIds);
+          if (fullyRemoveIds.length > 0) await queue.removeIds(fullyRemoveIds);
+          logEvent("INFO", `After-upload action: removed ${eligibleIds.length} item(s) from queue (detached: ${detachIds.length}, removed: ${fullyRemoveIds.length}).`);
+        } else if (afterAction === "delete") {
+          // Collect paths for all eligible items (both detach and fully-remove sets).
+          const photoPaths = [];
+          const seen = new Set();
+          for (const id of eligibleIds) {
+            const it = byId.get(id);
+            if (!it) continue;
+            const p = resolvePhotoPathOnDisk(it.photoPath);
+            if (!p || seen.has(p)) continue;
+            seen.add(p);
+            photoPaths.push(p);
+          }
+          const trashResult = await trash.movePathsToTrash(photoPaths, {
+            trashItem: (photoPath) => shell.trashItem(photoPath),
+            fallbackTrashItem: process.platform === "win32" ? (photoPath) => moveToRecycleBinViaPowerShell(photoPath) : null,
+            maxAttempts: 5,
+            retryDelayMs: 180,
+            fallbackMaxAttempts: 3,
+            fallbackRetryDelayMs: 250,
+            enableFinalGraceRetry: true,
+          });
+          const failedPathSet = new Set(
+            (Array.isArray(trashResult?.failed) ? trashResult.failed : [])
+              .map((f) => String(f?.photoPath || "").trim())
+              .filter(Boolean)
+          );
+          // Only act on items whose files were successfully trashed (or had no file on disk).
+          const trashedDetachIds = detachIds.filter(id => {
+            const it = byId.get(id);
+            if (!it) return true;
+            const p = resolvePhotoPathOnDisk(it.photoPath);
+            return !p || !failedPathSet.has(p);
+          });
+          const trashedRemoveIds = fullyRemoveIds.filter(id => {
+            const it = byId.get(id);
+            if (!it) return true;
+            const p = resolvePhotoPathOnDisk(it.photoPath);
+            return !p || !failedPathSet.has(p);
+          });
+          if (trashedDetachIds.length > 0) await queue.detachToGroupOnly(trashedDetachIds);
+          if (trashedRemoveIds.length > 0) await queue.removeIds(trashedRemoveIds);
+          const totalActed = trashedDetachIds.length + trashedRemoveIds.length;
+          logEvent("INFO", `After-upload action: deleted files and removed ${totalActed} item(s) from queue (detached: ${trashedDetachIds.length}, removed: ${trashedRemoveIds.length}, trash-failed: ${trashResult?.failedCount || 0}).`);
+        }
+      } catch (e) {
+        logEvent("WARN", `After-upload action (${afterAction}) failed`, { error: String(e?.message || e) });
+      }
+    }
   }
 }
 
@@ -5111,7 +6300,8 @@ ipcMain.handle("sched:start", async (_e, { intervalHours, uploadImmediately, fir
     scheduleNext(uploadImmediately ? 0 : h);
   }
   if (schedTimer) clearInterval(schedTimer);
-  schedTimer = setInterval(() => tickScheduler().catch(() => {}), 1000);
+  schedTimer = setInterval(() => tickScheduler().catch(() => {}), 600000);
+  runImmediateGroupRetrySweep("scheduler_start").catch(() => {});
   updateTrayIcon();
   logEvent("INFO", "Scheduler started", {
     intervalHours: h,
@@ -5329,3 +6519,33 @@ ipcMain.handle("sched:status", async () => ({
   batchRunCurrentServiceTotalKB: Number(batchRunProgress.currentServiceTotalKB || 0),
   uploadBatchSize: Math.max(1, Math.min(999, Math.round(Number(store.get("uploadBatchSize") || 1))))
 }));
+
+ipcMain.handle("flickr:retryGroupAdditionsNow", async () => {
+  if (!isFlickrAuthed()) {
+    throw new Error("Flickr is not authorized");
+  }
+  if (uploadLock) {
+    throw new Error("Upload is currently in progress. Try again after the current upload finishes.");
+  }
+
+  const auth = getFlickrAuth();
+  const result = await processDueGroupRetries({
+    apiKey: auth.apiKey,
+    apiSecret: auth.apiSecret,
+    token: auth.token,
+    tokenSecret: auth.tokenSecret,
+    maxAttempts: 999,
+    forceDue: true,
+  });
+
+  logEvent("INFO", "Manual Flickr group retry trigger completed", {
+    attempts: Number(result?.attempts || 0),
+    groupsProcessed: Number(result?.groupsProcessed || 0),
+  });
+
+  return {
+    ok: true,
+    attempts: Number(result?.attempts || 0),
+    groupsProcessed: Number(result?.groupsProcessed || 0),
+  };
+});
