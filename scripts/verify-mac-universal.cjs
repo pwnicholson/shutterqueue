@@ -4,47 +4,7 @@ const { execFileSync } = require("child_process");
 
 const RELEASE_DIR = path.resolve(__dirname, "..", "release");
 const PRODUCT_NAME = "ShutterQueue";
-
-function walkDir(dir, out = []) {
-  if (!fs.existsSync(dir)) return out;
-  for (const name of fs.readdirSync(dir)) {
-    const full = path.join(dir, name);
-    let stat;
-    try {
-      stat = fs.statSync(full);
-    } catch {
-      continue;
-    }
-    if (stat.isDirectory()) {
-      out.push(full);
-      walkDir(full, out);
-    }
-  }
-  return out;
-}
-
-function findMacApps(baseDir) {
-  const dirs = [baseDir, ...walkDir(baseDir)];
-  return dirs.filter((d) => d.toLowerCase().endsWith(".app"));
-}
-
-function pickNewest(paths) {
-  let best = null;
-  let bestMs = -1;
-  for (const p of paths) {
-    let ms = -1;
-    try {
-      ms = fs.statSync(p).mtimeMs;
-    } catch {
-      ms = -1;
-    }
-    if (ms > bestMs) {
-      best = p;
-      bestMs = ms;
-    }
-  }
-  return best;
-}
+const APP_PATH = path.join(RELEASE_DIR, "mac-universal", `${PRODUCT_NAME}.app`);
 
 function existsDir(p) {
   try {
@@ -113,16 +73,11 @@ function fail(messages) {
     fail(`Release output folder not found: ${RELEASE_DIR}`);
   }
 
-  const apps = findMacApps(RELEASE_DIR).filter((p) => path.basename(p).toLowerCase() === `${PRODUCT_NAME.toLowerCase()}.app` || p.toLowerCase().includes(".app"));
-  if (!apps.length) {
-    fail(`No .app bundle found under: ${RELEASE_DIR}`);
+  if (!existsDir(APP_PATH)) {
+    fail(`No top-level universal .app bundle found: ${APP_PATH}`);
   }
 
-  const appPath = pickNewest(apps);
-  if (!appPath) {
-    fail("Could not determine newest .app bundle to verify.");
-  }
-
+  const appPath = APP_PATH;
   const binaryPath = path.join(appPath, "Contents", "MacOS", PRODUCT_NAME);
   if (!existsFile(binaryPath)) {
     errors.push(`App binary not found at expected path: ${binaryPath}`);

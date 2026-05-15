@@ -11,6 +11,7 @@ v0.9.9 focuses on reliability, clarity, and safer automation:
 - New: After image uploads setting with three choices (keep in queue, remove from queue, or delete+remove with typed safety confirmation).
 - New: Use Large Fonts accessibility option with larger text, spacing, and layout adjustments.
 - New: Universal mac build verification now automatically checks required runtime packages (including sharp arm64 and x64 slices) before considering a build publish-ready.
+- New: The mac universal build command now uses npm's supported `--os` / `--cpu` flags so Apple Silicon Macs can stage the x64 sharp runtime without EBADPLATFORM.
 - Original-file delete is now much more reliable on Windows, especially for the last photo uploaded in a batch.
 - Delete failures now produce clearer, more useful messages and diagnostics.
 - Flickr group-retry behavior is more controllable and more visible.
