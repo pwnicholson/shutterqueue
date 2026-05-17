@@ -2,10 +2,6 @@
 
 ## Soon
 
-* \[X] Fix text typing/focus bug
-* \[X] Fix bug causing delete to not removing last file(s) (aka app not releasing the last file after upload)
-* \[X] Make scalable fonts for readability improvements.
-* \[X] Add post-upload options for automatically removing from queue or removing+deleteing
 * \[ ] Ability to set batches of various sizes to upload together ("Manual batch"?)
 
 ## Nice-to-have
